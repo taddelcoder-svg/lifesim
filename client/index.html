@@ -69,6 +69,35 @@
   #joinBox button:hover { background: #3a6ceb; }
   #joinMsg { color: #ff8080; min-height: 1.2em; font-size: 13px; margin-top: 10px; margin-bottom: 0; }
   canvas { display: block; }
+
+  #touchControls {
+    position: fixed;
+    left: 20px;
+    bottom: 20px;
+    z-index: 10;
+    display: grid;
+    grid-template-columns: 56px 56px 56px;
+    grid-template-rows: 56px 56px 56px;
+    gap: 6px;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .dpad-btn {
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 10px;
+    color: #e8e8e8;
+    font-size: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+  }
+  .dpad-btn.active { background: rgba(74, 124, 255, 0.55); }
+  #dpadUp { grid-column: 2; grid-row: 1; }
+  #dpadLeft { grid-column: 1; grid-row: 2; }
+  #dpadRight { grid-column: 3; grid-row: 2; }
+  #dpadDown { grid-column: 2; grid-row: 3; }
 </style>
 </head>
 <body>
@@ -82,6 +111,12 @@
   </div>
 
   <div id="hud"></div>
+  <div id="touchControls">
+    <button id="dpadUp" class="dpad-btn">&#8593;</button>
+    <button id="dpadLeft" class="dpad-btn">&#8592;</button>
+    <button id="dpadRight" class="dpad-btn">&#8594;</button>
+    <button id="dpadDown" class="dpad-btn">&#8595;</button>
+  </div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="net.js"></script>
@@ -123,6 +158,30 @@
           ? 'Diese Welt ist voll (max. 20 Spieler). Bitte später erneut versuchen.'
           : 'Verbindung fehlgeschlagen.';
     };
+
+    // Touch-Steuerkreuz: setzt dieselben keys wie WASD, funktioniert also
+    // gleichzeitig mit einer angeschlossenen Tastatur (z.B. iPad-Keyboard-Case).
+    function bindDpadButton(elementId, keyName) {
+      const el = document.getElementById(elementId);
+      const press = (e) => {
+        e.preventDefault();
+        net.setKey(keyName, true);
+        el.classList.add('active');
+      };
+      const release = (e) => {
+        e.preventDefault();
+        net.setKey(keyName, false);
+        el.classList.remove('active');
+      };
+      el.addEventListener('pointerdown', press);
+      el.addEventListener('pointerup', release);
+      el.addEventListener('pointercancel', release);
+      el.addEventListener('pointerleave', release);
+    }
+    bindDpadButton('dpadUp', 'w');
+    bindDpadButton('dpadLeft', 'a');
+    bindDpadButton('dpadRight', 'd');
+    bindDpadButton('dpadDown', 's');
   </script>
 </body>
 </html>
