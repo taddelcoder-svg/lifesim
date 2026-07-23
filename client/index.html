@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lebenssimulation - Phase 1</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #1a1d23;
+    overflow: hidden;
+    height: 100%;
+  }
+  #hud {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    color: #e8e8e8;
+    font-family: system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    z-index: 10;
+    background: rgba(0, 0, 0, 0.45);
+    padding: 8px 12px;
+    border-radius: 6px;
+    pointer-events: none;
+  }
+  #joinOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 10, 14, 0.92);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+  }
+  #joinBox {
+    background: #22262f;
+    padding: 28px 32px;
+    border-radius: 10px;
+    color: #e8e8e8;
+    font-family: system-ui, sans-serif;
+    text-align: center;
+    min-width: 260px;
+  }
+  #joinBox h2 { margin-top: 0; font-weight: 600; }
+  #joinBox input {
+    padding: 9px 10px;
+    border-radius: 4px;
+    border: 1px solid #3a3f4b;
+    background: #1a1d23;
+    color: #e8e8e8;
+    margin-bottom: 12px;
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 14px;
+  }
+  #joinBox button {
+    padding: 9px 20px;
+    border-radius: 4px;
+    border: none;
+    background: #4a7cff;
+    color: white;
+    cursor: pointer;
+    font-size: 14px;
+    width: 100%;
+  }
+  #joinBox button:hover { background: #3a6ceb; }
+  #joinMsg { color: #ff8080; min-height: 1.2em; font-size: 13px; margin-top: 10px; margin-bottom: 0; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+  <div id="joinOverlay">
+    <div id="joinBox">
+      <h2>Neues Leben beginnen</h2>
+      <input id="nameInput" type="text" placeholder="Name" maxlength="20" autocomplete="off">
+      <button id="joinBtn">Verbinden</button>
+      <p id="joinMsg"></p>
+    </div>
+  </div>
+
+  <div id="hud"></div>
+  <canvas id="gameCanvas"></canvas>
+
+  <script src="net.js"></script>
+  <script src="render.js"></script>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    const net = new NetClient();
+    const renderer = new Renderer(canvas, net);
+
+    const joinOverlay = document.getElementById('joinOverlay');
+    const joinBtn = document.getElementById('joinBtn');
+    const nameInput = document.getElementById('nameInput');
+    const joinMsg = document.getElementById('joinMsg');
+
+    joinBtn.addEventListener('click', () => {
+      const name = nameInput.value.trim() || 'Spieler';
+      joinMsg.textContent = '';
+      net.connect(name);
+    });
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') joinBtn.click();
+    });
+
+    net.onWelcome = () => {
+      joinOverlay.style.display = 'none';
+      renderer.start();
+    };
+    net.onJoinError = (reason) => {
+      joinMsg.textContent =
+        reason === 'lobby_full'
+          ? 'Diese Welt ist voll (max. 20 Spieler). Bitte später erneut versuchen.'
+          : 'Verbindung fehlgeschlagen.';
+    };
+  </script>
+</body>
+</html>
