@@ -15,6 +15,7 @@ const {
   FAST_TICK_MS,
   SLOW_TICK_MS,
   EVENT_TICK_MS,
+  COPS_TICK_MS,
   SNAPSHOT_INTERVAL_MS,
   SNAPSHOT_PATH,
 } = require('./game');
@@ -129,6 +130,7 @@ wss.on('connection', (ws) => {
         send(ws, buildEventOfferMessage(result.player.activeEvent));
       }
       send(ws, buildEconomyStateMessage()); // aktueller Immobilienmarkt + Firmenliste sofort sichtbar
+      send(ws, { type: 'copsState', cops: world.buildCopsState() });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -250,6 +252,31 @@ wss.on('connection', (ws) => {
       }
       return;
     }
+
+    // --- Kriminalität: Diebstahl ---
+
+    if (msg.type === 'stealAttempt' && ws.playerId != null) {
+      const result = world.attemptSteal(ws.playerId, msg.targetPlayerId);
+      if (result.ok) {
+        sendToPlayer(result.thief.id, {
+          type: 'stealResult',
+          success: result.success,
+          amount: result.amount || 0,
+        });
+        if (result.success) {
+          sendToPlayer(result.victim.id, {
+            type: 'stolenFrom',
+            thiefName: result.thief.name,
+            amount: result.amount,
+          });
+        }
+        const updated = [result.thief, result.victim].map(serializePublic);
+        broadcast({ type: 'statUpdate', players: updated });
+      } else {
+        send(ws, { type: 'actionError', action: 'stealAttempt', reason: result.reason });
+      }
+      return;
+    }
   });
 
   ws.on('close', () => {
@@ -355,7 +382,29 @@ setInterval(() => {
     sendToPlayer(trade.toPlayerId, msg);
     sendToPlayer(trade.fromPlayerId, msg);
   }
+
+  world.decayWanted();
+
+  const released = world.checkJailReleases();
+  if (released.length > 0) {
+    broadcast({ type: 'statUpdate', players: released.map(serializePublic) });
+    for (const player of released) {
+      sendToPlayer(player.id, { type: 'released' });
+    }
+  }
 }, EVENT_TICK_MS);
+
+// COPS_TICK: Polizei-NPCs bewegen sich in eigenem, fluessigerem Takt.
+setInterval(() => {
+  const arrests = world.updateCops(COPS_TICK_MS);
+  broadcast({ type: 'copsState', cops: world.buildCopsState() });
+  if (arrests.length > 0) {
+    broadcast({ type: 'statUpdate', players: arrests.map(serializePublic) });
+    for (const player of arrests) {
+      sendToPlayer(player.id, { type: 'jailed', until: player.jailedUntil });
+    }
+  }
+}, COPS_TICK_MS);
 
 // Snapshot: In-Memory-State periodisch auf Disk sichern (einfache Persistenz für Phase 1)
 setInterval(() => {
