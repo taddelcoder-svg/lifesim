@@ -14,16 +14,36 @@ const {
   WORLD_WIDTH,
   WORLD_HEIGHT,
 } = require('./player');
+const { pickEligibleEvent } = require('./events');
 
 const MAX_PLAYERS = 20;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
 const SLOW_TICK_MS = 10000; // Alterung / Wirtschaft
+const EVENT_TICK_MS = 1000; // Lebensereignisse: Ablauf pruefen, neue anbieten
 const SNAPSHOT_INTERVAL_MS = 60000;
 const SNAPSHOT_PATH = path.join(__dirname, '..', 'world-snapshot.json');
 
 const YEARS_PER_MS = 1 / (60 * 60 * 1000); // 1 Spieljahr pro Realstunde aktiver Verbindung
 const RECONNECT_GRACE_MS = 5 * 60 * 1000; // Zeitfenster, in dem ein Reconnect den alten Spieler übernimmt
 const PLAYER_SPEED = 200; // px/s - MUSS mit client/net.js übereinstimmen (Prediction)
+
+const MAX_EVENT_QUEUE = 3; // mehr wartende Ereignisse pro Spieler werden nicht angesammelt
+const EVENT_ROLL_CHANCE = 0.05; // Chance pro EVENT_TICK, dass ein neues Ereignis in die Warteschlange kommt
+const RECENT_EVENT_MEMORY = 5; // so viele zuletzt gesehene Event-IDs werden kurzfristig vermieden
+
+let nextEventInstanceId = 1;
+
+/** Wendet die Effekte einer Event-Wahl auf einen Spieler an, mit sinnvollen Grenzen. */
+function applyEffects(player, effects) {
+  if (!effects) return;
+  const clamp = (v) => Math.max(0, Math.min(100, v));
+  if (typeof effects.cash === 'number') player.cash = Math.max(0, player.cash + effects.cash);
+  if (typeof effects.health === 'number') player.health = clamp(player.health + effects.health);
+  if (typeof effects.happiness === 'number') player.happiness = clamp(player.happiness + effects.happiness);
+  if (typeof effects.smarts === 'number') player.smarts = clamp(player.smarts + effects.smarts);
+  if (typeof effects.looks === 'number') player.looks = clamp(player.looks + effects.looks);
+  if (typeof effects.wanted === 'number') player.wanted = Math.max(0, player.wanted + effects.wanted);
+}
 
 class GameWorld {
   constructor() {
@@ -54,6 +74,12 @@ class GameWorld {
         existing.lastSeen = Date.now();
         existing.velocity.x = 0;
         existing.velocity.y = 0;
+        if (existing.activeEvent) {
+          // Event-Timer lief waehrend der Trennung nicht weiter - jetzt mit der
+          // gemerkten Restzeit fortsetzen, damit niemand fuer's Offline-sein bestraft wird.
+          const remaining = existing.activeEvent.remainingMs ?? existing.activeEvent.responseDurationMs;
+          existing.activeEvent.expiresAt = Date.now() + remaining;
+        }
         return { player: existing, reconnected: true };
       }
     }
@@ -78,6 +104,9 @@ class GameWorld {
     player.velocity.x = 0;
     player.velocity.y = 0;
     player.lastSeen = Date.now();
+    if (player.activeEvent) {
+      player.activeEvent.remainingMs = Math.max(0, player.activeEvent.expiresAt - Date.now());
+    }
   }
 
   /** Entfernt Spieler, die die Reconnect-Grace-Period überschritten haben. */
@@ -179,6 +208,125 @@ class GameWorld {
     }
     return list;
   }
+
+  /** Merkt sich ein aufgelöstes Event, um kurzfristige Wiederholungen zu vermeiden. */
+  rememberEvent(player, eventId) {
+    player.recentEventIds.push(eventId);
+    if (player.recentEventIds.length > RECENT_EVENT_MEMORY) {
+      player.recentEventIds.shift();
+    }
+  }
+
+  /** Baut aus einer Event-Definition eine konkrete, eindeutige Instanz mit Ablaufzeit. */
+  buildEventInstance(def) {
+    return {
+      instanceId: nextEventInstanceId++,
+      eventId: def.id,
+      title: def.title,
+      text: def.text,
+      choices: def.choices.map((c, i) => ({ index: i, label: c.label })),
+      effectsByChoice: def.choices.map((c) => c.effects || {}),
+      defaultChoiceIndex: def.defaultChoiceIndex || 0,
+      responseDurationMs: def.responseDurationMs,
+      expiresAt: Date.now() + def.responseDurationMs,
+    };
+  }
+
+  /**
+   * EVENT_TICK: würfelt für verbundene Spieler ohne volle Warteschlange
+   * mit kleiner Wahrscheinlichkeit ein neues, altersgerechtes Ereignis.
+   */
+  rollEventsForConnectedPlayers() {
+    for (const player of this.players.values()) {
+      if (!player.connected) continue;
+      if (player.eventQueue.length >= MAX_EVENT_QUEUE) continue;
+      if (Math.random() >= EVENT_ROLL_CHANCE) continue;
+
+      const def = pickEligibleEvent(player, player.recentEventIds);
+      if (def) player.eventQueue.push(def);
+    }
+  }
+
+  /**
+   * Rückt für Spieler ohne aktives Event das nächste aus der Warteschlange nach.
+   * @returns {Array<{player: object, instance: object}>} neu aktivierte Events
+   */
+  promoteQueuedEvents() {
+    const promoted = [];
+    for (const player of this.players.values()) {
+      if (!player.connected) continue;
+      if (!player.activeEvent && player.eventQueue.length > 0) {
+        const def = player.eventQueue.shift();
+        const instance = this.buildEventInstance(def);
+        player.activeEvent = instance;
+        promoted.push({ player, instance });
+      }
+    }
+    return promoted;
+  }
+
+  /**
+   * EVENT_TICK: prüft, ob aktive Events die Antwortzeit überschritten haben,
+   * und wendet in diesem Fall serverseitig die hinterlegte Standardwahl an.
+   * @returns {Array} aufgelöste Events (fuer Benachrichtigung des Clients)
+   */
+  checkExpiredEvents() {
+    const now = Date.now();
+    const resolved = [];
+    for (const player of this.players.values()) {
+      if (!player.connected || !player.activeEvent) continue;
+      if (player.activeEvent.expiresAt > now) continue;
+
+      const instance = player.activeEvent;
+      const idx = instance.defaultChoiceIndex;
+      const effects = instance.effectsByChoice[idx] || {};
+      applyEffects(player, effects);
+      this.rememberEvent(player, instance.eventId);
+      player.activeEvent = null;
+      resolved.push({
+        player,
+        instance,
+        choiceIndex: idx,
+        effects,
+        choiceLabel: instance.choices[idx]?.label,
+        timedOut: true,
+      });
+    }
+    return resolved;
+  }
+
+  /**
+   * Wendet eine vom Client gesendete Event-Wahl an. Validiert, dass das
+   * Event noch aktiv und die Instanz-ID aktuell ist - der Client kann
+   * niemals ein fremdes oder bereits aufgelöstes Event beeinflussen.
+   */
+  applyEventChoice(playerId, instanceId, choiceIndex) {
+    const player = this.players.get(playerId);
+    if (!player || !player.activeEvent) return { ok: false, reason: 'no_active_event' };
+    if (player.activeEvent.instanceId !== instanceId) return { ok: false, reason: 'stale_event' };
+
+    const instance = player.activeEvent;
+    if (
+      typeof choiceIndex !== 'number' ||
+      choiceIndex < 0 ||
+      choiceIndex >= instance.effectsByChoice.length
+    ) {
+      return { ok: false, reason: 'invalid_choice' };
+    }
+
+    const effects = instance.effectsByChoice[choiceIndex];
+    applyEffects(player, effects);
+    this.rememberEvent(player, instance.eventId);
+    player.activeEvent = null;
+
+    return {
+      ok: true,
+      instanceId,
+      effects,
+      choiceLabel: instance.choices[choiceIndex]?.label,
+      timedOut: false,
+    };
+  }
 }
 
 module.exports = {
@@ -186,6 +334,7 @@ module.exports = {
   MAX_PLAYERS,
   FAST_TICK_MS,
   SLOW_TICK_MS,
+  EVENT_TICK_MS,
   SNAPSHOT_INTERVAL_MS,
   SNAPSHOT_PATH,
   PLAYER_SPEED,
