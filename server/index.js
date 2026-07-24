@@ -14,6 +14,7 @@ const {
   GameWorld,
   FAST_TICK_MS,
   SLOW_TICK_MS,
+  EVENT_TICK_MS,
   SNAPSHOT_INTERVAL_MS,
   SNAPSHOT_PATH,
 } = require('./game');
@@ -28,11 +29,27 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const world = new GameWorld();
+const playerConnections = new Map(); // playerId -> ws, fuer gezielte Nachrichten (z.B. Event-Angebote)
 
 function send(ws, msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
   }
+}
+
+function sendToPlayer(playerId, msg) {
+  send(playerConnections.get(playerId), msg);
+}
+
+function buildEventOfferMessage(instance) {
+  return {
+    type: 'eventOffer',
+    instanceId: instance.instanceId,
+    title: instance.title,
+    text: instance.text,
+    choices: instance.choices,
+    expiresAt: instance.expiresAt,
+  };
 }
 
 function broadcast(msg, exceptWs) {
@@ -67,6 +84,7 @@ wss.on('connection', (ws) => {
         return;
       }
       ws.playerId = result.player.id;
+      playerConnections.set(result.player.id, ws);
       send(ws, {
         type: 'welcome',
         id: result.player.id,
@@ -74,6 +92,10 @@ wss.on('connection', (ws) => {
         reconnected: result.reconnected,
         players: world.buildFullPublicState(),
       });
+      if (result.reconnected && result.player.activeEvent) {
+        // Spieler hatte beim Verbindungsabbruch noch ein offenes Ereignis - erneut zustellen
+        send(ws, buildEventOfferMessage(result.player.activeEvent));
+      }
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -86,6 +108,28 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'eventChoice' && ws.playerId != null) {
+      const result = world.applyEventChoice(ws.playerId, msg.instanceId, msg.choiceIndex);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, {
+          type: 'eventResolved',
+          instanceId: result.instanceId,
+          choiceLabel: result.choiceLabel,
+          effects: result.effects,
+          timedOut: false,
+        });
+        const player = world.players.get(ws.playerId);
+        if (player) broadcast({ type: 'statUpdate', players: [serializePublic(player)] });
+
+        // Sofort naechstes Event nachruecken, statt auf den naechsten EVENT_TICK zu warten
+        const promoted = world.promoteQueuedEvents();
+        for (const { player: p, instance } of promoted) {
+          sendToPlayer(p.id, buildEventOfferMessage(instance));
+        }
+      }
+      return;
+    }
+
     if (msg.type === 'ping') {
       send(ws, { type: 'pong', t: msg.t });
     }
@@ -94,6 +138,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     if (ws.playerId != null) {
       world.disconnectPlayer(ws.playerId);
+      playerConnections.delete(ws.playerId);
       broadcast({ type: 'playerDisconnected', id: ws.playerId });
       console.log(`Disconnect: #${ws.playerId} - ${world.playerCount} online`);
     }
@@ -141,6 +186,30 @@ setInterval(() => {
   world.removeStalePlayers();
   broadcast({ type: 'statUpdate', players: world.buildFullPublicState() });
 }, SLOW_TICK_MS);
+
+// EVENT_TICK: neue Lebensereignisse auswürfeln, abgelaufene mit Standardwahl auflösen,
+// naechstes aus der Warteschlange nachruecken - eigener, schnellerer Takt als slowTick,
+// damit Countdown-Anzeigen im Client nicht spuerbar nachhinken.
+setInterval(() => {
+  world.rollEventsForConnectedPlayers();
+
+  const expired = world.checkExpiredEvents();
+  for (const { player, instance, choiceLabel, effects } of expired) {
+    sendToPlayer(player.id, {
+      type: 'eventResolved',
+      instanceId: instance.instanceId,
+      choiceLabel,
+      effects,
+      timedOut: true,
+    });
+    broadcast({ type: 'statUpdate', players: [serializePublic(player)] });
+  }
+
+  const promoted = world.promoteQueuedEvents();
+  for (const { player, instance } of promoted) {
+    sendToPlayer(player.id, buildEventOfferMessage(instance));
+  }
+}, EVENT_TICK_MS);
 
 // Snapshot: In-Memory-State periodisch auf Disk sichern (einfache Persistenz für Phase 1)
 setInterval(() => {
