@@ -723,6 +723,7 @@
 
     const jailOverlay = document.getElementById('jailOverlay');
     const stealBtn = document.getElementById('stealBtn');
+    const STEAL_RANGE_HINT = 100; // rein visuelle Naeherung - MUSS mit server/crime.js (STEAL_RANGE) uebereinstimmen
 
     stealBtn.addEventListener('click', () => {
       if (!net) return;
@@ -733,6 +734,15 @@
       }
       net.stealAttempt(nearest.player.id);
     });
+
+    // Knopf blendet ab, wenn niemand in Reichweite ist - reines visuelles Feedback,
+    // der Server prueft die tatsaechliche Distanz beim Klick sowieso noch einmal.
+    setInterval(() => {
+      if (!net) return;
+      const nearest = net.findNearestOtherPlayer();
+      const inRange = !!nearest && nearest.distance <= STEAL_RANGE_HINT;
+      stealBtn.style.opacity = inRange ? '1' : '0.4';
+    }, 500);
 
     // Gefaengnis-Overlay bleibt sichtbar, solange der lokale Spieler jailedUntil in der
     // Zukunft hat - abgesichert ueber den normalen Stat-Sync, nicht nur die dedizierte
