@@ -167,17 +167,14 @@
   </div>
   <canvas id="gameCanvas"></canvas>
 
+  <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
   <script src="net.js"></script>
   <script src="render.js"></script>
   <script>
     const canvas = document.getElementById('gameCanvas');
 
-    function resizeCanvas() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    }
-    window.addEventListener('resize', resizeCanvas);
-    resizeCanvas();
+    // Groessenanpassung uebernimmt jetzt vollstaendig der Renderer (Three.js WebGLRenderer.setSize),
+    // damit Pixel-Ratio und Zeichenpuffer korrekt zusammenpassen - keine doppelte Steuerung hier.
 
     const net = new NetClient();
     const renderer = new Renderer(canvas, net);
