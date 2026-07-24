@@ -1,314 +1,409 @@
 'use strict';
 
-// client/render.js
-// 3D-Darstellung mit Three.js. Der Server kennt weiterhin nur x/y auf einer
-// flachen Bodenebene (unveraendert seit Phase 1) - hier wird daraus eine
-// begehbare 3D-Welt mit Kamera hinter der Figur (GTA-Stil).
-//
-// WICHTIG: Three.js Version bewusst auf r128 gepinnt (klassisches <script>-Tag,
-// globales THREE-Objekt). Neuere Versionen verlangen ES-Module + Importmap,
-// was den ganzen Datei-Aufbau dieses Projekts aendern wuerde. Deshalb KEIN
-// THREE.CapsuleGeometry (erst ab r142) - Figuren bestehen aus Zylinder + Kugel.
+// client/net.js
+// WebSocket-Verbindung, Input-Sammlung und Client-Prediction/Reconciliation.
+// WICHTIG: Diese Datei bestimmt niemals die "wahre" Position - sie zeigt nur
+// eine Vorhersage an, bis der Server die tatsächliche Position bestätigt.
 
-// HINWEIS ZUR LADEREIHENFOLGE: net.js wird VOR dieser Datei geladen und definiert
-// bereits global WORLD_WIDTH / WORLD_HEIGHT / PLAYER_SPEED. Diese Namen duerfen hier
-// NICHT erneut mit const deklariert werden - das wuerde einen "already been declared"-
-// Fehler ausloesen, der das gesamte Laden dieser Datei abbricht (Renderer waere dann
-// undefiniert). Deshalb werden die Werte aus net.js hier einfach mitbenutzt.
+const WORLD_WIDTH = 2000;
+const WORLD_HEIGHT = 2000;
+const PLAYER_SPEED = 200; // px/s - MUSS mit server/game.js übereinstimmen
+const RECONNECT_DELAY_MS = 2000;
 
-const WORLD_SCALE = 0.05;  // 1 Server-Einheit * 0.05 = 1 3D-Einheit (menschliche Groessenordnung)
-const WORLD_SIZE_3D = WORLD_WIDTH * WORLD_SCALE;
+class NetClient {
+  constructor() {
+    this.ws = null;
+    this.myId = null;
+    this.token = localStorage.getItem('lifesim_token') || null;
+    this.players = new Map(); // id -> { id, name, age, x, y, vx, vy, ...stats }
+    this.localPlayer = null;
+    this.inputSeq = 0;
+    this.pendingInputs = []; // noch nicht vom Server bestätigte Eingaben
+    this.keys = { w: false, a: false, s: false, d: false };
+    this.onWelcome = null;
+    this.onJoinError = null;
+    this.activeEventOffer = null; // aktuell angezeigtes Lebensereignis, oder null
+    this.onEventOffer = null;
+    this.onEventResolved = null;
+    this.onConnectionLost = null;
+    this._pendingName = null;
 
-const CHARACTER_RADIUS = 0.35;
-const CHARACTER_BODY_HEIGHT = 1.0;
-const CHARACTER_HEAD_RADIUS = 0.28;
+    // Wirtschaft (Phase 3)
+    this.properties = new Map();  // propertyId -> { id, name, price, incomePerTick, maintenancePerTick, ownerId, position }
+    this.companies = new Map();   // companyId -> { id, ownerId, name }
+    this.incomingTrades = new Map(); // tradeId -> Handelsangebot, das MIR gemacht wurde
+    this.onEconomyState = null;
+    this.onTradeOffer = null;
+    this.onTradeResolved = null;
+    this.onActionError = null;
+    this.onPropertyRepossessed = null;
 
-const CAMERA_DISTANCE = 6;
-const CAMERA_HEIGHT = 3;
-const CAMERA_LOOK_HEIGHT = 1.3;
-const CAMERA_SMOOTH = 0.12; // 0..1 - hoeher = Kamera folgt schneller/ruckartiger
+    // Kriminalität (Phase 4)
+    this.cops = new Map(); // copId -> { id, x, y }
+    this.onStealResult = null;
+    this.onStolenFrom = null;
+    this.onJailed = null;
+    this.onReleased = null;
 
-const FACING_MIN_SPEED = 1; // px/s, darunter wird die letzte Blickrichtung beibehalten (kein Zittern im Stand)
+    // Soziales (Phase 5)
+    this.chatMessages = []; // { id, playerId, name, text, timestamp }
+    this.incomingFriendRequests = new Map(); // requestId -> { requestId, fromPlayerId, fromName }
+    this.myFriends = []; // IDs befreundeter Spieler - eigene, private Sicht
+    this.onChatMessage = null;
+    this.onFriendRequest = null;
+    this.onFriendResolved = null;
+    this.onLeaderboard = null;
 
-class Renderer {
-  constructor(canvas, net) {
-    this.net = net;
-    this.lastFrame = performance.now();
-    this.running = false;
-    this.hud = document.getElementById('hud');
-
-    this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x1a1d23);
-    this.scene.fog = new THREE.Fog(0x1a1d23, 20, 70);
-
-    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 300);
-    this.camera.position.set(WORLD_SIZE_3D / 2, CAMERA_HEIGHT, WORLD_SIZE_3D / 2 + CAMERA_DISTANCE);
-
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-
-    this.entities = new Map();  // playerId -> { group, headMat, bodyMat, label, lastLabelText }
-    this.copEntities = new Map(); // copId -> { group }
-    this.facingById = new Map(); // playerId -> Bogenmass, Blickrichtung bei Stillstand beibehalten
-
-    this.smoothedCamPos = this.camera.position.clone();
-    this.smoothedCamTarget = new THREE.Vector3(WORLD_SIZE_3D / 2, CAMERA_LOOK_HEIGHT, WORLD_SIZE_3D / 2);
-
-    this.buildStaticScene();
-    window.addEventListener('resize', () => this.onResize());
+    window.addEventListener('keydown', (e) => this.setKey(e.key, true));
+    window.addEventListener('keyup', (e) => this.setKey(e.key, false));
   }
 
-  buildStaticScene() {
-    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
-    this.scene.add(ambient);
-
-    const sun = new THREE.DirectionalLight(0xffffff, 0.75);
-    sun.position.set(WORLD_SIZE_3D * 0.3, 40, WORLD_SIZE_3D * 0.2);
-    this.scene.add(sun);
-
-    const groundGeo = new THREE.PlaneGeometry(WORLD_SIZE_3D, WORLD_SIZE_3D);
-    const groundMat = new THREE.MeshStandardMaterial({ color: 0x21252d });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.set(WORLD_SIZE_3D / 2, 0, WORLD_SIZE_3D / 2);
-    this.scene.add(ground);
-
-    const grid = new THREE.GridHelper(WORLD_SIZE_3D, Math.round(WORLD_SIZE_3D / 5), 0x3a3f4b, 0x2a2f3a);
-    grid.position.set(WORLD_SIZE_3D / 2, 0.01, WORLD_SIZE_3D / 2); // minimal ueber dem Boden gegen Flackern
-    this.scene.add(grid);
+  setKey(key, val) {
+    const k = key.toLowerCase();
+    if (k in this.keys) this.keys[k] = val;
   }
 
-  onResize() {
-    this.camera.aspect = window.innerWidth / window.innerHeight;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-  }
+  connect(name) {
+    this._pendingName = name;
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    this.ws = new WebSocket(`${protocol}://${location.host}`);
 
-  start() {
-    this.running = true;
-    this.lastFrame = performance.now();
-    requestAnimationFrame((t) => this.loop(t));
-  }
+    this.ws.addEventListener('open', () => {
+      this.ws.send(JSON.stringify({ type: 'join', name, token: this.token }));
+    });
 
-  loop(now) {
-    if (!this.running) return;
-    const dt = now - this.lastFrame;
-    this.lastFrame = now;
-
-    this.net.update(dt);
-    this.syncEntities();
-    this.updateCamera();
-    this.renderer.render(this.scene, this.camera);
-    this.updateHud();
-
-    requestAnimationFrame((t) => this.loop(t));
-  }
-
-  /** Baut eine Spielfigur aus Grundformen: Zylinder (Koerper) + Kugel (Kopf) + Kegel (Blickrichtung). */
-  createEntity(isSelf) {
-    const group = new THREE.Group();
-    const bodyColor = isSelf ? 0x4a7cff : 0xe05a5a;
-    const headColor = isSelf ? 0x6f97ff : 0xe98080;
-
-    const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
-    const bodyMat = new THREE.MeshStandardMaterial({ color: bodyColor });
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = CHARACTER_BODY_HEIGHT / 2;
-    group.add(body);
-
-    const headGeo = new THREE.SphereGeometry(CHARACTER_HEAD_RADIUS, 14, 10);
-    const headMat = new THREE.MeshStandardMaterial({ color: headColor });
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS;
-    group.add(head);
-
-    // Kegel als "Nase" - liegt auf lokaler +Z-Achse und zeigt so die Blickrichtung der Figur
-    const noseGeo = new THREE.ConeGeometry(0.1, 0.22, 8);
-    const noseMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
-    const nose = new THREE.Mesh(noseGeo, noseMat);
-    nose.rotation.x = Math.PI / 2;
-    nose.position.set(0, CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS, CHARACTER_HEAD_RADIUS + 0.1);
-    group.add(nose);
-
-    const label = this.createLabelSprite('');
-    label.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS * 2 + 0.4;
-    group.add(label);
-
-    this.scene.add(group);
-    return { group, label, lastLabelText: '', bodyMat, headMat, isJailedVisual: false };
-  }
-
-  createLabelSprite(text) {
-    const canvasEl = document.createElement('canvas');
-    canvasEl.width = 256;
-    canvasEl.height = 64;
-
-    // WICHTIG (Safari): Erst auf die Zeichenflaeche malen, DANN als Textur registrieren.
-    // Umgekehrt wirft Safari einen InvalidStateError, weil eine noch komplett leere
-    // Zeichenflaeche nicht als gueltige Bildquelle akzeptiert wird.
-    this.paintCanvasText(canvasEl, text || ' ');
-
-    const texture = new THREE.CanvasTexture(canvasEl);
-    const material = new THREE.SpriteMaterial({ map: texture, depthTest: false });
-    const sprite = new THREE.Sprite(material);
-    sprite.scale.set(2.2, 0.55, 1);
-    sprite.userData.canvasEl = canvasEl;
-    sprite.userData.texture = texture;
-    return sprite;
-  }
-
-  /** Malt Text auf eine Zeichenflaeche - getrennt, damit es auch VOR der Texturerstellung nutzbar ist. */
-  paintCanvasText(canvasEl, text) {
-    const ctx = canvasEl.getContext('2d');
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    ctx.fillStyle = '#e8e8e8';
-    ctx.font = '28px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, canvasEl.width / 2, canvasEl.height / 2);
-  }
-
-  paintLabelSprite(sprite, text) {
-    this.paintCanvasText(sprite.userData.canvasEl, text);
-    sprite.userData.texture.needsUpdate = true;
-  }
-
-  getOrCreateEntity(id, isSelf) {
-    let entry = this.entities.get(id);
-    if (!entry) {
-      entry = this.createEntity(isSelf);
-      this.entities.set(id, entry);
-    }
-    return entry;
-  }
-
-  removeEntity(id) {
-    const entry = this.entities.get(id);
-    if (!entry) return;
-    this.scene.remove(entry.group);
-    this.entities.delete(id);
-    this.facingById.delete(id);
-  }
-
-  /** Ueberschreibt Position/Blickrichtung/Label aller sichtbaren Spieler anhand des Netzwerk-State. */
-  syncEntities() {
-    const seen = new Set();
-    const now = Date.now();
-
-    for (const p of this.net.players.values()) {
-      if (p.connected === false) continue;
-      seen.add(p.id);
-
-      const isSelf = p.id === this.net.myId;
-      const entry = this.getOrCreateEntity(p.id, isSelf);
-
-      entry.group.position.x = p.x * WORLD_SCALE;
-      entry.group.position.z = p.y * WORLD_SCALE;
-
-      const speed = Math.hypot(p.vx || 0, p.vy || 0);
-      if (speed > FACING_MIN_SPEED) {
-        this.facingById.set(p.id, Math.atan2(p.vx, p.vy));
+    this.ws.addEventListener('message', (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch (err) {
+        return;
       }
-      entry.group.rotation.y = this.facingById.get(p.id) || 0;
+      this.handleMessage(msg);
+    });
 
-      // Im Gefaengnis: Figur graeulich einfaerben, damit der Status auch optisch erkennbar ist
-      const isJailed = p.jailedUntil != null && p.jailedUntil > now;
-      if (isJailed !== entry.isJailedVisual) {
-        entry.bodyMat.color.set(isJailed ? 0x5a6270 : (isSelf ? 0x4a7cff : 0xe05a5a));
-        entry.headMat.color.set(isJailed ? 0x7a8090 : (isSelf ? 0x6f97ff : 0xe98080));
-        entry.isJailedVisual = isJailed;
+    this.ws.addEventListener('close', () => {
+      console.warn('Verbindung getrennt. Neuverbindung in 2s...');
+      // Nach aussen melden, damit die Oberflaeche z.B. den Ladebildschirm
+      // aktualisieren kann statt endlos zu drehen.
+      if (this.onConnectionLost) this.onConnectionLost();
+      setTimeout(() => this.connect(this._pendingName), RECONNECT_DELAY_MS);
+    });
+  }
+
+  handleMessage(msg) {
+    switch (msg.type) {
+      case 'welcome': {
+        this.myId = msg.id;
+        this.token = msg.token;
+        localStorage.setItem('lifesim_token', this.token);
+        this.players.clear();
+        this.pendingInputs = [];
+        for (const p of msg.players) {
+          this.players.set(p.id, { ...p, vx: 0, vy: 0 });
+        }
+        this.localPlayer = this.players.get(this.myId);
+        this.myFriends = msg.friends || [];
+        if (this.onWelcome) this.onWelcome();
+        break;
       }
 
-      const labelText = isJailed ? `${p.name} (im Gefängnis)` : `${p.name} (${p.age})`;
-      if (entry.lastLabelText !== labelText) {
-        this.paintLabelSprite(entry.label, labelText);
-        entry.lastLabelText = labelText;
+      case 'joinError': {
+        if (this.onJoinError) this.onJoinError(msg.reason);
+        break;
       }
-    }
 
-    for (const id of [...this.entities.keys()]) {
-      if (!seen.has(id)) this.removeEntity(id);
-    }
-
-    this.syncCops();
-  }
-
-  /** Erstellt eine Polizeifigur - gleiche Grundform, andere Farbe, eigenes Label. */
-  createCopEntity() {
-    const group = new THREE.Group();
-
-    const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
-    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a3a6e });
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = CHARACTER_BODY_HEIGHT / 2;
-    group.add(body);
-
-    const headGeo = new THREE.SphereGeometry(CHARACTER_HEAD_RADIUS, 14, 10);
-    const headMat = new THREE.MeshStandardMaterial({ color: 0x1f2a52 });
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS;
-    group.add(head);
-
-    const label = this.createLabelSprite('Polizei');
-    label.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS * 2 + 0.4;
-    group.add(label);
-
-    this.scene.add(group);
-    return { group };
-  }
-
-  /** Positioniert die Polizei-NPCs anhand des zuletzt empfangenen copsState. */
-  syncCops() {
-    const seen = new Set();
-    for (const cop of this.net.cops.values()) {
-      seen.add(cop.id);
-      let entry = this.copEntities.get(cop.id);
-      if (!entry) {
-        entry = this.createCopEntity();
-        this.copEntities.set(cop.id, entry);
+      case 'eventOffer': {
+        this.activeEventOffer = msg;
+        if (this.onEventOffer) this.onEventOffer(msg);
+        break;
       }
-      entry.group.position.x = cop.x * WORLD_SCALE;
-      entry.group.position.z = cop.y * WORLD_SCALE;
-    }
-    for (const [id, entry] of this.copEntities) {
-      if (!seen.has(id)) {
-        this.scene.remove(entry.group);
-        this.copEntities.delete(id);
+
+      case 'eventResolved': {
+        this.activeEventOffer = null;
+        if (this.onEventResolved) this.onEventResolved(msg);
+        break;
       }
+
+      case 'playerJoined': {
+        if (!this.players.has(msg.player.id)) {
+          this.players.set(msg.player.id, { ...msg.player, vx: 0, vy: 0 });
+        }
+        break;
+      }
+
+      case 'playerDisconnected': {
+        const p = this.players.get(msg.id);
+        if (p) p.connected = false;
+        break;
+      }
+
+      case 'delta': {
+        for (const d of msg.players) {
+          let p = this.players.get(d.id);
+          if (!p) {
+            p = { id: d.id, name: '?', age: 18, connected: true };
+            this.players.set(d.id, p);
+          }
+          if (d.id === this.myId) {
+            this.reconcile(d);
+          } else {
+            p.x = d.x;
+            p.y = d.y;
+            p.vx = d.vx;
+            p.vy = d.vy;
+          }
+        }
+        break;
+      }
+
+      case 'statUpdate': {
+        for (const s of msg.players) {
+          const p = this.players.get(s.id);
+          if (p) Object.assign(p, s);
+          else this.players.set(s.id, { ...s, vx: 0, vy: 0 });
+        }
+        break;
+      }
+
+      case 'economyState': {
+        this.properties.clear();
+        for (const p of msg.properties) this.properties.set(p.id, p);
+        this.companies.clear();
+        for (const c of msg.companies) this.companies.set(c.id, c);
+        if (this.onEconomyState) this.onEconomyState();
+        break;
+      }
+
+      case 'tradeOffer': {
+        this.incomingTrades.set(msg.tradeId, msg);
+        if (this.onTradeOffer) this.onTradeOffer(msg);
+        break;
+      }
+
+      case 'tradeResolved': {
+        this.incomingTrades.delete(msg.tradeId);
+        if (this.onTradeResolved) this.onTradeResolved(msg);
+        break;
+      }
+
+      case 'actionError': {
+        if (this.onActionError) this.onActionError(msg);
+        break;
+      }
+
+      case 'propertyRepossessed': {
+        if (this.onPropertyRepossessed) this.onPropertyRepossessed(msg);
+        break;
+      }
+
+      case 'copsState': {
+        this.cops.clear();
+        for (const cop of msg.cops) this.cops.set(cop.id, cop);
+        break;
+      }
+
+      case 'stealResult': {
+        if (this.onStealResult) this.onStealResult(msg);
+        break;
+      }
+
+      case 'stolenFrom': {
+        if (this.onStolenFrom) this.onStolenFrom(msg);
+        break;
+      }
+
+      case 'jailed': {
+        if (this.onJailed) this.onJailed(msg);
+        break;
+      }
+
+      case 'released': {
+        if (this.onReleased) this.onReleased(msg);
+        break;
+      }
+
+      case 'chatHistory': {
+        this.chatMessages = msg.messages;
+        if (this.onChatMessage) this.onChatMessage(null); // signalisiert: Liste neu aufbauen
+        break;
+      }
+
+      case 'chatMessage': {
+        this.chatMessages.push(msg.message);
+        if (this.chatMessages.length > 50) this.chatMessages.shift();
+        if (this.onChatMessage) this.onChatMessage(msg.message);
+        break;
+      }
+
+      case 'friendRequest': {
+        this.incomingFriendRequests.set(msg.requestId, msg);
+        if (this.onFriendRequest) this.onFriendRequest(msg);
+        break;
+      }
+
+      case 'friendResolved': {
+        this.incomingFriendRequests.delete(msg.requestId);
+        if (msg.accepted && msg.otherPlayerId != null && !this.myFriends.includes(msg.otherPlayerId)) {
+          this.myFriends.push(msg.otherPlayerId);
+        }
+        if (this.onFriendResolved) this.onFriendResolved(msg);
+        break;
+      }
+
+      case 'leaderboard': {
+        if (this.onLeaderboard) this.onLeaderboard(msg);
+        break;
+      }
+
+      default:
+        break;
     }
   }
 
-  /** Kamera folgt sanft hinter der Blickrichtung der eigenen Figur (GTA-Stil). */
-  updateCamera() {
-    const me = this.entities.get(this.net.myId);
-    if (!me) return;
+  /**
+   * Server-Reconciliation: übernimmt die autoritative Serverposition und
+   * spielt alle noch unbestätigten (nach dem Server-Tick gesendeten) Inputs
+   * erneut ab, um Ruckeln zu vermeiden.
+   */
+  reconcile(serverState) {
+    const p = this.localPlayer;
+    if (!p) return;
 
-    const facing = this.facingById.get(this.net.myId) || 0;
-    const dirX = Math.sin(facing);
-    const dirZ = Math.cos(facing);
-
-    const targetCamPos = new THREE.Vector3(
-      me.group.position.x - dirX * CAMERA_DISTANCE,
-      CAMERA_HEIGHT,
-      me.group.position.z - dirZ * CAMERA_DISTANCE
+    this.pendingInputs = this.pendingInputs.filter(
+      (inp) => inp.seq > serverState.lastProcessedInput
     );
-    const targetLook = new THREE.Vector3(me.group.position.x, CAMERA_LOOK_HEIGHT, me.group.position.z);
 
-    this.smoothedCamPos.lerp(targetCamPos, CAMERA_SMOOTH);
-    this.smoothedCamTarget.lerp(targetLook, CAMERA_SMOOTH);
+    let x = serverState.x;
+    let y = serverState.y;
+    for (const inp of this.pendingInputs) {
+      const res = this.simulateStep(x, y, inp.keys, inp.dt);
+      x = res.x;
+      y = res.y;
+    }
 
-    this.camera.position.copy(this.smoothedCamPos);
-    this.camera.lookAt(this.smoothedCamTarget);
+    p.x = x;
+    p.y = y;
+    p.vx = serverState.vx;
+    p.vy = serverState.vy;
   }
 
-  updateHud() {
-    const me = this.net.localPlayer;
-    if (!me) return;
-    const online = [...this.net.players.values()].filter((p) => p.connected !== false).length;
-    const wantedText = me.wanted > 0 ? ` &nbsp;|&nbsp; Gesucht: ${'⭐'.repeat(Math.min(me.wanted, 5))}` : '';
-    this.hud.innerHTML =
-      `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}${wantedText}<br>` +
-      `Spieler online: ${online} / 20 &nbsp;|&nbsp; Steuerung: WASD`;
+  /** Identische Bewegungslogik wie server/game.js#applyInput + stepPositions. */
+  simulateStep(x, y, keys, dtMs) {
+    let dx = 0;
+    let dy = 0;
+    if (keys.w) dy -= 1;
+    if (keys.s) dy += 1;
+    if (keys.a) dx -= 1;
+    if (keys.d) dx += 1;
+
+    const len = Math.hypot(dx, dy);
+    if (len > 0) {
+      dx /= len;
+      dy /= len;
+    }
+
+    const dtSec = dtMs / 1000;
+    let nx = x + dx * PLAYER_SPEED * dtSec;
+    let ny = y + dy * PLAYER_SPEED * dtSec;
+    nx = Math.max(0, Math.min(WORLD_WIDTH, nx));
+    ny = Math.max(0, Math.min(WORLD_HEIGHT, ny));
+    return { x: nx, y: ny };
+  }
+
+  /** Wird von der UI aufgerufen, wenn der Spieler eine Option bei einem Lebensereignis waehlt. */
+  chooseEventOption(choiceIndex) {
+    if (!this.activeEventOffer || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({
+      type: 'eventChoice',
+      instanceId: this.activeEventOffer.instanceId,
+      choiceIndex,
+    }));
+    this.activeEventOffer = null; // sofort ausblenden, Server bestaetigt gleich per eventResolved
+  }
+
+  /** Wird jeden Frame vom Renderer aufgerufen: sendet Input, wendet Prediction an. */
+  update(dtMs) {
+    if (!this.localPlayer || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    const keysSnapshot = { ...this.keys };
+    this.inputSeq += 1;
+    const input = { seq: this.inputSeq, keys: keysSnapshot, dt: dtMs };
+
+    const res = this.simulateStep(this.localPlayer.x, this.localPlayer.y, keysSnapshot, dtMs);
+    this.localPlayer.x = res.x;
+    this.localPlayer.y = res.y;
+
+    this.pendingInputs.push(input);
+    this.ws.send(JSON.stringify({ type: 'input', seq: input.seq, keys: keysSnapshot }));
+  }
+
+  /** Kleiner Hilfsmethoden-Block fuer die Wirtschaft - alles serverseitig geprueft, hier nur Versand. */
+  send(obj) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(obj));
+    }
+  }
+
+  buyProperty(propertyId) {
+    this.send({ type: 'buyProperty', propertyId });
+  }
+
+  sellProperty(propertyId) {
+    this.send({ type: 'sellProperty', propertyId });
+  }
+
+  foundCompany(name) {
+    this.send({ type: 'foundCompany', name });
+  }
+
+  closeCompany(companyId) {
+    this.send({ type: 'closeCompany', companyId });
+  }
+
+  proposeTrade(toPlayerId, propertyId, price) {
+    this.send({ type: 'proposeTrade', toPlayerId, propertyId, price });
+  }
+
+  respondTrade(tradeId, accept) {
+    this.send({ type: 'respondTrade', tradeId, accept });
+    this.incomingTrades.delete(tradeId); // sofort ausblenden, Server bestaetigt gleich
+  }
+
+  /** Server prueft die tatsaechliche Distanz - hier nur eine Heuristik fuer die UI (Zielwahl). */
+  findNearestOtherPlayer() {
+    if (!this.localPlayer) return null;
+    let nearest = null;
+    let bestDist = Infinity;
+    for (const p of this.players.values()) {
+      if (p.id === this.myId || p.connected === false) continue;
+      const dist = Math.hypot((p.x ?? 0) - this.localPlayer.x, (p.y ?? 0) - this.localPlayer.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        nearest = p;
+      }
+    }
+    return nearest ? { player: nearest, distance: bestDist } : null;
+  }
+
+  stealAttempt(targetPlayerId) {
+    this.send({ type: 'stealAttempt', targetPlayerId });
+  }
+
+  sendChatMessage(text) {
+    this.send({ type: 'chatMessage', text });
+  }
+
+  proposeFriendship(toPlayerId) {
+    this.send({ type: 'proposeFriendship', toPlayerId });
+  }
+
+  respondFriendRequest(requestId, accept) {
+    this.send({ type: 'respondFriendRequest', requestId, accept });
+    this.incomingFriendRequests.delete(requestId);
+  }
+
+  requestLeaderboard() {
+    this.send({ type: 'requestLeaderboard' });
   }
 }
