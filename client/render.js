@@ -49,6 +49,7 @@ class Renderer {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
 
     this.entities = new Map();  // playerId -> { group, headMat, bodyMat, label, lastLabelText }
+    this.copEntities = new Map(); // copId -> { group }
     this.facingById = new Map(); // playerId -> Bogenmass, Blickrichtung bei Stillstand beibehalten
 
     this.smoothedCamPos = this.camera.position.clone();
@@ -135,7 +136,7 @@ class Renderer {
     group.add(label);
 
     this.scene.add(group);
-    return { group, label, lastLabelText: '' };
+    return { group, label, lastLabelText: '', bodyMat, headMat, isJailedVisual: false };
   }
 
   createLabelSprite(text) {
@@ -193,6 +194,7 @@ class Renderer {
   /** Ueberschreibt Position/Blickrichtung/Label aller sichtbaren Spieler anhand des Netzwerk-State. */
   syncEntities() {
     const seen = new Set();
+    const now = Date.now();
 
     for (const p of this.net.players.values()) {
       if (p.connected === false) continue;
@@ -210,7 +212,15 @@ class Renderer {
       }
       entry.group.rotation.y = this.facingById.get(p.id) || 0;
 
-      const labelText = `${p.name} (${p.age})`;
+      // Im Gefaengnis: Figur graeulich einfaerben, damit der Status auch optisch erkennbar ist
+      const isJailed = p.jailedUntil != null && p.jailedUntil > now;
+      if (isJailed !== entry.isJailedVisual) {
+        entry.bodyMat.color.set(isJailed ? 0x5a6270 : (isSelf ? 0x4a7cff : 0xe05a5a));
+        entry.headMat.color.set(isJailed ? 0x7a8090 : (isSelf ? 0x6f97ff : 0xe98080));
+        entry.isJailedVisual = isJailed;
+      }
+
+      const labelText = isJailed ? `${p.name} (im Gefängnis)` : `${p.name} (${p.age})`;
       if (entry.lastLabelText !== labelText) {
         this.paintLabelSprite(entry.label, labelText);
         entry.lastLabelText = labelText;
@@ -219,6 +229,53 @@ class Renderer {
 
     for (const id of [...this.entities.keys()]) {
       if (!seen.has(id)) this.removeEntity(id);
+    }
+
+    this.syncCops();
+  }
+
+  /** Erstellt eine Polizeifigur - gleiche Grundform, andere Farbe, eigenes Label. */
+  createCopEntity() {
+    const group = new THREE.Group();
+
+    const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a3a6e });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = CHARACTER_BODY_HEIGHT / 2;
+    group.add(body);
+
+    const headGeo = new THREE.SphereGeometry(CHARACTER_HEAD_RADIUS, 14, 10);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0x1f2a52 });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS;
+    group.add(head);
+
+    const label = this.createLabelSprite('Polizei');
+    label.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS * 2 + 0.4;
+    group.add(label);
+
+    this.scene.add(group);
+    return { group };
+  }
+
+  /** Positioniert die Polizei-NPCs anhand des zuletzt empfangenen copsState. */
+  syncCops() {
+    const seen = new Set();
+    for (const cop of this.net.cops.values()) {
+      seen.add(cop.id);
+      let entry = this.copEntities.get(cop.id);
+      if (!entry) {
+        entry = this.createCopEntity();
+        this.copEntities.set(cop.id, entry);
+      }
+      entry.group.position.x = cop.x * WORLD_SCALE;
+      entry.group.position.z = cop.y * WORLD_SCALE;
+    }
+    for (const [id, entry] of this.copEntities) {
+      if (!seen.has(id)) {
+        this.scene.remove(entry.group);
+        this.copEntities.delete(id);
+      }
     }
   }
 
@@ -249,8 +306,9 @@ class Renderer {
     const me = this.net.localPlayer;
     if (!me) return;
     const online = [...this.net.players.values()].filter((p) => p.connected !== false).length;
+    const wantedText = me.wanted > 0 ? ` &nbsp;|&nbsp; Gesucht: ${'⭐'.repeat(Math.min(me.wanted, 5))}` : '';
     this.hud.innerHTML =
-      `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}<br>` +
+      `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}${wantedText}<br>` +
       `Spieler online: ${online} / 20 &nbsp;|&nbsp; Steuerung: WASD`;
   }
 }
