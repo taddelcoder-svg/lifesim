@@ -38,6 +38,13 @@ class NetClient {
     this.onActionError = null;
     this.onPropertyRepossessed = null;
 
+    // Kriminalität (Phase 4)
+    this.cops = new Map(); // copId -> { id, x, y }
+    this.onStealResult = null;
+    this.onStolenFrom = null;
+    this.onJailed = null;
+    this.onReleased = null;
+
     window.addEventListener('keydown', (e) => this.setKey(e.key, true));
     window.addEventListener('keyup', (e) => this.setKey(e.key, false));
   }
@@ -180,6 +187,32 @@ class NetClient {
         break;
       }
 
+      case 'copsState': {
+        this.cops.clear();
+        for (const cop of msg.cops) this.cops.set(cop.id, cop);
+        break;
+      }
+
+      case 'stealResult': {
+        if (this.onStealResult) this.onStealResult(msg);
+        break;
+      }
+
+      case 'stolenFrom': {
+        if (this.onStolenFrom) this.onStolenFrom(msg);
+        break;
+      }
+
+      case 'jailed': {
+        if (this.onJailed) this.onJailed(msg);
+        break;
+      }
+
+      case 'released': {
+        if (this.onReleased) this.onReleased(msg);
+        break;
+      }
+
       default:
         break;
     }
@@ -292,5 +325,25 @@ class NetClient {
   respondTrade(tradeId, accept) {
     this.send({ type: 'respondTrade', tradeId, accept });
     this.incomingTrades.delete(tradeId); // sofort ausblenden, Server bestaetigt gleich
+  }
+
+  /** Server prueft die tatsaechliche Distanz - hier nur eine Heuristik fuer die UI (Zielwahl). */
+  findNearestOtherPlayer() {
+    if (!this.localPlayer) return null;
+    let nearest = null;
+    let bestDist = Infinity;
+    for (const p of this.players.values()) {
+      if (p.id === this.myId || p.connected === false) continue;
+      const dist = Math.hypot((p.x ?? 0) - this.localPlayer.x, (p.y ?? 0) - this.localPlayer.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        nearest = p;
+      }
+    }
+    return nearest ? { player: nearest, distance: bestDist } : null;
+  }
+
+  stealAttempt(targetPlayerId) {
+    this.send({ type: 'stealAttempt', targetPlayerId });
   }
 }
