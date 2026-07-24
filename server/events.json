@@ -1,0 +1,170 @@
+[
+  {
+    "id": "job_offer_intern",
+    "minAge": 18, "maxAge": 30, "weight": 3,
+    "title": "Job-Angebot",
+    "text": "Eine kleine Firma bietet dir ein Praktikum an. Miese Bezahlung, aber gute Erfahrung.",
+    "responseDurationMs": 20000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Annehmen", "effects": { "cash": 80, "smarts": 2, "happiness": -2 } },
+      { "label": "Ablehnen", "effects": { "happiness": 1 } }
+    ]
+  },
+  {
+    "id": "unexpected_bonus",
+    "minAge": 18, "maxAge": 99, "weight": 2,
+    "title": "Überraschung",
+    "text": "Dein Chef ist zufrieden mit deiner Arbeit und gibt dir einen kleinen Bonus.",
+    "responseDurationMs": 15000,
+    "defaultChoiceIndex": 0,
+    "choices": [
+      { "label": "Annehmen", "effects": { "cash": 60, "happiness": 3 } },
+      { "label": "Kollegen den Vortritt lassen", "effects": { "happiness": 5 } }
+    ]
+  },
+  {
+    "id": "car_trouble",
+    "minAge": 18, "maxAge": 99, "weight": 3,
+    "title": "Autopanne",
+    "text": "Dein Auto streikt auf offener Strecke. Reparieren kostet, ignorieren ist riskant.",
+    "responseDurationMs": 20000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Reparieren lassen ($120)", "effects": { "cash": -120, "happiness": 2 } },
+      { "label": "Ignorieren", "effects": { "happiness": -4, "health": -2 } }
+    ]
+  },
+  {
+    "id": "gym_invite",
+    "minAge": 18, "maxAge": 60, "weight": 2,
+    "title": "Einladung",
+    "text": "Ein Freund lädt dich ins Fitnessstudio ein.",
+    "responseDurationMs": 18000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Mitkommen ($15)", "effects": { "health": 4, "looks": 2, "happiness": 3, "cash": -15 } },
+      { "label": "Absagen", "effects": {} }
+    ]
+  },
+  {
+    "id": "pickpocket_opportunity",
+    "minAge": 18, "maxAge": 99, "weight": 1,
+    "title": "Gelegenheit",
+    "text": "Jemand lässt seine Tasche unbeobachtet auf einer Bank liegen.",
+    "responseDurationMs": 15000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Klauen", "effects": { "cash": 90, "wanted": 1, "happiness": -3 } },
+      { "label": "Weitergehen", "effects": { "happiness": 1 } }
+    ]
+  },
+  {
+    "id": "inheritance_small",
+    "minAge": 25, "maxAge": 99, "weight": 1,
+    "title": "Nachricht",
+    "text": "Ein entfernter Verwandter ist verstorben und hat dir etwas hinterlassen.",
+    "responseDurationMs": 20000,
+    "defaultChoiceIndex": 0,
+    "choices": [
+      { "label": "Erbe annehmen", "effects": { "cash": 200, "happiness": -1 } },
+      { "label": "Ausschlagen", "effects": { "happiness": 1 } }
+    ]
+  },
+  {
+    "id": "flu_season",
+    "minAge": 18, "maxAge": 99, "weight": 3,
+    "title": "Erkältung",
+    "text": "Du fühlst dich seit Tagen schlapp. Zum Arzt gehen oder aussitzen?",
+    "responseDurationMs": 20000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Arzt aufsuchen ($40)", "effects": { "cash": -40, "health": 8 } },
+      { "label": "Aussitzen", "effects": { "health": -6 } }
+    ]
+  },
+  {
+    "id": "night_school",
+    "minAge": 18, "maxAge": 40, "weight": 2,
+    "title": "Weiterbildung",
+    "text": "Ein Abendkurs an der Volkshochschule hat noch freie Plätze.",
+    "responseDurationMs": 20000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Anmelden ($50)", "effects": { "cash": -50, "smarts": 5 } },
+      { "label": "Nicht jetzt", "effects": {} }
+    ]
+  },
+  {
+    "id": "street_race_invite",
+    "minAge": 18, "maxAge": 35, "weight": 1,
+    "title": "Herausforderung",
+    "text": "Jemand fordert dich zu einem illegalen Straßenrennen heraus.",
+    "responseDurationMs": 15000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Mitmachen", "effects": { "cash": 150, "wanted": 2, "health": -5 } },
+      { "label": "Ablehnen", "effects": {} }
+    ]
+  },
+  {
+    "id": "charity_call",
+    "minAge": 18, "maxAge": 99, "weight": 2,
+    "title": "Anruf",
+    "text": "Eine wohltätige Organisation bittet um eine Spende.",
+    "responseDurationMs": 18000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Spenden ($30)", "effects": { "cash": -30, "happiness": 4 } },
+      { "label": "Auflegen", "effects": {} }
+    ]
+  },
+  {
+    "id": "lottery_ticket",
+    "minAge": 18, "maxAge": 99, "weight": 2,
+    "title": "Lotto",
+    "text": "Der Kiosk nebenan verkauft Lottoscheine. Ein Los kostet $10.",
+    "responseDurationMs": 15000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Los kaufen ($10)", "effects": { "cash": -10, "happiness": 2 } },
+      { "label": "Kein Interesse", "effects": {} }
+    ]
+  },
+  {
+    "id": "old_friend_reconnect",
+    "minAge": 18, "maxAge": 99, "weight": 2,
+    "title": "Nachricht",
+    "text": "Ein alter Freund meldet sich nach langer Zeit wieder.",
+    "responseDurationMs": 18000,
+    "defaultChoiceIndex": 0,
+    "choices": [
+      { "label": "Antworten", "effects": { "happiness": 5 } },
+      { "label": "Ignorieren", "effects": { "happiness": -2 } }
+    ]
+  },
+  {
+    "id": "workplace_conflict",
+    "minAge": 20, "maxAge": 65, "weight": 2,
+    "title": "Streit",
+    "text": "Ein Kollege beschuldigt dich zu Unrecht vor allen anderen.",
+    "responseDurationMs": 18000,
+    "defaultChoiceIndex": 1,
+    "choices": [
+      { "label": "Kontern", "effects": { "happiness": -2, "smarts": 1 } },
+      { "label": "Ignorieren", "effects": { "happiness": -1 } }
+    ]
+  },
+  {
+    "id": "free_concert_ticket",
+    "minAge": 18, "maxAge": 99, "weight": 2,
+    "title": "Glücksfall",
+    "text": "Du gewinnst eine Freikarte für ein Konzert heute Abend.",
+    "responseDurationMs": 18000,
+    "defaultChoiceIndex": 0,
+    "choices": [
+      { "label": "Hingehen", "effects": { "happiness": 6, "looks": 1 } },
+      { "label": "Verschenken", "effects": { "happiness": 2 } }
+    ]
+  }
+]
