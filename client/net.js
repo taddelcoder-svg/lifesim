@@ -22,6 +22,9 @@ class NetClient {
     this.keys = { w: false, a: false, s: false, d: false };
     this.onWelcome = null;
     this.onJoinError = null;
+    this.activeEventOffer = null; // aktuell angezeigtes Lebensereignis, oder null
+    this.onEventOffer = null;
+    this.onEventResolved = null;
     this._pendingName = null;
 
     window.addEventListener('keydown', (e) => this.setKey(e.key, true));
@@ -76,6 +79,18 @@ class NetClient {
 
       case 'joinError': {
         if (this.onJoinError) this.onJoinError(msg.reason);
+        break;
+      }
+
+      case 'eventOffer': {
+        this.activeEventOffer = msg;
+        if (this.onEventOffer) this.onEventOffer(msg);
+        break;
+      }
+
+      case 'eventResolved': {
+        this.activeEventOffer = null;
+        if (this.onEventResolved) this.onEventResolved(msg);
         break;
       }
 
@@ -173,6 +188,17 @@ class NetClient {
     nx = Math.max(0, Math.min(WORLD_WIDTH, nx));
     ny = Math.max(0, Math.min(WORLD_HEIGHT, ny));
     return { x: nx, y: ny };
+  }
+
+  /** Wird von der UI aufgerufen, wenn der Spieler eine Option bei einem Lebensereignis waehlt. */
+  chooseEventOption(choiceIndex) {
+    if (!this.activeEventOffer || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({
+      type: 'eventChoice',
+      instanceId: this.activeEventOffer.instanceId,
+      choiceIndex,
+    }));
+    this.activeEventOffer = null; // sofort ausblenden, Server bestaetigt gleich per eventResolved
   }
 
   /** Wird jeden Frame vom Renderer aufgerufen: sendet Input, wendet Prediction an. */
