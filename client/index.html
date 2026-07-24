@@ -240,6 +240,15 @@
   #jailOverlay h2 { margin: 0 0 10px 0; }
   #jailOverlay p { color: #9aa0ab; max-width: 300px; }
 
+  #deathOverlay {
+    position: fixed; inset: 0; background: rgba(10, 10, 14, 0.95);
+    display: none; align-items: center; justify-content: center; z-index: 24;
+    color: #e8e8e8; font-family: system-ui, sans-serif; text-align: center; flex-direction: column;
+  }
+  #deathOverlay h2 { margin: 0 0 10px 0; font-size: 22px; }
+  #deathOverlay p { color: #9aa0ab; max-width: 320px; margin-bottom: 18px; line-height: 1.5; }
+  #deathOverlay button { padding: 10px 24px; font-size: 14px; }
+
   #socialBtn {
     position: fixed; top: max(10px, env(safe-area-inset-top)); right: max(100px, calc(env(safe-area-inset-right) + 90px)); z-index: 10;
     background: rgba(0, 0, 0, 0.45); color: #e8e8e8; border: 1px solid #3a3f4b;
@@ -311,6 +320,7 @@
     <div id="socialTabs">
       <div class="social-tab active" data-section="chatSection">Chat</div>
       <div class="social-tab" data-section="friendsSection">Freunde</div>
+      <div class="social-tab" data-section="familySection">Familie</div>
       <div class="social-tab" data-section="leaderboardSection">Rangliste</div>
     </div>
 
@@ -329,12 +339,35 @@
       <div id="onlinePlayerList"></div>
     </div>
 
+    <div id="familySection" class="social-section">
+      <h4>💍 Ehe</h4>
+      <div id="marriageStatus"></div>
+      <div id="marriageProposeWrap">
+        <h4>Antrag stellen</h4>
+        <div id="marriageTargetList"></div>
+      </div>
+      <h4>Heiratsanträge</h4>
+      <div id="marriageRequestList"></div>
+      <h4>👶 Kinder</h4>
+      <div id="haveChildRow" style="display:flex; gap:6px; margin-bottom:10px;">
+        <input id="childNameInput" type="text" placeholder="Name des Kindes" maxlength="20">
+        <button class="market-btn-small" id="haveChildBtn">Bekommen ($200)</button>
+      </div>
+      <div id="childrenList"></div>
+    </div>
+
     <div id="leaderboardSection" class="social-section">
       <h4>💰 Reichste Spieler</h4>
       <div id="richestList"></div>
       <h4>🚔 Meistgesucht</h4>
       <div id="mostWantedList"></div>
     </div>
+  </div>
+
+  <div id="deathOverlay" style="display:none;">
+    <h2>💀 Du bist gestorben</h2>
+    <p id="deathInfo"></p>
+    <button id="reincarnateBtn" class="market-btn-small">Weiterleben</button>
   </div>
 
   <div id="marketPanel" style="display:none;">
@@ -772,7 +805,11 @@
       if (opening) {
         renderChatMessages();
         renderFriendsSection();
-        if (net) net.requestLeaderboard();
+        renderFamilySection();
+        if (net) {
+          net.requestLeaderboard();
+          net.requestFamily();
+        }
       }
     });
 
@@ -892,6 +929,146 @@
         if (socialPanel.style.display !== 'none') renderFriendsSection();
       };
       net.onLeaderboard = (data) => renderLeaderboard(data);
+    }
+
+    // ---------------------------------------------------------------------
+    // Familie: Ehe, Kinder, Tod & Wiedergeburt
+    // ---------------------------------------------------------------------
+    const marriageStatusEl = document.getElementById('marriageStatus');
+    const marriageTargetListEl = document.getElementById('marriageTargetList');
+    const marriageRequestListEl = document.getElementById('marriageRequestList');
+    const childNameInput = document.getElementById('childNameInput');
+    const haveChildBtn = document.getElementById('haveChildBtn');
+    const childrenListEl = document.getElementById('childrenList');
+    const deathOverlay = document.getElementById('deathOverlay');
+    const deathInfoEl = document.getElementById('deathInfo');
+    const reincarnateBtn = document.getElementById('reincarnateBtn');
+
+    function renderFamilySection() {
+      const me = net.localPlayer;
+      const isMarried = me && me.spouseId != null;
+
+      marriageStatusEl.innerHTML = '';
+      if (isMarried) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = `<div class="market-item-name">Verheiratet mit ${escapeHtml(playerName(me.spouseId))}</div>`;
+        const divorceBtn = document.createElement('button');
+        divorceBtn.className = 'market-btn-small danger';
+        divorceBtn.textContent = 'Scheiden lassen';
+        divorceBtn.addEventListener('click', () => net.divorce());
+        row.appendChild(divorceBtn);
+        marriageStatusEl.appendChild(row);
+      } else {
+        marriageStatusEl.innerHTML = '<div class="market-empty">Noch nicht verheiratet.</div>';
+      }
+
+      // Antrag stellen - nur moeglich, wenn ich selbst nicht verheiratet bin
+      marriageTargetListEl.innerHTML = '';
+      if (isMarried) {
+        marriageTargetListEl.innerHTML = '<div class="market-empty">Erst scheiden lassen, um neu zu heiraten.</div>';
+      } else {
+        const others = [...net.players.values()].filter((p) => p.id !== net.myId && p.connected !== false);
+        if (others.length === 0) {
+          marriageTargetListEl.innerHTML = '<div class="market-empty">Niemand sonst online.</div>';
+        }
+        for (const p of others) {
+          const row = document.createElement('div');
+          row.className = 'market-item';
+          row.innerHTML = `<div class="market-item-name">${escapeHtml(p.name)}</div>`;
+          const btn = document.createElement('button');
+          const targetMarried = p.spouseId != null;
+          btn.className = 'market-btn-small' + (targetMarried ? ' ghost' : '');
+          btn.textContent = targetMarried ? 'Schon verheiratet' : 'Antrag stellen';
+          btn.disabled = targetMarried;
+          btn.addEventListener('click', () => { net.proposeMarriage(p.id); showToast('Heiratsantrag gesendet.'); });
+          row.appendChild(btn);
+          marriageTargetListEl.appendChild(row);
+        }
+      }
+
+      // Eingehende Heiratsantraege
+      marriageRequestListEl.innerHTML = '';
+      if (net.incomingMarriageRequests.size === 0) {
+        marriageRequestListEl.innerHTML = '<div class="market-empty">Keine offenen Anträge.</div>';
+      }
+      for (const req of net.incomingMarriageRequests.values()) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = `<div class="market-item-name">${escapeHtml(req.fromName)}</div>`;
+        const btnGroup = document.createElement('div');
+        btnGroup.style.display = 'flex';
+        btnGroup.style.gap = '6px';
+        const acceptBtn = document.createElement('button');
+        acceptBtn.className = 'market-btn-small';
+        acceptBtn.textContent = 'Ja';
+        acceptBtn.addEventListener('click', () => { net.respondMarriageRequest(req.requestId, true); renderFamilySection(); });
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = 'market-btn-small ghost';
+        rejectBtn.textContent = 'Nein';
+        rejectBtn.addEventListener('click', () => { net.respondMarriageRequest(req.requestId, false); renderFamilySection(); });
+        btnGroup.appendChild(acceptBtn);
+        btnGroup.appendChild(rejectBtn);
+        row.appendChild(btnGroup);
+        marriageRequestListEl.appendChild(row);
+      }
+
+      // Kinder
+      haveChildBtn.disabled = !isMarried;
+      childrenListEl.innerHTML = '';
+      if (net.myChildren.length === 0) {
+        childrenListEl.innerHTML = '<div class="market-empty">Noch keine Kinder.</div>';
+      }
+      for (const child of net.myChildren) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = `<div class="market-item-name">${escapeHtml(child.name)}</div>`;
+        childrenListEl.appendChild(row);
+      }
+    }
+
+    haveChildBtn.addEventListener('click', () => {
+      const name = childNameInput.value.trim() || 'Kind';
+      net.haveChild(name);
+      childNameInput.value = '';
+    });
+
+    reincarnateBtn.addEventListener('click', () => {
+      net.reincarnate();
+    });
+
+    if (net) {
+      net.onMarriageRequest = () => {
+        showToast('Neuer Heiratsantrag erhalten.');
+        if (socialPanel.style.display !== 'none') renderFamilySection();
+      };
+      net.onMarriageResolved = (msg) => {
+        const otherName = msg.otherPlayerId != null ? playerName(msg.otherPlayerId) : '';
+        showToast(msg.accepted ? `Jetzt verheiratet mit ${otherName}!` : 'Heiratsantrag abgelehnt.');
+        if (socialPanel.style.display !== 'none') renderFamilySection();
+      };
+      net.onDivorced = () => {
+        showToast('Die Ehe wurde geschieden.');
+        if (socialPanel.style.display !== 'none') renderFamilySection();
+      };
+      net.onChildBorn = (msg) => {
+        showToast(`${msg.child.name} wurde geboren! 👶`);
+        if (socialPanel.style.display !== 'none') renderFamilySection();
+      };
+      net.onWidowed = (msg) => {
+        showToast(`${msg.exPartnerName} ist verstorben. Du bist jetzt verwitwet.`);
+      };
+      net.onDied = (msg) => {
+        let info = 'Dein Leben ist zu Ende.';
+        if (msg.hasHeir) info = `Dein Kind ${msg.heirName} erbt einen Teil deines Vermögens.`;
+        else if (msg.hadSpouse) info = 'Dein Ehepartner erbt einen Teil deines Vermögens.';
+        deathInfoEl.textContent = info;
+        deathOverlay.style.display = 'flex';
+      };
+      net.onReincarnated = (msg) => {
+        deathOverlay.style.display = 'none';
+        showToast(msg.becameChild ? `Du spielst jetzt als ${msg.name} weiter.` : 'Neues Leben begonnen.');
+      };
     }
   </script>
 </body>
