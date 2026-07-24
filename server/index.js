@@ -85,6 +85,26 @@ function buildTradeOfferMessage(trade) {
   };
 }
 
+function buildFriendRequestMessage(request) {
+  const fromPlayer = world.players.get(request.fromPlayerId);
+  return {
+    type: 'friendRequest',
+    requestId: request.id,
+    fromPlayerId: request.fromPlayerId,
+    fromName: fromPlayer ? fromPlayer.name : 'Unbekannt',
+  };
+}
+
+function buildMarriageRequestMessage(request) {
+  const fromPlayer = world.players.get(request.fromPlayerId);
+  return {
+    type: 'marriageRequest',
+    requestId: request.id,
+    fromPlayerId: request.fromPlayerId,
+    fromName: fromPlayer ? fromPlayer.name : 'Unbekannt',
+  };
+}
+
 function broadcast(msg, exceptWs) {
   const data = JSON.stringify(msg);
   for (const client of wss.clients) {
@@ -124,6 +144,7 @@ wss.on('connection', (ws) => {
         token: result.player.token,
         reconnected: result.reconnected,
         players: world.buildFullPublicState(),
+        friends: result.player.friends.slice(),
       });
       if (result.reconnected && result.player.activeEvent) {
         // Spieler hatte beim Verbindungsabbruch noch ein offenes Ereignis - erneut zustellen
@@ -131,6 +152,7 @@ wss.on('connection', (ws) => {
       }
       send(ws, buildEconomyStateMessage()); // aktueller Immobilienmarkt + Firmenliste sofort sichtbar
       send(ws, { type: 'copsState', cops: world.buildCopsState() });
+      send(ws, { type: 'chatHistory', messages: world.buildChatHistory() });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -277,6 +299,137 @@ wss.on('connection', (ws) => {
       }
       return;
     }
+
+    // --- Soziales: Chat, Freundschaften, Rangliste ---
+
+    if (msg.type === 'chatMessage' && ws.playerId != null) {
+      const result = world.sendChatMessage(ws.playerId, msg.text);
+      if (result.ok) {
+        broadcast({ type: 'chatMessage', message: result.message });
+      } else {
+        send(ws, { type: 'actionError', action: 'chatMessage', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'proposeFriendship' && ws.playerId != null) {
+      const result = world.proposeFriendship(ws.playerId, msg.toPlayerId);
+      if (result.ok) {
+        sendToPlayer(msg.toPlayerId, buildFriendRequestMessage(result.request));
+        send(ws, { type: 'friendRequestSent', requestId: result.request.id });
+      } else {
+        send(ws, { type: 'actionError', action: 'proposeFriendship', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'respondFriendRequest' && ws.playerId != null) {
+      const result = world.respondFriendRequest(ws.playerId, msg.requestId, !!msg.accept);
+      if (result.ok) {
+        const resolvedMsg = {
+          type: 'friendResolved',
+          requestId: result.request.id,
+          accepted: result.accepted,
+          otherPlayerId: result.accepted ? result.request.fromPlayerId : null,
+        };
+        sendToPlayer(result.request.fromPlayerId, {
+          ...resolvedMsg,
+          otherPlayerId: result.accepted ? result.request.toPlayerId : null,
+        });
+        sendToPlayer(result.request.toPlayerId, {
+          ...resolvedMsg,
+          otherPlayerId: result.accepted ? result.request.fromPlayerId : null,
+        });
+      } else {
+        send(ws, { type: 'actionError', action: 'respondFriendRequest', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'requestLeaderboard' && ws.playerId != null) {
+      send(ws, { type: 'leaderboard', ...world.buildLeaderboards() });
+      return;
+    }
+
+    // --- Familie: Ehe, Kinder, Wiedergeburt ---
+
+    if (msg.type === 'proposeMarriage' && ws.playerId != null) {
+      const result = world.proposeMarriage(ws.playerId, msg.toPlayerId);
+      if (result.ok) {
+        sendToPlayer(msg.toPlayerId, buildMarriageRequestMessage(result.request));
+        send(ws, { type: 'marriageRequestSent', requestId: result.request.id });
+      } else {
+        send(ws, { type: 'actionError', action: 'proposeMarriage', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'respondMarriageRequest' && ws.playerId != null) {
+      const result = world.respondMarriageRequest(ws.playerId, msg.requestId, !!msg.accept);
+      if (result.ok) {
+        const resolvedBase = { type: 'marriageResolved', requestId: result.request.id, accepted: result.accepted };
+        sendToPlayer(result.request.fromPlayerId, { ...resolvedBase, otherPlayerId: result.accepted ? result.request.toPlayerId : null });
+        sendToPlayer(result.request.toPlayerId, { ...resolvedBase, otherPlayerId: result.accepted ? result.request.fromPlayerId : null });
+        if (result.accepted) {
+          const fromP = world.players.get(result.request.fromPlayerId);
+          const toP = world.players.get(result.request.toPlayerId);
+          broadcast({ type: 'statUpdate', players: [fromP, toP].filter(Boolean).map(serializePublic) });
+        }
+      } else {
+        send(ws, { type: 'actionError', action: 'respondMarriageRequest', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'divorce' && ws.playerId != null) {
+      const result = world.divorce(ws.playerId);
+      if (result.ok) {
+        const player = world.players.get(ws.playerId);
+        const exSpouse = world.players.get(result.exSpouseId);
+        sendToPlayer(ws.playerId, { type: 'divorced' });
+        if (exSpouse) sendToPlayer(exSpouse.id, { type: 'divorced' });
+        broadcast({ type: 'statUpdate', players: [player, exSpouse].filter(Boolean).map(serializePublic) });
+      } else {
+        send(ws, { type: 'actionError', action: 'divorce', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'haveChild' && ws.playerId != null) {
+      const result = world.haveChild(ws.playerId, msg.name);
+      if (result.ok) {
+        const player = world.players.get(ws.playerId);
+        const spouse = player.spouseId != null ? world.players.get(player.spouseId) : null;
+        const bornMsg = { type: 'childBorn', child: result.child };
+        sendToPlayer(ws.playerId, bornMsg);
+        if (spouse) sendToPlayer(spouse.id, bornMsg);
+        broadcast({ type: 'statUpdate', players: [player, spouse].filter(Boolean).map(serializePublic) });
+      } else {
+        send(ws, { type: 'actionError', action: 'haveChild', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'requestFamily' && ws.playerId != null) {
+      send(ws, { type: 'familyState', children: world.buildChildrenForPlayer(ws.playerId) });
+      return;
+    }
+
+    if (msg.type === 'reincarnate' && ws.playerId != null) {
+      const result = world.reincarnate(ws.playerId);
+      if (result.ok) {
+        send(ws, {
+          type: 'reincarnated',
+          name: result.player.name,
+          becameChild: result.becameChild,
+          cash: result.player.cash,
+        });
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
+      } else {
+        send(ws, { type: 'actionError', action: 'reincarnate', reason: result.reason });
+      }
+      return;
+    }
   });
 
   ws.on('close', () => {
@@ -390,6 +543,23 @@ setInterval(() => {
     broadcast({ type: 'statUpdate', players: released.map(serializePublic) });
     for (const player of released) {
       sendToPlayer(player.id, { type: 'released' });
+    }
+  }
+
+  const deaths = world.checkDeaths();
+  if (deaths.length > 0) {
+    broadcast({ type: 'statUpdate', players: deaths.map((d) => serializePublic(d.player)) });
+    for (const { player, spouse, heirChild } of deaths) {
+      sendToPlayer(player.id, {
+        type: 'died',
+        hasHeir: !!heirChild,
+        heirName: heirChild ? heirChild.name : null,
+        hadSpouse: !!spouse,
+      });
+      if (spouse) {
+        sendToPlayer(spouse.id, { type: 'widowed', exPartnerName: player.name });
+        broadcast({ type: 'statUpdate', players: [serializePublic(spouse)] });
+      }
     }
   }
 }, EVENT_TICK_MS);
