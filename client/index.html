@@ -165,6 +165,46 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   #loadingTitle { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
   #loadingHint { font-size: 13px; color: #9aa0ab; text-align: center; max-width: 300px; line-height: 1.5; }
+
+  #marketBtn {
+    position: fixed; top: 10px; right: 10px; z-index: 10;
+    background: rgba(0, 0, 0, 0.45); color: #e8e8e8; border: 1px solid #3a3f4b;
+    border-radius: 6px; padding: 8px 12px; font-family: system-ui, sans-serif;
+    font-size: 13px; cursor: pointer;
+  }
+  #marketPanel {
+    position: fixed; top: 50px; right: 10px; width: min(340px, 90vw);
+    max-height: 70vh; overflow-y: auto; background: #22262f; border: 1px solid #3a3f4b;
+    border-radius: 10px; padding: 14px; z-index: 15; color: #e8e8e8;
+    font-family: system-ui, sans-serif; font-size: 13px;
+  }
+  #marketPanel h4 { margin: 14px 0 8px 0; font-size: 14px; }
+  #marketPanel h4:first-child { margin-top: 0; }
+  .market-item {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    padding: 8px 0; border-bottom: 1px solid #2a2f3a;
+  }
+  .market-item:last-child { border-bottom: none; }
+  .market-item-name { font-weight: 600; }
+  .market-item-detail { color: #9aa0ab; font-size: 11px; }
+  .market-btn-small {
+    padding: 6px 10px; border-radius: 6px; border: none; background: #4a7cff;
+    color: white; cursor: pointer; font-size: 12px; white-space: nowrap;
+  }
+  .market-btn-small.danger { background: #e05a5a; }
+  .market-btn-small.ghost { background: #3a3f4b; }
+  .market-empty { color: #6a7080; font-size: 12px; padding: 4px 0; }
+  #foundCompanyRow { display: flex; gap: 6px; margin-bottom: 10px; }
+  #foundCompanyRow input {
+    flex: 1; padding: 7px 8px; border-radius: 4px; border: 1px solid #3a3f4b;
+    background: #1a1d23; color: #e8e8e8; font-size: 12px;
+  }
+  #actionToast {
+    position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+    background: #22262f; border: 1px solid #3a3f4b; color: #e8e8e8; font-size: 13px;
+    padding: 9px 16px; border-radius: 8px; z-index: 30; display: none;
+    font-family: system-ui, sans-serif;
+  }
 </style>
 </head>
 <body>
@@ -196,6 +236,24 @@
     <button id="dpadRight" class="dpad-btn">&#8594;</button>
     <button id="dpadDown" class="dpad-btn">&#8595;</button>
   </div>
+
+  <button id="marketBtn">🏦 Markt</button>
+  <div id="marketPanel" style="display:none;">
+    <h4>Immobilien</h4>
+    <div id="propertyList"></div>
+
+    <h4>Meine Firmen</h4>
+    <div id="foundCompanyRow">
+      <input id="companyNameInput" type="text" placeholder="Firmenname" maxlength="30">
+      <button class="market-btn-small" id="foundCompanyBtn">Gründen ($500)</button>
+    </div>
+    <div id="companyList"></div>
+
+    <h4>Eingehende Angebote</h4>
+    <div id="tradeList"></div>
+  </div>
+  <div id="actionToast"></div>
+
   <canvas id="gameCanvas"></canvas>
 
   <div id="debugError" style="display:none; position:fixed; bottom:10px; right:10px; max-width:80vw;
@@ -374,6 +432,166 @@
         if (remaining > 0) eventTimerHandle = requestAnimationFrame(tick);
       }
       tick();
+    }
+
+    // ---------------------------------------------------------------------
+    // Wirtschaft: Markt-Panel, Firmen, Handel
+    // ---------------------------------------------------------------------
+    const marketBtn = document.getElementById('marketBtn');
+    const marketPanel = document.getElementById('marketPanel');
+    const propertyListEl = document.getElementById('propertyList');
+    const companyListEl = document.getElementById('companyList');
+    const tradeListEl = document.getElementById('tradeList');
+    const companyNameInput = document.getElementById('companyNameInput');
+    const foundCompanyBtn = document.getElementById('foundCompanyBtn');
+    const actionToast = document.getElementById('actionToast');
+
+    let toastTimeout = null;
+    function showToast(message) {
+      actionToast.textContent = message;
+      actionToast.style.display = 'block';
+      clearTimeout(toastTimeout);
+      toastTimeout = setTimeout(() => { actionToast.style.display = 'none'; }, 3000);
+    }
+
+    marketBtn.addEventListener('click', () => {
+      const opening = marketPanel.style.display === 'none';
+      marketPanel.style.display = opening ? 'block' : 'none';
+      if (opening) renderMarketPanel();
+    });
+
+    function playerName(playerId) {
+      const p = net.players.get(playerId);
+      return p ? p.name : ('Spieler #' + playerId);
+    }
+
+    function renderMarketPanel() {
+      if (!net) return;
+
+      // Immobilien
+      propertyListEl.innerHTML = '';
+      if (net.properties.size === 0) {
+        propertyListEl.innerHTML = '<div class="market-empty">Lädt...</div>';
+      }
+      for (const prop of net.properties.values()) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+
+        const info = document.createElement('div');
+        const isMine = prop.ownerId === net.myId;
+        const ownerText = !prop.ownerId ? 'frei' : (isMine ? 'dir gehörend' : playerName(prop.ownerId) + ' gehörend');
+        info.innerHTML =
+          `<div class="market-item-name">${prop.name}</div>` +
+          `<div class="market-item-detail">$${prop.price} · +${prop.incomePerTick}/-${prop.maintenancePerTick} pro Tick · ${ownerText}</div>`;
+        row.appendChild(info);
+
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small';
+        if (!prop.ownerId) {
+          btn.textContent = 'Kaufen';
+          btn.addEventListener('click', () => net.buyProperty(prop.id));
+        } else if (isMine) {
+          btn.textContent = 'Verkaufen';
+          btn.classList.add('danger');
+          btn.addEventListener('click', () => net.sellProperty(prop.id));
+        } else {
+          btn.textContent = 'Angebot machen';
+          btn.classList.add('ghost');
+          btn.addEventListener('click', () => {
+            const price = window.prompt(`Preisangebot an ${playerName(prop.ownerId)} für "${prop.name}":`, prop.price);
+            const parsed = Number(price);
+            if (price != null && Number.isFinite(parsed) && parsed >= 0) {
+              net.proposeTrade(prop.ownerId, prop.id, parsed);
+              showToast('Angebot gesendet.');
+            }
+          });
+        }
+        row.appendChild(btn);
+        propertyListEl.appendChild(row);
+      }
+
+      // Firmen (nur eigene)
+      companyListEl.innerHTML = '';
+      const myCompanies = [...net.companies.values()].filter((c) => c.ownerId === net.myId);
+      if (myCompanies.length === 0) {
+        companyListEl.innerHTML = '<div class="market-empty">Noch keine eigene Firma.</div>';
+      }
+      for (const company of myCompanies) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = `<div class="market-item-name">${company.name}</div>`;
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small danger';
+        btn.textContent = 'Schließen';
+        btn.addEventListener('click', () => net.closeCompany(company.id));
+        row.appendChild(btn);
+        companyListEl.appendChild(row);
+      }
+
+      // Eingehende Handelsangebote
+      tradeListEl.innerHTML = '';
+      if (net.incomingTrades.size === 0) {
+        tradeListEl.innerHTML = '<div class="market-empty">Keine offenen Angebote.</div>';
+      }
+      for (const trade of net.incomingTrades.values()) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML =
+          `<div><div class="market-item-name">${trade.propertyName}</div>` +
+          `<div class="market-item-detail">Angebot von ${playerName(trade.fromPlayerId)}: $${trade.price}</div></div>`;
+        const btnGroup = document.createElement('div');
+        btnGroup.style.display = 'flex';
+        btnGroup.style.gap = '6px';
+
+        const acceptBtn = document.createElement('button');
+        acceptBtn.className = 'market-btn-small';
+        acceptBtn.textContent = 'Annehmen';
+        acceptBtn.addEventListener('click', () => { net.respondTrade(trade.tradeId, true); renderMarketPanel(); });
+
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = 'market-btn-small ghost';
+        rejectBtn.textContent = 'Ablehnen';
+        rejectBtn.addEventListener('click', () => { net.respondTrade(trade.tradeId, false); renderMarketPanel(); });
+
+        btnGroup.appendChild(acceptBtn);
+        btnGroup.appendChild(rejectBtn);
+        row.appendChild(btnGroup);
+        tradeListEl.appendChild(row);
+      }
+    }
+
+    foundCompanyBtn.addEventListener('click', () => {
+      const name = companyNameInput.value.trim() || 'Neue Firma';
+      net.foundCompany(name);
+      companyNameInput.value = '';
+    });
+
+    if (net) {
+      net.onEconomyState = () => {
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onTradeOffer = () => {
+        showToast('Neues Handelsangebot erhalten - im Markt-Menü ansehen.');
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onTradeResolved = (msg) => {
+        if (msg.timedOut) showToast('Ein Handelsangebot ist abgelaufen.');
+        else showToast(msg.accepted ? 'Handel abgeschlossen.' : 'Handel abgelehnt.');
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onActionError = (msg) => {
+        const reasons = {
+          insufficient_funds: 'Nicht genug Geld.',
+          already_owned: 'Bereits im Besitz von jemand anderem.',
+          not_owner: 'Gehört dir nicht.',
+          not_found: 'Nicht gefunden.',
+          no_longer_owned: 'Gehört dem Verkäufer nicht mehr.',
+        };
+        showToast(reasons[msg.reason] || ('Aktion fehlgeschlagen: ' + msg.reason));
+      };
+      net.onPropertyRepossessed = (msg) => {
+        showToast(`"${msg.propertyName}" wurde zwangsversteigert - Instandhaltung nicht bezahlbar.`);
+      };
     }
   </script>
 </body>
