@@ -23,7 +23,18 @@ const { serializePublic } = require('./player');
 const PORT = process.env.PORT || 3000;
 
 const app = express();
-app.use(express.static(path.join(__dirname, '..', 'client')));
+// WICHTIG: Caching bewusst komplett deaktiviert, solange aktiv am Client entwickelt
+// wird. Ohne das kann der Browser (oder ein Zwischenspeicher) veraltete JS/HTML-Dateien
+// behalten, obwohl auf GitHub/Render laengst eine neue Version liegt - das fuehrt zu
+// verwirrenden "aber ich hab doch die Datei ersetzt"-Situationen. Sobald das Spiel
+// stabiler ist, kann man hier wieder normales Caching aktivieren (bessere Ladezeiten).
+app.use(express.static(path.join(__dirname, '..', 'client'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  },
+}));
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
