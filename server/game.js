@@ -25,11 +25,31 @@ const {
   WEALTH_TAX_RATE,
   TRADE_RESPONSE_DURATION_MS,
 } = require('./economy');
+const {
+  STEAL_RANGE,
+  STEAL_COOLDOWN_MS,
+  STEAL_SUCCESS_CHANCE,
+  STEAL_MIN_PERCENT,
+  STEAL_MAX_PERCENT,
+  STEAL_MAX_AMOUNT,
+  STEAL_WANTED_ON_ATTEMPT,
+  STEAL_WANTED_ON_SUCCESS_BONUS,
+  POLICE_COUNT,
+  POLICE_CHASE_SPEED,
+  POLICE_PATROL_SPEED,
+  POLICE_CATCH_RANGE,
+  POLICE_CHASE_RANGE,
+  JAIL_DURATION_MS,
+  JAIL_POSITION,
+  WANTED_DECAY_INTERVAL_MS,
+  WANTED_DECAY_AMOUNT,
+} = require('./crime');
 
 const MAX_PLAYERS = 20;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
 const SLOW_TICK_MS = 10000; // Alterung / Wirtschaft
 const EVENT_TICK_MS = 1000; // Lebensereignisse: Ablauf pruefen, neue anbieten
+const COPS_TICK_MS = 200; // Polizei-Bewegung - eigener, fluessigerer Takt als EVENT_TICK
 const SNAPSHOT_INTERVAL_MS = 60000;
 const SNAPSHOT_PATH = path.join(__dirname, '..', 'world-snapshot.json');
 
@@ -73,6 +93,18 @@ class GameWorld {
 
     this.trades = new Map(); // id -> Handelsangebot zwischen zwei Spielern
     this.nextTradeId = 1;
+
+    // Polizei-NPCs: keine echten Spieler, einfache Verfolgungs-KI serverseitig.
+    this.cops = [];
+    for (let i = 0; i < POLICE_COUNT; i++) {
+      this.cops.push({
+        id: 'cop_' + i,
+        position: { x: 200 + i * 600, y: 1000 },
+        velocity: { x: 0, y: 0 },
+        targetPlayerId: null,
+        patrolChangeAt: 0,
+      });
+    }
   }
 
   get playerCount() {
@@ -151,6 +183,7 @@ class GameWorld {
   applyInput(id, input) {
     const player = this.players.get(id);
     if (!player || !player.connected) return;
+    if (this.isJailed(player)) return; // Gefaengnisinsassen koennen sich nicht bewegen
 
     let dx = 0;
     let dy = 0;
@@ -180,6 +213,15 @@ class GameWorld {
     const dtSec = dtMs / 1000;
     for (const player of this.players.values()) {
       if (!player.connected) continue;
+      if (this.isJailed(player)) {
+        // Fest an der Gefaengnis-Position halten, falls die Bewegung mitten im
+        // Verhaften noch einen Rest-Impuls hatte.
+        player.position.x = JAIL_POSITION.x;
+        player.position.y = JAIL_POSITION.y;
+        player.velocity.x = 0;
+        player.velocity.y = 0;
+        continue;
+      }
       player.position.x += player.velocity.x * dtSec;
       player.position.y += player.velocity.y * dtSec;
       player.position.x = Math.max(0, Math.min(WORLD_WIDTH, player.position.x));
@@ -530,6 +572,146 @@ class GameWorld {
     }
     return expired;
   }
+
+  // ---------------------------------------------------------------------
+  // KRIMINALITÄT: Diebstahl, Polizei-KI, Gefängnis, Fahndungslevel
+  // ---------------------------------------------------------------------
+
+  isJailed(player) {
+    return player.jailedUntil != null && player.jailedUntil > Date.now();
+  }
+
+  buildCopsState() {
+    return this.cops.map((cop) => ({ id: cop.id, x: cop.position.x, y: cop.position.y }));
+  }
+
+  /**
+   * Versucht, einem anderen Spieler in Reichweite Bargeld zu stehlen.
+   * Server prueft ALLES selbst - Entfernung, Cooldown, Erfolgschance - der
+   * Client kann hier nichts vortaeuschen.
+   */
+  attemptSteal(thiefId, victimId) {
+    const thief = this.players.get(thiefId);
+    const victim = this.players.get(victimId);
+    if (!thief || !victim || thiefId === victimId) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(thief)) return { ok: false, reason: 'jailed' };
+    if (this.isJailed(victim)) return { ok: false, reason: 'victim_jailed' };
+
+    const now = Date.now();
+    if (now - thief.lastStealAttemptAt < STEAL_COOLDOWN_MS) {
+      return { ok: false, reason: 'cooldown' };
+    }
+
+    const dist = Math.hypot(thief.position.x - victim.position.x, thief.position.y - victim.position.y);
+    if (dist > STEAL_RANGE) return { ok: false, reason: 'too_far' };
+
+    thief.lastStealAttemptAt = now;
+    thief.lastCrimeAt = now;
+    thief.wanted += STEAL_WANTED_ON_ATTEMPT;
+
+    const success = Math.random() < STEAL_SUCCESS_CHANCE;
+    if (!success) {
+      return { ok: true, success: false, thief, victim };
+    }
+
+    const percent = STEAL_MIN_PERCENT + Math.random() * (STEAL_MAX_PERCENT - STEAL_MIN_PERCENT);
+    const amount = Math.min(STEAL_MAX_AMOUNT, Math.round(victim.cash * percent));
+    victim.cash = Math.max(0, victim.cash - amount);
+    thief.cash += amount;
+    thief.wanted += STEAL_WANTED_ON_SUCCESS_BONUS;
+
+    return { ok: true, success: true, amount, thief, victim };
+  }
+
+  /**
+   * EVENT_TICK: bewegt Polizei-NPCs. Gesuchte Spieler in Sichtweite werden
+   * verfolgt, sonst patrouilliert die Polizei ziellos. Wird ein gesuchter
+   * Spieler eingeholt, geht es direkt ins Gefaengnis.
+   * @returns {Array} frisch verhaftete Spieler, fuer Benachrichtigungen
+   */
+  updateCops(dtMs) {
+    const dtSec = dtMs / 1000;
+    const now = Date.now();
+    const arrests = [];
+
+    const wantedPlayers = [...this.players.values()].filter(
+      (p) => p.connected && p.wanted > 0 && !this.isJailed(p)
+    );
+
+    for (const cop of this.cops) {
+      let target = null;
+      let bestDist = Infinity;
+      for (const player of wantedPlayers) {
+        const dist = Math.hypot(cop.position.x - player.position.x, cop.position.y - player.position.y);
+        if (dist <= POLICE_CHASE_RANGE && dist < bestDist) {
+          bestDist = dist;
+          target = player;
+        }
+      }
+
+      if (target) {
+        cop.targetPlayerId = target.id;
+        const dx = target.position.x - cop.position.x;
+        const dy = target.position.y - cop.position.y;
+        const len = Math.hypot(dx, dy) || 1;
+        cop.velocity.x = (dx / len) * POLICE_CHASE_SPEED;
+        cop.velocity.y = (dy / len) * POLICE_CHASE_SPEED;
+
+        if (bestDist <= POLICE_CATCH_RANGE) {
+          target.jailedUntil = now + JAIL_DURATION_MS;
+          target.wanted = 0;
+          target.position.x = JAIL_POSITION.x;
+          target.position.y = JAIL_POSITION.y;
+          target.velocity.x = 0;
+          target.velocity.y = 0;
+          cop.targetPlayerId = null;
+          cop.velocity.x = 0;
+          cop.velocity.y = 0;
+          arrests.push(target);
+        }
+      } else {
+        cop.targetPlayerId = null;
+        if (now > cop.patrolChangeAt) {
+          const angle = Math.random() * Math.PI * 2;
+          cop.velocity.x = Math.cos(angle) * POLICE_PATROL_SPEED;
+          cop.velocity.y = Math.sin(angle) * POLICE_PATROL_SPEED;
+          cop.patrolChangeAt = now + 2000 + Math.random() * 3000;
+        }
+      }
+
+      cop.position.x = Math.max(0, Math.min(WORLD_WIDTH, cop.position.x + cop.velocity.x * dtSec));
+      cop.position.y = Math.max(0, Math.min(WORLD_HEIGHT, cop.position.y + cop.velocity.y * dtSec));
+    }
+
+    return arrests;
+  }
+
+  /** Entlaesst Spieler, deren Haftzeit abgelaufen ist. */
+  checkJailReleases() {
+    const now = Date.now();
+    const released = [];
+    for (const player of this.players.values()) {
+      if (player.jailedUntil != null && player.jailedUntil <= now) {
+        player.jailedUntil = null;
+        player.position.x = WORLD_WIDTH / 2;
+        player.position.y = WORLD_HEIGHT / 2;
+        released.push(player);
+      }
+    }
+    return released;
+  }
+
+  /** Fahndungslevel sinkt langsam, wenn eine Weile keine neue Straftat begangen wurde. */
+  decayWanted() {
+    const now = Date.now();
+    for (const player of this.players.values()) {
+      if (!player.connected || player.wanted <= 0) continue;
+      if (now - player.lastCrimeAt >= WANTED_DECAY_INTERVAL_MS) {
+        player.wanted = Math.max(0, player.wanted - WANTED_DECAY_AMOUNT);
+        player.lastCrimeAt = now; // Timer neu starten fuer die naechste Abklingstufe
+      }
+    }
+  }
 }
 
 module.exports = {
@@ -538,6 +720,7 @@ module.exports = {
   FAST_TICK_MS,
   SLOW_TICK_MS,
   EVENT_TICK_MS,
+  COPS_TICK_MS,
   SNAPSHOT_INTERVAL_MS,
   SNAPSHOT_PATH,
   PLAYER_SPEED,
