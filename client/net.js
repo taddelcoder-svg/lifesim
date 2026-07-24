@@ -1,421 +1,314 @@
 'use strict';
 
-// server/index.js
-// Einstiegspunkt: HTTP-Server (statischer Client) + WebSocket-Server,
-// verdrahtet Lobby, fastTick (Bewegung), slowTick (Alterung) und Snapshots.
+// client/render.js
+// 3D-Darstellung mit Three.js. Der Server kennt weiterhin nur x/y auf einer
+// flachen Bodenebene (unveraendert seit Phase 1) - hier wird daraus eine
+// begehbare 3D-Welt mit Kamera hinter der Figur (GTA-Stil).
+//
+// WICHTIG: Three.js Version bewusst auf r128 gepinnt (klassisches <script>-Tag,
+// globales THREE-Objekt). Neuere Versionen verlangen ES-Module + Importmap,
+// was den ganzen Datei-Aufbau dieses Projekts aendern wuerde. Deshalb KEIN
+// THREE.CapsuleGeometry (erst ab r142) - Figuren bestehen aus Zylinder + Kugel.
 
-const path = require('path');
-const fs = require('fs');
-const http = require('http');
-const express = require('express');
-const WebSocket = require('ws');
+// HINWEIS ZUR LADEREIHENFOLGE: net.js wird VOR dieser Datei geladen und definiert
+// bereits global WORLD_WIDTH / WORLD_HEIGHT / PLAYER_SPEED. Diese Namen duerfen hier
+// NICHT erneut mit const deklariert werden - das wuerde einen "already been declared"-
+// Fehler ausloesen, der das gesamte Laden dieser Datei abbricht (Renderer waere dann
+// undefiniert). Deshalb werden die Werte aus net.js hier einfach mitbenutzt.
 
-const {
-  GameWorld,
-  FAST_TICK_MS,
-  SLOW_TICK_MS,
-  EVENT_TICK_MS,
-  COPS_TICK_MS,
-  SNAPSHOT_INTERVAL_MS,
-  SNAPSHOT_PATH,
-} = require('./game');
-const { serializePublic } = require('./player');
+const WORLD_SCALE = 0.05;  // 1 Server-Einheit * 0.05 = 1 3D-Einheit (menschliche Groessenordnung)
+const WORLD_SIZE_3D = WORLD_WIDTH * WORLD_SCALE;
 
-const PORT = process.env.PORT || 3000;
+const CHARACTER_RADIUS = 0.35;
+const CHARACTER_BODY_HEIGHT = 1.0;
+const CHARACTER_HEAD_RADIUS = 0.28;
 
-const app = express();
-// WICHTIG: Caching bewusst komplett deaktiviert, solange aktiv am Client entwickelt
-// wird. Ohne das kann der Browser (oder ein Zwischenspeicher) veraltete JS/HTML-Dateien
-// behalten, obwohl auf GitHub/Render laengst eine neue Version liegt - das fuehrt zu
-// verwirrenden "aber ich hab doch die Datei ersetzt"-Situationen. Sobald das Spiel
-// stabiler ist, kann man hier wieder normales Caching aktivieren (bessere Ladezeiten).
-app.use(express.static(path.join(__dirname, '..', 'client'), {
-  etag: false,
-  lastModified: false,
-  setHeaders: (res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  },
-}));
+const CAMERA_DISTANCE = 6;
+const CAMERA_HEIGHT = 3;
+const CAMERA_LOOK_HEIGHT = 1.3;
+const CAMERA_SMOOTH = 0.12; // 0..1 - hoeher = Kamera folgt schneller/ruckartiger
 
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const FACING_MIN_SPEED = 1; // px/s, darunter wird die letzte Blickrichtung beibehalten (kein Zittern im Stand)
 
-const world = new GameWorld();
-const playerConnections = new Map(); // playerId -> ws, fuer gezielte Nachrichten (z.B. Event-Angebote)
+class Renderer {
+  constructor(canvas, net) {
+    this.net = net;
+    this.lastFrame = performance.now();
+    this.running = false;
+    this.hud = document.getElementById('hud');
 
-function send(ws, msg) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x1a1d23);
+    this.scene.fog = new THREE.Fog(0x1a1d23, 20, 70);
+
+    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 300);
+    this.camera.position.set(WORLD_SIZE_3D / 2, CAMERA_HEIGHT, WORLD_SIZE_3D / 2 + CAMERA_DISTANCE);
+
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+
+    this.entities = new Map();  // playerId -> { group, headMat, bodyMat, label, lastLabelText }
+    this.copEntities = new Map(); // copId -> { group }
+    this.facingById = new Map(); // playerId -> Bogenmass, Blickrichtung bei Stillstand beibehalten
+
+    this.smoothedCamPos = this.camera.position.clone();
+    this.smoothedCamTarget = new THREE.Vector3(WORLD_SIZE_3D / 2, CAMERA_LOOK_HEIGHT, WORLD_SIZE_3D / 2);
+
+    this.buildStaticScene();
+    window.addEventListener('resize', () => this.onResize());
+  }
+
+  buildStaticScene() {
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    this.scene.add(ambient);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 0.75);
+    sun.position.set(WORLD_SIZE_3D * 0.3, 40, WORLD_SIZE_3D * 0.2);
+    this.scene.add(sun);
+
+    const groundGeo = new THREE.PlaneGeometry(WORLD_SIZE_3D, WORLD_SIZE_3D);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x21252d });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(WORLD_SIZE_3D / 2, 0, WORLD_SIZE_3D / 2);
+    this.scene.add(ground);
+
+    const grid = new THREE.GridHelper(WORLD_SIZE_3D, Math.round(WORLD_SIZE_3D / 5), 0x3a3f4b, 0x2a2f3a);
+    grid.position.set(WORLD_SIZE_3D / 2, 0.01, WORLD_SIZE_3D / 2); // minimal ueber dem Boden gegen Flackern
+    this.scene.add(grid);
+  }
+
+  onResize() {
+    this.camera.aspect = window.innerWidth / window.innerHeight;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  start() {
+    this.running = true;
+    this.lastFrame = performance.now();
+    requestAnimationFrame((t) => this.loop(t));
+  }
+
+  loop(now) {
+    if (!this.running) return;
+    const dt = now - this.lastFrame;
+    this.lastFrame = now;
+
+    this.net.update(dt);
+    this.syncEntities();
+    this.updateCamera();
+    this.renderer.render(this.scene, this.camera);
+    this.updateHud();
+
+    requestAnimationFrame((t) => this.loop(t));
+  }
+
+  /** Baut eine Spielfigur aus Grundformen: Zylinder (Koerper) + Kugel (Kopf) + Kegel (Blickrichtung). */
+  createEntity(isSelf) {
+    const group = new THREE.Group();
+    const bodyColor = isSelf ? 0x4a7cff : 0xe05a5a;
+    const headColor = isSelf ? 0x6f97ff : 0xe98080;
+
+    const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: bodyColor });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = CHARACTER_BODY_HEIGHT / 2;
+    group.add(body);
+
+    const headGeo = new THREE.SphereGeometry(CHARACTER_HEAD_RADIUS, 14, 10);
+    const headMat = new THREE.MeshStandardMaterial({ color: headColor });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS;
+    group.add(head);
+
+    // Kegel als "Nase" - liegt auf lokaler +Z-Achse und zeigt so die Blickrichtung der Figur
+    const noseGeo = new THREE.ConeGeometry(0.1, 0.22, 8);
+    const noseMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const nose = new THREE.Mesh(noseGeo, noseMat);
+    nose.rotation.x = Math.PI / 2;
+    nose.position.set(0, CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS, CHARACTER_HEAD_RADIUS + 0.1);
+    group.add(nose);
+
+    const label = this.createLabelSprite('');
+    label.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS * 2 + 0.4;
+    group.add(label);
+
+    this.scene.add(group);
+    return { group, label, lastLabelText: '', bodyMat, headMat, isJailedVisual: false };
+  }
+
+  createLabelSprite(text) {
+    const canvasEl = document.createElement('canvas');
+    canvasEl.width = 256;
+    canvasEl.height = 64;
+
+    // WICHTIG (Safari): Erst auf die Zeichenflaeche malen, DANN als Textur registrieren.
+    // Umgekehrt wirft Safari einen InvalidStateError, weil eine noch komplett leere
+    // Zeichenflaeche nicht als gueltige Bildquelle akzeptiert wird.
+    this.paintCanvasText(canvasEl, text || ' ');
+
+    const texture = new THREE.CanvasTexture(canvasEl);
+    const material = new THREE.SpriteMaterial({ map: texture, depthTest: false });
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(2.2, 0.55, 1);
+    sprite.userData.canvasEl = canvasEl;
+    sprite.userData.texture = texture;
+    return sprite;
+  }
+
+  /** Malt Text auf eine Zeichenflaeche - getrennt, damit es auch VOR der Texturerstellung nutzbar ist. */
+  paintCanvasText(canvasEl, text) {
+    const ctx = canvasEl.getContext('2d');
+    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    ctx.fillStyle = '#e8e8e8';
+    ctx.font = '28px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, canvasEl.width / 2, canvasEl.height / 2);
+  }
+
+  paintLabelSprite(sprite, text) {
+    this.paintCanvasText(sprite.userData.canvasEl, text);
+    sprite.userData.texture.needsUpdate = true;
+  }
+
+  getOrCreateEntity(id, isSelf) {
+    let entry = this.entities.get(id);
+    if (!entry) {
+      entry = this.createEntity(isSelf);
+      this.entities.set(id, entry);
+    }
+    return entry;
+  }
+
+  removeEntity(id) {
+    const entry = this.entities.get(id);
+    if (!entry) return;
+    this.scene.remove(entry.group);
+    this.entities.delete(id);
+    this.facingById.delete(id);
+  }
+
+  /** Ueberschreibt Position/Blickrichtung/Label aller sichtbaren Spieler anhand des Netzwerk-State. */
+  syncEntities() {
+    const seen = new Set();
+    const now = Date.now();
+
+    for (const p of this.net.players.values()) {
+      if (p.connected === false) continue;
+      seen.add(p.id);
+
+      const isSelf = p.id === this.net.myId;
+      const entry = this.getOrCreateEntity(p.id, isSelf);
+
+      entry.group.position.x = p.x * WORLD_SCALE;
+      entry.group.position.z = p.y * WORLD_SCALE;
+
+      const speed = Math.hypot(p.vx || 0, p.vy || 0);
+      if (speed > FACING_MIN_SPEED) {
+        this.facingById.set(p.id, Math.atan2(p.vx, p.vy));
+      }
+      entry.group.rotation.y = this.facingById.get(p.id) || 0;
+
+      // Im Gefaengnis: Figur graeulich einfaerben, damit der Status auch optisch erkennbar ist
+      const isJailed = p.jailedUntil != null && p.jailedUntil > now;
+      if (isJailed !== entry.isJailedVisual) {
+        entry.bodyMat.color.set(isJailed ? 0x5a6270 : (isSelf ? 0x4a7cff : 0xe05a5a));
+        entry.headMat.color.set(isJailed ? 0x7a8090 : (isSelf ? 0x6f97ff : 0xe98080));
+        entry.isJailedVisual = isJailed;
+      }
+
+      const labelText = isJailed ? `${p.name} (im Gefängnis)` : `${p.name} (${p.age})`;
+      if (entry.lastLabelText !== labelText) {
+        this.paintLabelSprite(entry.label, labelText);
+        entry.lastLabelText = labelText;
+      }
+    }
+
+    for (const id of [...this.entities.keys()]) {
+      if (!seen.has(id)) this.removeEntity(id);
+    }
+
+    this.syncCops();
+  }
+
+  /** Erstellt eine Polizeifigur - gleiche Grundform, andere Farbe, eigenes Label. */
+  createCopEntity() {
+    const group = new THREE.Group();
+
+    const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a3a6e });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = CHARACTER_BODY_HEIGHT / 2;
+    group.add(body);
+
+    const headGeo = new THREE.SphereGeometry(CHARACTER_HEAD_RADIUS, 14, 10);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0x1f2a52 });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS;
+    group.add(head);
+
+    const label = this.createLabelSprite('Polizei');
+    label.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS * 2 + 0.4;
+    group.add(label);
+
+    this.scene.add(group);
+    return { group };
+  }
+
+  /** Positioniert die Polizei-NPCs anhand des zuletzt empfangenen copsState. */
+  syncCops() {
+    const seen = new Set();
+    for (const cop of this.net.cops.values()) {
+      seen.add(cop.id);
+      let entry = this.copEntities.get(cop.id);
+      if (!entry) {
+        entry = this.createCopEntity();
+        this.copEntities.set(cop.id, entry);
+      }
+      entry.group.position.x = cop.x * WORLD_SCALE;
+      entry.group.position.z = cop.y * WORLD_SCALE;
+    }
+    for (const [id, entry] of this.copEntities) {
+      if (!seen.has(id)) {
+        this.scene.remove(entry.group);
+        this.copEntities.delete(id);
+      }
+    }
+  }
+
+  /** Kamera folgt sanft hinter der Blickrichtung der eigenen Figur (GTA-Stil). */
+  updateCamera() {
+    const me = this.entities.get(this.net.myId);
+    if (!me) return;
+
+    const facing = this.facingById.get(this.net.myId) || 0;
+    const dirX = Math.sin(facing);
+    const dirZ = Math.cos(facing);
+
+    const targetCamPos = new THREE.Vector3(
+      me.group.position.x - dirX * CAMERA_DISTANCE,
+      CAMERA_HEIGHT,
+      me.group.position.z - dirZ * CAMERA_DISTANCE
+    );
+    const targetLook = new THREE.Vector3(me.group.position.x, CAMERA_LOOK_HEIGHT, me.group.position.z);
+
+    this.smoothedCamPos.lerp(targetCamPos, CAMERA_SMOOTH);
+    this.smoothedCamTarget.lerp(targetLook, CAMERA_SMOOTH);
+
+    this.camera.position.copy(this.smoothedCamPos);
+    this.camera.lookAt(this.smoothedCamTarget);
+  }
+
+  updateHud() {
+    const me = this.net.localPlayer;
+    if (!me) return;
+    const online = [...this.net.players.values()].filter((p) => p.connected !== false).length;
+    const wantedText = me.wanted > 0 ? ` &nbsp;|&nbsp; Gesucht: ${'⭐'.repeat(Math.min(me.wanted, 5))}` : '';
+    this.hud.innerHTML =
+      `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}${wantedText}<br>` +
+      `Spieler online: ${online} / 20 &nbsp;|&nbsp; Steuerung: WASD`;
   }
 }
-
-function sendToPlayer(playerId, msg) {
-  send(playerConnections.get(playerId), msg);
-}
-
-function buildEventOfferMessage(instance) {
-  return {
-    type: 'eventOffer',
-    instanceId: instance.instanceId,
-    title: instance.title,
-    text: instance.text,
-    choices: instance.choices,
-    expiresAt: instance.expiresAt,
-  };
-}
-
-function buildEconomyStateMessage() {
-  return {
-    type: 'economyState',
-    properties: world.buildPropertiesState(),
-    companies: world.buildCompaniesState(),
-  };
-}
-
-function buildTradeOfferMessage(trade) {
-  const property = world.properties.get(trade.propertyId);
-  return {
-    type: 'tradeOffer',
-    tradeId: trade.id,
-    fromPlayerId: trade.fromPlayerId,
-    propertyId: trade.propertyId,
-    propertyName: property ? property.name : 'Unbekannte Immobilie',
-    price: trade.price,
-    expiresAt: trade.expiresAt,
-  };
-}
-
-function broadcast(msg, exceptWs) {
-  const data = JSON.stringify(msg);
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN && client !== exceptWs) {
-      client.send(data);
-    }
-  }
-}
-
-wss.on('connection', (ws) => {
-  ws.playerId = null;
-  ws.isAlive = true;
-
-  ws.on('pong', () => {
-    ws.isAlive = true;
-  });
-
-  ws.on('message', (raw) => {
-    let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch (err) {
-      return; // ungültige Nachricht ignorieren, nie crashen
-    }
-
-    if (msg.type === 'join') {
-      const result = world.joinPlayer(msg.name, msg.token, ws);
-      if (result.error) {
-        send(ws, { type: 'joinError', reason: result.error });
-        return;
-      }
-      ws.playerId = result.player.id;
-      playerConnections.set(result.player.id, ws);
-      send(ws, {
-        type: 'welcome',
-        id: result.player.id,
-        token: result.player.token,
-        reconnected: result.reconnected,
-        players: world.buildFullPublicState(),
-      });
-      if (result.reconnected && result.player.activeEvent) {
-        // Spieler hatte beim Verbindungsabbruch noch ein offenes Ereignis - erneut zustellen
-        send(ws, buildEventOfferMessage(result.player.activeEvent));
-      }
-      send(ws, buildEconomyStateMessage()); // aktueller Immobilienmarkt + Firmenliste sofort sichtbar
-      send(ws, { type: 'copsState', cops: world.buildCopsState() });
-      broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
-      console.log(
-        `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
-      );
-      return;
-    }
-
-    if (msg.type === 'input' && ws.playerId != null) {
-      world.applyInput(ws.playerId, msg);
-      return;
-    }
-
-    if (msg.type === 'eventChoice' && ws.playerId != null) {
-      const result = world.applyEventChoice(ws.playerId, msg.instanceId, msg.choiceIndex);
-      if (result.ok) {
-        sendToPlayer(ws.playerId, {
-          type: 'eventResolved',
-          instanceId: result.instanceId,
-          choiceLabel: result.choiceLabel,
-          effects: result.effects,
-          timedOut: false,
-        });
-        const player = world.players.get(ws.playerId);
-        if (player) broadcast({ type: 'statUpdate', players: [serializePublic(player)] });
-
-        // Sofort naechstes Event nachruecken, statt auf den naechsten EVENT_TICK zu warten
-        const promoted = world.promoteQueuedEvents();
-        for (const { player: p, instance } of promoted) {
-          sendToPlayer(p.id, buildEventOfferMessage(instance));
-        }
-      }
-      return;
-    }
-
-    if (msg.type === 'ping') {
-      send(ws, { type: 'pong', t: msg.t });
-    }
-
-    // --- Wirtschaft: Immobilien, Firmen, Handel ---
-
-    if (msg.type === 'buyProperty' && ws.playerId != null) {
-      const result = world.buyProperty(ws.playerId, msg.propertyId);
-      if (result.ok) {
-        broadcast(buildEconomyStateMessage());
-        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
-      } else {
-        send(ws, { type: 'actionError', action: 'buyProperty', reason: result.reason });
-      }
-      return;
-    }
-
-    if (msg.type === 'sellProperty' && ws.playerId != null) {
-      const result = world.sellPropertyToBank(ws.playerId, msg.propertyId);
-      if (result.ok) {
-        broadcast(buildEconomyStateMessage());
-        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
-      } else {
-        send(ws, { type: 'actionError', action: 'sellProperty', reason: result.reason });
-      }
-      return;
-    }
-
-    if (msg.type === 'foundCompany' && ws.playerId != null) {
-      const result = world.foundCompany(ws.playerId, msg.name);
-      if (result.ok) {
-        broadcast(buildEconomyStateMessage());
-        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
-      } else {
-        send(ws, { type: 'actionError', action: 'foundCompany', reason: result.reason });
-      }
-      return;
-    }
-
-    if (msg.type === 'closeCompany' && ws.playerId != null) {
-      const result = world.closeCompany(ws.playerId, msg.companyId);
-      if (result.ok) {
-        broadcast(buildEconomyStateMessage());
-        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
-      } else {
-        send(ws, { type: 'actionError', action: 'closeCompany', reason: result.reason });
-      }
-      return;
-    }
-
-    if (msg.type === 'proposeTrade' && ws.playerId != null) {
-      const result = world.proposeTrade(ws.playerId, msg.toPlayerId, msg.propertyId, msg.price);
-      if (result.ok) {
-        sendToPlayer(msg.toPlayerId, buildTradeOfferMessage(result.trade));
-        send(ws, { type: 'tradeSent', tradeId: result.trade.id });
-      } else {
-        send(ws, { type: 'actionError', action: 'proposeTrade', reason: result.reason });
-      }
-      return;
-    }
-
-    if (msg.type === 'respondTrade' && ws.playerId != null) {
-      const result = world.respondTrade(ws.playerId, msg.tradeId, !!msg.accept);
-      if (result.ok) {
-        const buyerId = result.trade.toPlayerId;
-        const sellerId = result.trade.fromPlayerId;
-        const resolvedMsg = {
-          type: 'tradeResolved',
-          tradeId: result.trade.id,
-          accepted: result.accepted,
-          propertyId: result.trade.propertyId,
-          price: result.trade.price,
-        };
-        sendToPlayer(buyerId, resolvedMsg);
-        sendToPlayer(sellerId, resolvedMsg);
-        if (result.accepted) {
-          broadcast(buildEconomyStateMessage());
-          const buyer = world.players.get(buyerId);
-          const seller = world.players.get(sellerId);
-          const updated = [buyer, seller].filter(Boolean).map(serializePublic);
-          if (updated.length > 0) broadcast({ type: 'statUpdate', players: updated });
-        }
-      } else {
-        send(ws, { type: 'actionError', action: 'respondTrade', reason: result.reason });
-      }
-      return;
-    }
-
-    // --- Kriminalität: Diebstahl ---
-
-    if (msg.type === 'stealAttempt' && ws.playerId != null) {
-      const result = world.attemptSteal(ws.playerId, msg.targetPlayerId);
-      if (result.ok) {
-        sendToPlayer(result.thief.id, {
-          type: 'stealResult',
-          success: result.success,
-          amount: result.amount || 0,
-        });
-        if (result.success) {
-          sendToPlayer(result.victim.id, {
-            type: 'stolenFrom',
-            thiefName: result.thief.name,
-            amount: result.amount,
-          });
-        }
-        const updated = [result.thief, result.victim].map(serializePublic);
-        broadcast({ type: 'statUpdate', players: updated });
-      } else {
-        send(ws, { type: 'actionError', action: 'stealAttempt', reason: result.reason });
-      }
-      return;
-    }
-  });
-
-  ws.on('close', () => {
-    if (ws.playerId != null) {
-      world.disconnectPlayer(ws.playerId);
-      playerConnections.delete(ws.playerId);
-      broadcast({ type: 'playerDisconnected', id: ws.playerId });
-      console.log(`Disconnect: #${ws.playerId} - ${world.playerCount} online`);
-    }
-  });
-
-  ws.on('error', () => {
-    // Verbindungsfehler werden über 'close' abgewickelt
-  });
-});
-
-// Tote Verbindungen erkennen (z.B. Netzwerkabbruch ohne sauberes close-Event)
-setInterval(() => {
-  for (const client of wss.clients) {
-    if (client.isAlive === false) {
-      client.terminate();
-      continue;
-    }
-    client.isAlive = false;
-    client.ping();
-  }
-}, 30000);
-
-// fastTick: Positionen fortschreiben + Bewegungs-Delta an alle senden
-let lastFastTick = Date.now();
-setInterval(() => {
-  const now = Date.now();
-  const dt = now - lastFastTick;
-  lastFastTick = now;
-
-  world.stepPositions(dt);
-  const deltas = world.buildMovementDeltas();
-  if (deltas.length > 0) {
-    broadcast({ type: 'delta', players: deltas });
-  }
-}, FAST_TICK_MS);
-
-// slowTick: individuelle Lebensuhr weiterlaufen lassen, plus Wirtschaft (Phase 3):
-// Immobilien- und Firmen-Einnahmen abzueglich Instandhaltung/Unterhalt einziehen.
-let lastSlowTick = Date.now();
-setInterval(() => {
-  const now = Date.now();
-  const dt = now - lastSlowTick;
-  lastSlowTick = now;
-
-  world.ageConnectedPlayers(dt);
-  world.removeStalePlayers();
-
-  const repossessed = world.collectEconomyIncome();
-  world.applyWealthTax();
-  if (repossessed.length > 0) {
-    broadcast(buildEconomyStateMessage());
-    for (const { asset, player } of repossessed) {
-      sendToPlayer(player.id, {
-        type: 'propertyRepossessed',
-        propertyId: asset.id,
-        propertyName: asset.name,
-      });
-    }
-  }
-
-  broadcast({ type: 'statUpdate', players: world.buildFullPublicState() });
-}, SLOW_TICK_MS);
-
-// EVENT_TICK: neue Lebensereignisse auswürfeln, abgelaufene mit Standardwahl auflösen,
-// naechstes aus der Warteschlange nachruecken - eigener, schnellerer Takt als slowTick,
-// damit Countdown-Anzeigen im Client nicht spuerbar nachhinken.
-setInterval(() => {
-  world.rollEventsForConnectedPlayers();
-
-  const expired = world.checkExpiredEvents();
-  for (const { player, instance, choiceLabel, effects } of expired) {
-    sendToPlayer(player.id, {
-      type: 'eventResolved',
-      instanceId: instance.instanceId,
-      choiceLabel,
-      effects,
-      timedOut: true,
-    });
-    broadcast({ type: 'statUpdate', players: [serializePublic(player)] });
-  }
-
-  const promoted = world.promoteQueuedEvents();
-  for (const { player, instance } of promoted) {
-    sendToPlayer(player.id, buildEventOfferMessage(instance));
-  }
-
-  const expiredTrades = world.checkExpiredTrades();
-  for (const trade of expiredTrades) {
-    const msg = {
-      type: 'tradeResolved',
-      tradeId: trade.id,
-      accepted: false,
-      timedOut: true,
-      propertyId: trade.propertyId,
-      price: trade.price,
-    };
-    sendToPlayer(trade.toPlayerId, msg);
-    sendToPlayer(trade.fromPlayerId, msg);
-  }
-
-  world.decayWanted();
-
-  const released = world.checkJailReleases();
-  if (released.length > 0) {
-    broadcast({ type: 'statUpdate', players: released.map(serializePublic) });
-    for (const player of released) {
-      sendToPlayer(player.id, { type: 'released' });
-    }
-  }
-}, EVENT_TICK_MS);
-
-// COPS_TICK: Polizei-NPCs bewegen sich in eigenem, fluessigerem Takt.
-setInterval(() => {
-  const arrests = world.updateCops(COPS_TICK_MS);
-  broadcast({ type: 'copsState', cops: world.buildCopsState() });
-  if (arrests.length > 0) {
-    broadcast({ type: 'statUpdate', players: arrests.map(serializePublic) });
-    for (const player of arrests) {
-      sendToPlayer(player.id, { type: 'jailed', until: player.jailedUntil });
-    }
-  }
-}, COPS_TICK_MS);
-
-// Snapshot: In-Memory-State periodisch auf Disk sichern (einfache Persistenz für Phase 1)
-setInterval(() => {
-  try {
-    const data = world.buildFullPublicState();
-    fs.writeFileSync(SNAPSHOT_PATH, JSON.stringify(data, null, 2));
-  } catch (err) {
-    console.error('Snapshot fehlgeschlagen:', err.message);
-  }
-}, SNAPSHOT_INTERVAL_MS);
-
-server.listen(PORT, () => {
-  console.log(`Server läuft auf http://localhost:${PORT}`);
-});
