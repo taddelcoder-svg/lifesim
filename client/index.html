@@ -220,6 +220,40 @@
   }
   #jailOverlay h2 { margin: 0 0 10px 0; }
   #jailOverlay p { color: #9aa0ab; max-width: 300px; }
+
+  #socialBtn {
+    position: fixed; top: 10px; right: 100px; z-index: 10;
+    background: rgba(0, 0, 0, 0.45); color: #e8e8e8; border: 1px solid #3a3f4b;
+    border-radius: 6px; padding: 8px 12px; font-family: system-ui, sans-serif;
+    font-size: 13px; cursor: pointer;
+  }
+  #socialPanel {
+    position: fixed; top: 50px; right: 10px; width: min(340px, 90vw);
+    max-height: 75vh; overflow-y: auto; background: #22262f; border: 1px solid #3a3f4b;
+    border-radius: 10px; padding: 14px; z-index: 15; color: #e8e8e8;
+    font-family: system-ui, sans-serif; font-size: 13px;
+  }
+  #socialPanel h4 { margin: 14px 0 8px 0; font-size: 14px; }
+  #socialPanel h4:first-child { margin-top: 0; }
+  #socialTabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .social-tab {
+    flex: 1; padding: 7px; text-align: center; border-radius: 6px; cursor: pointer;
+    background: #1a1d23; color: #9aa0ab; font-size: 12px;
+  }
+  .social-tab.active { background: #4a7cff; color: white; }
+  .social-section { display: none; }
+  .social-section.active { display: block; }
+  #chatMessages { max-height: 260px; overflow-y: auto; margin-bottom: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .chat-line { font-size: 12px; line-height: 1.4; }
+  .chat-line .chat-name { font-weight: 600; color: #8fa8ff; }
+  #chatInputRow { display: flex; gap: 6px; }
+  #chatInput {
+    flex: 1; padding: 7px 8px; border-radius: 4px; border: 1px solid #3a3f4b;
+    background: #1a1d23; color: #e8e8e8; font-size: 12px;
+  }
+  .leaderboard-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #2a2f3a; }
+  .leaderboard-row:last-child { border-bottom: none; }
+  .leaderboard-rank { color: #6a7080; width: 22px; }
 </style>
 </head>
 <body>
@@ -253,6 +287,37 @@
   </div>
 
   <button id="marketBtn">🏦 Markt</button>
+  <button id="socialBtn">👥 Sozial</button>
+  <div id="socialPanel" style="display:none;">
+    <div id="socialTabs">
+      <div class="social-tab active" data-section="chatSection">Chat</div>
+      <div class="social-tab" data-section="friendsSection">Freunde</div>
+      <div class="social-tab" data-section="leaderboardSection">Rangliste</div>
+    </div>
+
+    <div id="chatSection" class="social-section active">
+      <div id="chatMessages"></div>
+      <div id="chatInputRow">
+        <input id="chatInput" type="text" placeholder="Nachricht..." maxlength="200">
+        <button class="market-btn-small" id="chatSendBtn">Senden</button>
+      </div>
+    </div>
+
+    <div id="friendsSection" class="social-section">
+      <h4>Anfragen</h4>
+      <div id="friendRequestList"></div>
+      <h4>Online-Spieler</h4>
+      <div id="onlinePlayerList"></div>
+    </div>
+
+    <div id="leaderboardSection" class="social-section">
+      <h4>💰 Reichste Spieler</h4>
+      <div id="richestList"></div>
+      <h4>🚔 Meistgesucht</h4>
+      <div id="mostWantedList"></div>
+    </div>
+  </div>
+
   <div id="marketPanel" style="display:none;">
     <h4>Immobilien</h4>
     <div id="propertyList"></div>
@@ -652,6 +717,147 @@
       const isJailed = net.localPlayer.jailedUntil != null && net.localPlayer.jailedUntil > Date.now();
       jailOverlay.style.display = isJailed ? 'flex' : 'none';
     }, 1000);
+
+    // ---------------------------------------------------------------------
+    // Soziales: Panel mit Chat, Freunden, Rangliste
+    // ---------------------------------------------------------------------
+    const socialBtn = document.getElementById('socialBtn');
+    const socialPanel = document.getElementById('socialPanel');
+    const chatMessagesEl = document.getElementById('chatMessages');
+    const chatInput = document.getElementById('chatInput');
+    const chatSendBtn = document.getElementById('chatSendBtn');
+    const friendRequestListEl = document.getElementById('friendRequestList');
+    const onlinePlayerListEl = document.getElementById('onlinePlayerList');
+    const richestListEl = document.getElementById('richestList');
+    const mostWantedListEl = document.getElementById('mostWantedList');
+
+    socialBtn.addEventListener('click', () => {
+      const opening = socialPanel.style.display === 'none';
+      socialPanel.style.display = opening ? 'block' : 'none';
+      if (opening) {
+        renderChatMessages();
+        renderFriendsSection();
+        if (net) net.requestLeaderboard();
+      }
+    });
+
+    document.querySelectorAll('.social-tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.social-tab').forEach((t) => t.classList.remove('active'));
+        document.querySelectorAll('.social-section').forEach((s) => s.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.section).classList.add('active');
+      });
+    });
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function renderChatMessages() {
+      chatMessagesEl.innerHTML = '';
+      for (const msg of net.chatMessages) {
+        const line = document.createElement('div');
+        line.className = 'chat-line';
+        line.innerHTML = `<span class="chat-name">${escapeHtml(msg.name)}:</span> ${escapeHtml(msg.text)}`;
+        chatMessagesEl.appendChild(line);
+      }
+      chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    }
+
+    function sendChat() {
+      const text = chatInput.value.trim();
+      if (!text || !net) return;
+      net.sendChatMessage(text);
+      chatInput.value = '';
+    }
+    chatSendBtn.addEventListener('click', sendChat);
+    chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+
+    function renderFriendsSection() {
+      friendRequestListEl.innerHTML = '';
+      if (net.incomingFriendRequests.size === 0) {
+        friendRequestListEl.innerHTML = '<div class="market-empty">Keine offenen Anfragen.</div>';
+      }
+      for (const req of net.incomingFriendRequests.values()) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = `<div class="market-item-name">${escapeHtml(req.fromName)}</div>`;
+        const btnGroup = document.createElement('div');
+        btnGroup.style.display = 'flex';
+        btnGroup.style.gap = '6px';
+        const acceptBtn = document.createElement('button');
+        acceptBtn.className = 'market-btn-small';
+        acceptBtn.textContent = 'Annehmen';
+        acceptBtn.addEventListener('click', () => { net.respondFriendRequest(req.requestId, true); renderFriendsSection(); });
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = 'market-btn-small ghost';
+        rejectBtn.textContent = 'Ablehnen';
+        rejectBtn.addEventListener('click', () => { net.respondFriendRequest(req.requestId, false); renderFriendsSection(); });
+        btnGroup.appendChild(acceptBtn);
+        btnGroup.appendChild(rejectBtn);
+        row.appendChild(btnGroup);
+        friendRequestListEl.appendChild(row);
+      }
+
+      onlinePlayerListEl.innerHTML = '';
+      const others = [...net.players.values()].filter((p) => p.id !== net.myId && p.connected !== false);
+      if (others.length === 0) {
+        onlinePlayerListEl.innerHTML = '<div class="market-empty">Niemand sonst online.</div>';
+      }
+      const myFriends = net.myFriends || [];
+      for (const p of others) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = `<div class="market-item-name">${escapeHtml(p.name)}</div>`;
+        const isFriend = myFriends.includes(p.id);
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small' + (isFriend ? ' ghost' : '');
+        btn.textContent = isFriend ? 'Befreundet' : 'Anfrage senden';
+        btn.disabled = isFriend;
+        btn.addEventListener('click', () => { net.proposeFriendship(p.id); showToast('Freundschaftsanfrage gesendet.'); });
+        row.appendChild(btn);
+        onlinePlayerListEl.appendChild(row);
+      }
+    }
+
+    function renderLeaderboard(data) {
+      richestListEl.innerHTML = '';
+      data.richest.forEach((entry, i) => {
+        const row = document.createElement('div');
+        row.className = 'leaderboard-row';
+        row.innerHTML = `<span><span class="leaderboard-rank">#${i + 1}</span>${escapeHtml(entry.name)}</span><span>$${entry.value}</span>`;
+        richestListEl.appendChild(row);
+      });
+      if (data.richest.length === 0) richestListEl.innerHTML = '<div class="market-empty">Noch keine Daten.</div>';
+
+      mostWantedListEl.innerHTML = '';
+      data.mostWanted.forEach((entry, i) => {
+        const row = document.createElement('div');
+        row.className = 'leaderboard-row';
+        row.innerHTML = `<span><span class="leaderboard-rank">#${i + 1}</span>${escapeHtml(entry.name)}</span><span>${'⭐'.repeat(Math.min(entry.value, 5))}</span>`;
+        mostWantedListEl.appendChild(row);
+      });
+      if (data.mostWanted.length === 0) mostWantedListEl.innerHTML = '<div class="market-empty">Niemand gerade gesucht.</div>';
+    }
+
+    if (net) {
+      net.onChatMessage = () => {
+        if (socialPanel.style.display !== 'none') renderChatMessages();
+      };
+      net.onFriendRequest = () => {
+        showToast('Neue Freundschaftsanfrage erhalten.');
+        if (socialPanel.style.display !== 'none') renderFriendsSection();
+      };
+      net.onFriendResolved = (msg) => {
+        const otherName = msg.otherPlayerId != null ? playerName(msg.otherPlayerId) : '';
+        showToast(msg.accepted ? `Jetzt befreundet mit ${otherName}.` : 'Freundschaftsanfrage abgelehnt.');
+        if (socialPanel.style.display !== 'none') renderFriendsSection();
+      };
+      net.onLeaderboard = (data) => renderLeaderboard(data);
+    }
   </script>
 </body>
 </html>
