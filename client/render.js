@@ -37,6 +37,24 @@ const BUILDING_HEIGHT_PER_PRICE = 1 / 400; // teurere Immobilien wirken sichtbar
 // MUSS mit server/crime.js (JAIL_POSITION) uebereinstimmen
 const JAIL_POSITION = { x: 100, y: 1900 };
 
+// Andere Spieler bekommen eine von mehreren Farben statt alle identisch rot zu sein -
+// Zuweisung ist deterministisch aus der Spieler-ID, daher sehen ALLE Clients denselben
+// Spieler auch in derselben Farbe (kein Zufall, kein Server-Synchronisierungsaufwand noetig).
+const OTHER_PLAYER_PALETTE = [
+  { body: 0xe05a5a, head: 0xe98080 }, // rot
+  { body: 0xe0a45a, head: 0xe9c080 }, // orange
+  { body: 0xd6c74a, head: 0xe3d980 }, // gelb
+  { body: 0x5ac488, head: 0x80e0a8 }, // gruen
+  { body: 0x5ab8c4, head: 0x80d6e0 }, // tuerkis
+  { body: 0xa05ae0, head: 0xc080e9 }, // lila
+  { body: 0xe05aa8, head: 0xe980c4 }, // pink
+];
+
+function colorPairForPlayer(isSelf, playerId) {
+  if (isSelf) return { body: 0x4a7cff, head: 0x6f97ff };
+  return OTHER_PLAYER_PALETTE[playerId % OTHER_PLAYER_PALETTE.length];
+}
+
 class Renderer {
   constructor(canvas, net) {
     this.net = net;
@@ -54,6 +72,8 @@ class Renderer {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     this.entities = new Map();  // playerId -> { group, headMat, bodyMat, label, lastLabelText }
     this.copEntities = new Map(); // copId -> { group }
@@ -73,6 +93,17 @@ class Renderer {
 
     const sun = new THREE.DirectionalLight(0xffffff, 0.75);
     sun.position.set(WORLD_SIZE_3D * 0.3, 40, WORLD_SIZE_3D * 0.2);
+    sun.castShadow = true;
+    sun.shadow.mapSize.width = 1024;
+    sun.shadow.mapSize.height = 1024;
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 150;
+    sun.shadow.camera.left = -WORLD_SIZE_3D * 0.6;
+    sun.shadow.camera.right = WORLD_SIZE_3D * 0.6;
+    sun.shadow.camera.top = WORLD_SIZE_3D * 0.6;
+    sun.shadow.camera.bottom = -WORLD_SIZE_3D * 0.6;
+    sun.target.position.set(WORLD_SIZE_3D / 2, 0, WORLD_SIZE_3D / 2);
+    this.scene.add(sun.target);
     this.scene.add(sun);
 
     const groundGeo = new THREE.PlaneGeometry(WORLD_SIZE_3D, WORLD_SIZE_3D);
@@ -80,6 +111,7 @@ class Renderer {
     const ground = new THREE.Mesh(groundGeo, groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(WORLD_SIZE_3D / 2, 0, WORLD_SIZE_3D / 2);
+    ground.receiveShadow = true;
     this.scene.add(ground);
 
     const grid = new THREE.GridHelper(WORLD_SIZE_3D, Math.round(WORLD_SIZE_3D / 5), 0x3a3f4b, 0x2a2f3a);
@@ -148,21 +180,22 @@ class Renderer {
   }
 
   /** Baut eine Spielfigur aus Grundformen: Zylinder (Koerper) + Kugel (Kopf) + Kegel (Blickrichtung). */
-  createEntity(isSelf) {
+  createEntity(isSelf, playerId) {
     const group = new THREE.Group();
-    const bodyColor = isSelf ? 0x4a7cff : 0xe05a5a;
-    const headColor = isSelf ? 0x6f97ff : 0xe98080;
+    const colors = colorPairForPlayer(isSelf, playerId);
 
     const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
-    const bodyMat = new THREE.MeshStandardMaterial({ color: bodyColor });
+    const bodyMat = new THREE.MeshStandardMaterial({ color: colors.body });
     const body = new THREE.Mesh(bodyGeo, bodyMat);
     body.position.y = CHARACTER_BODY_HEIGHT / 2;
+    body.castShadow = true;
     group.add(body);
 
     const headGeo = new THREE.SphereGeometry(CHARACTER_HEAD_RADIUS, 14, 10);
-    const headMat = new THREE.MeshStandardMaterial({ color: headColor });
+    const headMat = new THREE.MeshStandardMaterial({ color: colors.head });
     const head = new THREE.Mesh(headGeo, headMat);
     head.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS;
+    head.castShadow = true;
     group.add(head);
 
     // Kegel als "Nase" - liegt auf lokaler +Z-Achse und zeigt so die Blickrichtung der Figur
@@ -178,7 +211,10 @@ class Renderer {
     group.add(label);
 
     this.scene.add(group);
-    return { group, label, lastLabelText: '', bodyMat, headMat, isJailedVisual: false };
+    return {
+      group, label, lastLabelText: '', bodyMat, headMat, isJailedVisual: false,
+      normalBodyColor: colors.body, normalHeadColor: colors.head,
+    };
   }
 
   createLabelSprite(text) {
@@ -219,7 +255,7 @@ class Renderer {
   getOrCreateEntity(id, isSelf) {
     let entry = this.entities.get(id);
     if (!entry) {
-      entry = this.createEntity(isSelf);
+      entry = this.createEntity(isSelf, id);
       this.entities.set(id, entry);
     }
     return entry;
@@ -257,8 +293,8 @@ class Renderer {
       // Im Gefaengnis: Figur graeulich einfaerben, damit der Status auch optisch erkennbar ist
       const isJailed = p.jailedUntil != null && p.jailedUntil > now;
       if (isJailed !== entry.isJailedVisual) {
-        entry.bodyMat.color.set(isJailed ? 0x5a6270 : (isSelf ? 0x4a7cff : 0xe05a5a));
-        entry.headMat.color.set(isJailed ? 0x7a8090 : (isSelf ? 0x6f97ff : 0xe98080));
+        entry.bodyMat.color.set(isJailed ? 0x5a6270 : entry.normalBodyColor);
+        entry.headMat.color.set(isJailed ? 0x7a8090 : entry.normalHeadColor);
         entry.isJailedVisual = isJailed;
       }
 
@@ -283,6 +319,8 @@ class Renderer {
     const mat = new THREE.MeshStandardMaterial({ color: 0x4a5062 });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.y = height / 2;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
 
     const group = new THREE.Group();
     group.add(mesh);
@@ -333,12 +371,14 @@ class Renderer {
     const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a3a6e });
     const body = new THREE.Mesh(bodyGeo, bodyMat);
     body.position.y = CHARACTER_BODY_HEIGHT / 2;
+    body.castShadow = true;
     group.add(body);
 
     const headGeo = new THREE.SphereGeometry(CHARACTER_HEAD_RADIUS, 14, 10);
     const headMat = new THREE.MeshStandardMaterial({ color: 0x1f2a52 });
     const head = new THREE.Mesh(headGeo, headMat);
     head.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS;
+    head.castShadow = true;
     group.add(head);
 
     const label = this.createLabelSprite('Polizei');
@@ -400,6 +440,7 @@ class Renderer {
     const wantedText = me.wanted > 0 ? ` &nbsp;|&nbsp; Gesucht: ${'⭐'.repeat(Math.min(me.wanted, 5))}` : '';
     this.hud.innerHTML =
       `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}${wantedText}<br>` +
+      `❤️ ${me.health ?? 100} &nbsp; 😊 ${me.happiness ?? 70} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50}<br>` +
       `Spieler online: ${online} / 20 &nbsp;|&nbsp; Steuerung: WASD`;
   }
 }
