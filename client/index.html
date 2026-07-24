@@ -368,6 +368,9 @@
     // NetClient zuerst - hat keine Abhaengigkeit zu Three.js, sollte praktisch nie fehlschlagen.
     let net = null;
     try {
+      if (typeof NetClient === 'undefined') {
+        throw new Error('net.js wurde nicht geladen oder enthaelt einen Fehler');
+      }
       net = new NetClient();
     } catch (err) {
       showDebugError('Verbindungsaufbau fehlgeschlagen: ' + err.message);
@@ -401,6 +404,9 @@
     try {
       if (typeof THREE === 'undefined') {
         throw new Error('Three.js wurde nicht geladen (CDN nicht erreichbar oder blockiert)');
+      }
+      if (typeof Renderer === 'undefined') {
+        throw new Error('render.js wurde nicht geladen oder enthaelt einen Fehler - bitte pruefen, ob die Datei vollstaendig hochgeladen wurde');
       }
       renderer = new Renderer(canvas, net);
     } catch (err) {
