@@ -54,6 +54,18 @@ class NetClient {
     this.onFriendResolved = null;
     this.onLeaderboard = null;
 
+    // Familie (Ehe, Kinder, Tod & Wiedergeburt)
+    this.incomingMarriageRequests = new Map(); // requestId -> { requestId, fromPlayerId, fromName }
+    this.myChildren = []; // { id, name, parentIds, bornAt, inheritedCash, claimed }
+    this.onMarriageRequest = null;
+    this.onMarriageResolved = null;
+    this.onDivorced = null;
+    this.onChildBorn = null;
+    this.onFamilyState = null;
+    this.onDied = null;
+    this.onWidowed = null;
+    this.onReincarnated = null;
+
     window.addEventListener('keydown', (e) => this.setKey(e.key, true));
     window.addEventListener('keyup', (e) => this.setKey(e.key, false));
   }
@@ -256,6 +268,50 @@ class NetClient {
         break;
       }
 
+      case 'marriageRequest': {
+        this.incomingMarriageRequests.set(msg.requestId, msg);
+        if (this.onMarriageRequest) this.onMarriageRequest(msg);
+        break;
+      }
+
+      case 'marriageResolved': {
+        this.incomingMarriageRequests.delete(msg.requestId);
+        if (this.onMarriageResolved) this.onMarriageResolved(msg);
+        break;
+      }
+
+      case 'divorced': {
+        if (this.onDivorced) this.onDivorced(msg);
+        break;
+      }
+
+      case 'childBorn': {
+        this.myChildren.push(msg.child);
+        if (this.onChildBorn) this.onChildBorn(msg);
+        break;
+      }
+
+      case 'familyState': {
+        this.myChildren = msg.children;
+        if (this.onFamilyState) this.onFamilyState(msg);
+        break;
+      }
+
+      case 'died': {
+        if (this.onDied) this.onDied(msg);
+        break;
+      }
+
+      case 'widowed': {
+        if (this.onWidowed) this.onWidowed(msg);
+        break;
+      }
+
+      case 'reincarnated': {
+        if (this.onReincarnated) this.onReincarnated(msg);
+        break;
+      }
+
       default:
         break;
     }
@@ -405,5 +461,30 @@ class NetClient {
 
   requestLeaderboard() {
     this.send({ type: 'requestLeaderboard' });
+  }
+
+  proposeMarriage(toPlayerId) {
+    this.send({ type: 'proposeMarriage', toPlayerId });
+  }
+
+  respondMarriageRequest(requestId, accept) {
+    this.send({ type: 'respondMarriageRequest', requestId, accept });
+    this.incomingMarriageRequests.delete(requestId);
+  }
+
+  divorce() {
+    this.send({ type: 'divorce' });
+  }
+
+  haveChild(name) {
+    this.send({ type: 'haveChild', name });
+  }
+
+  requestFamily() {
+    this.send({ type: 'requestFamily' });
+  }
+
+  reincarnate() {
+    this.send({ type: 'reincarnate' });
   }
 }
