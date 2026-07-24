@@ -1,349 +1,421 @@
 'use strict';
 
-// client/net.js
-// WebSocket-Verbindung, Input-Sammlung und Client-Prediction/Reconciliation.
-// WICHTIG: Diese Datei bestimmt niemals die "wahre" Position - sie zeigt nur
-// eine Vorhersage an, bis der Server die tatsächliche Position bestätigt.
+// server/index.js
+// Einstiegspunkt: HTTP-Server (statischer Client) + WebSocket-Server,
+// verdrahtet Lobby, fastTick (Bewegung), slowTick (Alterung) und Snapshots.
 
-const WORLD_WIDTH = 2000;
-const WORLD_HEIGHT = 2000;
-const PLAYER_SPEED = 200; // px/s - MUSS mit server/game.js übereinstimmen
-const RECONNECT_DELAY_MS = 2000;
+const path = require('path');
+const fs = require('fs');
+const http = require('http');
+const express = require('express');
+const WebSocket = require('ws');
 
-class NetClient {
-  constructor() {
-    this.ws = null;
-    this.myId = null;
-    this.token = localStorage.getItem('lifesim_token') || null;
-    this.players = new Map(); // id -> { id, name, age, x, y, vx, vy, ...stats }
-    this.localPlayer = null;
-    this.inputSeq = 0;
-    this.pendingInputs = []; // noch nicht vom Server bestätigte Eingaben
-    this.keys = { w: false, a: false, s: false, d: false };
-    this.onWelcome = null;
-    this.onJoinError = null;
-    this.activeEventOffer = null; // aktuell angezeigtes Lebensereignis, oder null
-    this.onEventOffer = null;
-    this.onEventResolved = null;
-    this.onConnectionLost = null;
-    this._pendingName = null;
+const {
+  GameWorld,
+  FAST_TICK_MS,
+  SLOW_TICK_MS,
+  EVENT_TICK_MS,
+  COPS_TICK_MS,
+  SNAPSHOT_INTERVAL_MS,
+  SNAPSHOT_PATH,
+} = require('./game');
+const { serializePublic } = require('./player');
 
-    // Wirtschaft (Phase 3)
-    this.properties = new Map();  // propertyId -> { id, name, price, incomePerTick, maintenancePerTick, ownerId, position }
-    this.companies = new Map();   // companyId -> { id, ownerId, name }
-    this.incomingTrades = new Map(); // tradeId -> Handelsangebot, das MIR gemacht wurde
-    this.onEconomyState = null;
-    this.onTradeOffer = null;
-    this.onTradeResolved = null;
-    this.onActionError = null;
-    this.onPropertyRepossessed = null;
+const PORT = process.env.PORT || 3000;
 
-    // Kriminalität (Phase 4)
-    this.cops = new Map(); // copId -> { id, x, y }
-    this.onStealResult = null;
-    this.onStolenFrom = null;
-    this.onJailed = null;
-    this.onReleased = null;
+const app = express();
+// WICHTIG: Caching bewusst komplett deaktiviert, solange aktiv am Client entwickelt
+// wird. Ohne das kann der Browser (oder ein Zwischenspeicher) veraltete JS/HTML-Dateien
+// behalten, obwohl auf GitHub/Render laengst eine neue Version liegt - das fuehrt zu
+// verwirrenden "aber ich hab doch die Datei ersetzt"-Situationen. Sobald das Spiel
+// stabiler ist, kann man hier wieder normales Caching aktivieren (bessere Ladezeiten).
+app.use(express.static(path.join(__dirname, '..', 'client'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  },
+}));
 
-    window.addEventListener('keydown', (e) => this.setKey(e.key, true));
-    window.addEventListener('keyup', (e) => this.setKey(e.key, false));
-  }
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
-  setKey(key, val) {
-    const k = key.toLowerCase();
-    if (k in this.keys) this.keys[k] = val;
-  }
+const world = new GameWorld();
+const playerConnections = new Map(); // playerId -> ws, fuer gezielte Nachrichten (z.B. Event-Angebote)
 
-  connect(name) {
-    this._pendingName = name;
-    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    this.ws = new WebSocket(`${protocol}://${location.host}`);
-
-    this.ws.addEventListener('open', () => {
-      this.ws.send(JSON.stringify({ type: 'join', name, token: this.token }));
-    });
-
-    this.ws.addEventListener('message', (event) => {
-      let msg;
-      try {
-        msg = JSON.parse(event.data);
-      } catch (err) {
-        return;
-      }
-      this.handleMessage(msg);
-    });
-
-    this.ws.addEventListener('close', () => {
-      console.warn('Verbindung getrennt. Neuverbindung in 2s...');
-      // Nach aussen melden, damit die Oberflaeche z.B. den Ladebildschirm
-      // aktualisieren kann statt endlos zu drehen.
-      if (this.onConnectionLost) this.onConnectionLost();
-      setTimeout(() => this.connect(this._pendingName), RECONNECT_DELAY_MS);
-    });
-  }
-
-  handleMessage(msg) {
-    switch (msg.type) {
-      case 'welcome': {
-        this.myId = msg.id;
-        this.token = msg.token;
-        localStorage.setItem('lifesim_token', this.token);
-        this.players.clear();
-        this.pendingInputs = [];
-        for (const p of msg.players) {
-          this.players.set(p.id, { ...p, vx: 0, vy: 0 });
-        }
-        this.localPlayer = this.players.get(this.myId);
-        if (this.onWelcome) this.onWelcome();
-        break;
-      }
-
-      case 'joinError': {
-        if (this.onJoinError) this.onJoinError(msg.reason);
-        break;
-      }
-
-      case 'eventOffer': {
-        this.activeEventOffer = msg;
-        if (this.onEventOffer) this.onEventOffer(msg);
-        break;
-      }
-
-      case 'eventResolved': {
-        this.activeEventOffer = null;
-        if (this.onEventResolved) this.onEventResolved(msg);
-        break;
-      }
-
-      case 'playerJoined': {
-        if (!this.players.has(msg.player.id)) {
-          this.players.set(msg.player.id, { ...msg.player, vx: 0, vy: 0 });
-        }
-        break;
-      }
-
-      case 'playerDisconnected': {
-        const p = this.players.get(msg.id);
-        if (p) p.connected = false;
-        break;
-      }
-
-      case 'delta': {
-        for (const d of msg.players) {
-          let p = this.players.get(d.id);
-          if (!p) {
-            p = { id: d.id, name: '?', age: 18, connected: true };
-            this.players.set(d.id, p);
-          }
-          if (d.id === this.myId) {
-            this.reconcile(d);
-          } else {
-            p.x = d.x;
-            p.y = d.y;
-            p.vx = d.vx;
-            p.vy = d.vy;
-          }
-        }
-        break;
-      }
-
-      case 'statUpdate': {
-        for (const s of msg.players) {
-          const p = this.players.get(s.id);
-          if (p) Object.assign(p, s);
-          else this.players.set(s.id, { ...s, vx: 0, vy: 0 });
-        }
-        break;
-      }
-
-      case 'economyState': {
-        this.properties.clear();
-        for (const p of msg.properties) this.properties.set(p.id, p);
-        this.companies.clear();
-        for (const c of msg.companies) this.companies.set(c.id, c);
-        if (this.onEconomyState) this.onEconomyState();
-        break;
-      }
-
-      case 'tradeOffer': {
-        this.incomingTrades.set(msg.tradeId, msg);
-        if (this.onTradeOffer) this.onTradeOffer(msg);
-        break;
-      }
-
-      case 'tradeResolved': {
-        this.incomingTrades.delete(msg.tradeId);
-        if (this.onTradeResolved) this.onTradeResolved(msg);
-        break;
-      }
-
-      case 'actionError': {
-        if (this.onActionError) this.onActionError(msg);
-        break;
-      }
-
-      case 'propertyRepossessed': {
-        if (this.onPropertyRepossessed) this.onPropertyRepossessed(msg);
-        break;
-      }
-
-      case 'copsState': {
-        this.cops.clear();
-        for (const cop of msg.cops) this.cops.set(cop.id, cop);
-        break;
-      }
-
-      case 'stealResult': {
-        if (this.onStealResult) this.onStealResult(msg);
-        break;
-      }
-
-      case 'stolenFrom': {
-        if (this.onStolenFrom) this.onStolenFrom(msg);
-        break;
-      }
-
-      case 'jailed': {
-        if (this.onJailed) this.onJailed(msg);
-        break;
-      }
-
-      case 'released': {
-        if (this.onReleased) this.onReleased(msg);
-        break;
-      }
-
-      default:
-        break;
-    }
-  }
-
-  /**
-   * Server-Reconciliation: übernimmt die autoritative Serverposition und
-   * spielt alle noch unbestätigten (nach dem Server-Tick gesendeten) Inputs
-   * erneut ab, um Ruckeln zu vermeiden.
-   */
-  reconcile(serverState) {
-    const p = this.localPlayer;
-    if (!p) return;
-
-    this.pendingInputs = this.pendingInputs.filter(
-      (inp) => inp.seq > serverState.lastProcessedInput
-    );
-
-    let x = serverState.x;
-    let y = serverState.y;
-    for (const inp of this.pendingInputs) {
-      const res = this.simulateStep(x, y, inp.keys, inp.dt);
-      x = res.x;
-      y = res.y;
-    }
-
-    p.x = x;
-    p.y = y;
-    p.vx = serverState.vx;
-    p.vy = serverState.vy;
-  }
-
-  /** Identische Bewegungslogik wie server/game.js#applyInput + stepPositions. */
-  simulateStep(x, y, keys, dtMs) {
-    let dx = 0;
-    let dy = 0;
-    if (keys.w) dy -= 1;
-    if (keys.s) dy += 1;
-    if (keys.a) dx -= 1;
-    if (keys.d) dx += 1;
-
-    const len = Math.hypot(dx, dy);
-    if (len > 0) {
-      dx /= len;
-      dy /= len;
-    }
-
-    const dtSec = dtMs / 1000;
-    let nx = x + dx * PLAYER_SPEED * dtSec;
-    let ny = y + dy * PLAYER_SPEED * dtSec;
-    nx = Math.max(0, Math.min(WORLD_WIDTH, nx));
-    ny = Math.max(0, Math.min(WORLD_HEIGHT, ny));
-    return { x: nx, y: ny };
-  }
-
-  /** Wird von der UI aufgerufen, wenn der Spieler eine Option bei einem Lebensereignis waehlt. */
-  chooseEventOption(choiceIndex) {
-    if (!this.activeEventOffer || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({
-      type: 'eventChoice',
-      instanceId: this.activeEventOffer.instanceId,
-      choiceIndex,
-    }));
-    this.activeEventOffer = null; // sofort ausblenden, Server bestaetigt gleich per eventResolved
-  }
-
-  /** Wird jeden Frame vom Renderer aufgerufen: sendet Input, wendet Prediction an. */
-  update(dtMs) {
-    if (!this.localPlayer || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-
-    const keysSnapshot = { ...this.keys };
-    this.inputSeq += 1;
-    const input = { seq: this.inputSeq, keys: keysSnapshot, dt: dtMs };
-
-    const res = this.simulateStep(this.localPlayer.x, this.localPlayer.y, keysSnapshot, dtMs);
-    this.localPlayer.x = res.x;
-    this.localPlayer.y = res.y;
-
-    this.pendingInputs.push(input);
-    this.ws.send(JSON.stringify({ type: 'input', seq: input.seq, keys: keysSnapshot }));
-  }
-
-  /** Kleiner Hilfsmethoden-Block fuer die Wirtschaft - alles serverseitig geprueft, hier nur Versand. */
-  send(obj) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(obj));
-    }
-  }
-
-  buyProperty(propertyId) {
-    this.send({ type: 'buyProperty', propertyId });
-  }
-
-  sellProperty(propertyId) {
-    this.send({ type: 'sellProperty', propertyId });
-  }
-
-  foundCompany(name) {
-    this.send({ type: 'foundCompany', name });
-  }
-
-  closeCompany(companyId) {
-    this.send({ type: 'closeCompany', companyId });
-  }
-
-  proposeTrade(toPlayerId, propertyId, price) {
-    this.send({ type: 'proposeTrade', toPlayerId, propertyId, price });
-  }
-
-  respondTrade(tradeId, accept) {
-    this.send({ type: 'respondTrade', tradeId, accept });
-    this.incomingTrades.delete(tradeId); // sofort ausblenden, Server bestaetigt gleich
-  }
-
-  /** Server prueft die tatsaechliche Distanz - hier nur eine Heuristik fuer die UI (Zielwahl). */
-  findNearestOtherPlayer() {
-    if (!this.localPlayer) return null;
-    let nearest = null;
-    let bestDist = Infinity;
-    for (const p of this.players.values()) {
-      if (p.id === this.myId || p.connected === false) continue;
-      const dist = Math.hypot((p.x ?? 0) - this.localPlayer.x, (p.y ?? 0) - this.localPlayer.y);
-      if (dist < bestDist) {
-        bestDist = dist;
-        nearest = p;
-      }
-    }
-    return nearest ? { player: nearest, distance: bestDist } : null;
-  }
-
-  stealAttempt(targetPlayerId) {
-    this.send({ type: 'stealAttempt', targetPlayerId });
+function send(ws, msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
   }
 }
+
+function sendToPlayer(playerId, msg) {
+  send(playerConnections.get(playerId), msg);
+}
+
+function buildEventOfferMessage(instance) {
+  return {
+    type: 'eventOffer',
+    instanceId: instance.instanceId,
+    title: instance.title,
+    text: instance.text,
+    choices: instance.choices,
+    expiresAt: instance.expiresAt,
+  };
+}
+
+function buildEconomyStateMessage() {
+  return {
+    type: 'economyState',
+    properties: world.buildPropertiesState(),
+    companies: world.buildCompaniesState(),
+  };
+}
+
+function buildTradeOfferMessage(trade) {
+  const property = world.properties.get(trade.propertyId);
+  return {
+    type: 'tradeOffer',
+    tradeId: trade.id,
+    fromPlayerId: trade.fromPlayerId,
+    propertyId: trade.propertyId,
+    propertyName: property ? property.name : 'Unbekannte Immobilie',
+    price: trade.price,
+    expiresAt: trade.expiresAt,
+  };
+}
+
+function broadcast(msg, exceptWs) {
+  const data = JSON.stringify(msg);
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN && client !== exceptWs) {
+      client.send(data);
+    }
+  }
+}
+
+wss.on('connection', (ws) => {
+  ws.playerId = null;
+  ws.isAlive = true;
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
+  ws.on('message', (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch (err) {
+      return; // ungültige Nachricht ignorieren, nie crashen
+    }
+
+    if (msg.type === 'join') {
+      const result = world.joinPlayer(msg.name, msg.token, ws);
+      if (result.error) {
+        send(ws, { type: 'joinError', reason: result.error });
+        return;
+      }
+      ws.playerId = result.player.id;
+      playerConnections.set(result.player.id, ws);
+      send(ws, {
+        type: 'welcome',
+        id: result.player.id,
+        token: result.player.token,
+        reconnected: result.reconnected,
+        players: world.buildFullPublicState(),
+      });
+      if (result.reconnected && result.player.activeEvent) {
+        // Spieler hatte beim Verbindungsabbruch noch ein offenes Ereignis - erneut zustellen
+        send(ws, buildEventOfferMessage(result.player.activeEvent));
+      }
+      send(ws, buildEconomyStateMessage()); // aktueller Immobilienmarkt + Firmenliste sofort sichtbar
+      send(ws, { type: 'copsState', cops: world.buildCopsState() });
+      broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
+      console.log(
+        `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
+      );
+      return;
+    }
+
+    if (msg.type === 'input' && ws.playerId != null) {
+      world.applyInput(ws.playerId, msg);
+      return;
+    }
+
+    if (msg.type === 'eventChoice' && ws.playerId != null) {
+      const result = world.applyEventChoice(ws.playerId, msg.instanceId, msg.choiceIndex);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, {
+          type: 'eventResolved',
+          instanceId: result.instanceId,
+          choiceLabel: result.choiceLabel,
+          effects: result.effects,
+          timedOut: false,
+        });
+        const player = world.players.get(ws.playerId);
+        if (player) broadcast({ type: 'statUpdate', players: [serializePublic(player)] });
+
+        // Sofort naechstes Event nachruecken, statt auf den naechsten EVENT_TICK zu warten
+        const promoted = world.promoteQueuedEvents();
+        for (const { player: p, instance } of promoted) {
+          sendToPlayer(p.id, buildEventOfferMessage(instance));
+        }
+      }
+      return;
+    }
+
+    if (msg.type === 'ping') {
+      send(ws, { type: 'pong', t: msg.t });
+    }
+
+    // --- Wirtschaft: Immobilien, Firmen, Handel ---
+
+    if (msg.type === 'buyProperty' && ws.playerId != null) {
+      const result = world.buyProperty(ws.playerId, msg.propertyId);
+      if (result.ok) {
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'buyProperty', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'sellProperty' && ws.playerId != null) {
+      const result = world.sellPropertyToBank(ws.playerId, msg.propertyId);
+      if (result.ok) {
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'sellProperty', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'foundCompany' && ws.playerId != null) {
+      const result = world.foundCompany(ws.playerId, msg.name);
+      if (result.ok) {
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'foundCompany', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'closeCompany' && ws.playerId != null) {
+      const result = world.closeCompany(ws.playerId, msg.companyId);
+      if (result.ok) {
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'closeCompany', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'proposeTrade' && ws.playerId != null) {
+      const result = world.proposeTrade(ws.playerId, msg.toPlayerId, msg.propertyId, msg.price);
+      if (result.ok) {
+        sendToPlayer(msg.toPlayerId, buildTradeOfferMessage(result.trade));
+        send(ws, { type: 'tradeSent', tradeId: result.trade.id });
+      } else {
+        send(ws, { type: 'actionError', action: 'proposeTrade', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'respondTrade' && ws.playerId != null) {
+      const result = world.respondTrade(ws.playerId, msg.tradeId, !!msg.accept);
+      if (result.ok) {
+        const buyerId = result.trade.toPlayerId;
+        const sellerId = result.trade.fromPlayerId;
+        const resolvedMsg = {
+          type: 'tradeResolved',
+          tradeId: result.trade.id,
+          accepted: result.accepted,
+          propertyId: result.trade.propertyId,
+          price: result.trade.price,
+        };
+        sendToPlayer(buyerId, resolvedMsg);
+        sendToPlayer(sellerId, resolvedMsg);
+        if (result.accepted) {
+          broadcast(buildEconomyStateMessage());
+          const buyer = world.players.get(buyerId);
+          const seller = world.players.get(sellerId);
+          const updated = [buyer, seller].filter(Boolean).map(serializePublic);
+          if (updated.length > 0) broadcast({ type: 'statUpdate', players: updated });
+        }
+      } else {
+        send(ws, { type: 'actionError', action: 'respondTrade', reason: result.reason });
+      }
+      return;
+    }
+
+    // --- Kriminalität: Diebstahl ---
+
+    if (msg.type === 'stealAttempt' && ws.playerId != null) {
+      const result = world.attemptSteal(ws.playerId, msg.targetPlayerId);
+      if (result.ok) {
+        sendToPlayer(result.thief.id, {
+          type: 'stealResult',
+          success: result.success,
+          amount: result.amount || 0,
+        });
+        if (result.success) {
+          sendToPlayer(result.victim.id, {
+            type: 'stolenFrom',
+            thiefName: result.thief.name,
+            amount: result.amount,
+          });
+        }
+        const updated = [result.thief, result.victim].map(serializePublic);
+        broadcast({ type: 'statUpdate', players: updated });
+      } else {
+        send(ws, { type: 'actionError', action: 'stealAttempt', reason: result.reason });
+      }
+      return;
+    }
+  });
+
+  ws.on('close', () => {
+    if (ws.playerId != null) {
+      world.disconnectPlayer(ws.playerId);
+      playerConnections.delete(ws.playerId);
+      broadcast({ type: 'playerDisconnected', id: ws.playerId });
+      console.log(`Disconnect: #${ws.playerId} - ${world.playerCount} online`);
+    }
+  });
+
+  ws.on('error', () => {
+    // Verbindungsfehler werden über 'close' abgewickelt
+  });
+});
+
+// Tote Verbindungen erkennen (z.B. Netzwerkabbruch ohne sauberes close-Event)
+setInterval(() => {
+  for (const client of wss.clients) {
+    if (client.isAlive === false) {
+      client.terminate();
+      continue;
+    }
+    client.isAlive = false;
+    client.ping();
+  }
+}, 30000);
+
+// fastTick: Positionen fortschreiben + Bewegungs-Delta an alle senden
+let lastFastTick = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  const dt = now - lastFastTick;
+  lastFastTick = now;
+
+  world.stepPositions(dt);
+  const deltas = world.buildMovementDeltas();
+  if (deltas.length > 0) {
+    broadcast({ type: 'delta', players: deltas });
+  }
+}, FAST_TICK_MS);
+
+// slowTick: individuelle Lebensuhr weiterlaufen lassen, plus Wirtschaft (Phase 3):
+// Immobilien- und Firmen-Einnahmen abzueglich Instandhaltung/Unterhalt einziehen.
+let lastSlowTick = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  const dt = now - lastSlowTick;
+  lastSlowTick = now;
+
+  world.ageConnectedPlayers(dt);
+  world.removeStalePlayers();
+
+  const repossessed = world.collectEconomyIncome();
+  world.applyWealthTax();
+  if (repossessed.length > 0) {
+    broadcast(buildEconomyStateMessage());
+    for (const { asset, player } of repossessed) {
+      sendToPlayer(player.id, {
+        type: 'propertyRepossessed',
+        propertyId: asset.id,
+        propertyName: asset.name,
+      });
+    }
+  }
+
+  broadcast({ type: 'statUpdate', players: world.buildFullPublicState() });
+}, SLOW_TICK_MS);
+
+// EVENT_TICK: neue Lebensereignisse auswürfeln, abgelaufene mit Standardwahl auflösen,
+// naechstes aus der Warteschlange nachruecken - eigener, schnellerer Takt als slowTick,
+// damit Countdown-Anzeigen im Client nicht spuerbar nachhinken.
+setInterval(() => {
+  world.rollEventsForConnectedPlayers();
+
+  const expired = world.checkExpiredEvents();
+  for (const { player, instance, choiceLabel, effects } of expired) {
+    sendToPlayer(player.id, {
+      type: 'eventResolved',
+      instanceId: instance.instanceId,
+      choiceLabel,
+      effects,
+      timedOut: true,
+    });
+    broadcast({ type: 'statUpdate', players: [serializePublic(player)] });
+  }
+
+  const promoted = world.promoteQueuedEvents();
+  for (const { player, instance } of promoted) {
+    sendToPlayer(player.id, buildEventOfferMessage(instance));
+  }
+
+  const expiredTrades = world.checkExpiredTrades();
+  for (const trade of expiredTrades) {
+    const msg = {
+      type: 'tradeResolved',
+      tradeId: trade.id,
+      accepted: false,
+      timedOut: true,
+      propertyId: trade.propertyId,
+      price: trade.price,
+    };
+    sendToPlayer(trade.toPlayerId, msg);
+    sendToPlayer(trade.fromPlayerId, msg);
+  }
+
+  world.decayWanted();
+
+  const released = world.checkJailReleases();
+  if (released.length > 0) {
+    broadcast({ type: 'statUpdate', players: released.map(serializePublic) });
+    for (const player of released) {
+      sendToPlayer(player.id, { type: 'released' });
+    }
+  }
+}, EVENT_TICK_MS);
+
+// COPS_TICK: Polizei-NPCs bewegen sich in eigenem, fluessigerem Takt.
+setInterval(() => {
+  const arrests = world.updateCops(COPS_TICK_MS);
+  broadcast({ type: 'copsState', cops: world.buildCopsState() });
+  if (arrests.length > 0) {
+    broadcast({ type: 'statUpdate', players: arrests.map(serializePublic) });
+    for (const player of arrests) {
+      sendToPlayer(player.id, { type: 'jailed', until: player.jailedUntil });
+    }
+  }
+}, COPS_TICK_MS);
+
+// Snapshot: In-Memory-State periodisch auf Disk sichern (einfache Persistenz für Phase 1)
+setInterval(() => {
+  try {
+    const data = world.buildFullPublicState();
+    fs.writeFileSync(SNAPSHOT_PATH, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('Snapshot fehlgeschlagen:', err.message);
+  }
+}, SNAPSHOT_INTERVAL_MS);
+
+server.listen(PORT, () => {
+  console.log(`Server läuft auf http://localhost:${PORT}`);
+});
