@@ -10,8 +10,12 @@
 // was den ganzen Datei-Aufbau dieses Projekts aendern wuerde. Deshalb KEIN
 // THREE.CapsuleGeometry (erst ab r142) - Figuren bestehen aus Zylinder + Kugel.
 
-const WORLD_WIDTH = 2000;  // MUSS mit server/game.js uebereinstimmen
-const WORLD_HEIGHT = 2000; // MUSS mit server/game.js uebereinstimmen
+// HINWEIS ZUR LADEREIHENFOLGE: net.js wird VOR dieser Datei geladen und definiert
+// bereits global WORLD_WIDTH / WORLD_HEIGHT / PLAYER_SPEED. Diese Namen duerfen hier
+// NICHT erneut mit const deklariert werden - das wuerde einen "already been declared"-
+// Fehler ausloesen, der das gesamte Laden dieser Datei abbricht (Renderer waere dann
+// undefiniert). Deshalb werden die Werte aus net.js hier einfach mitbenutzt.
+
 const WORLD_SCALE = 0.05;  // 1 Server-Einheit * 0.05 = 1 3D-Einheit (menschliche Groessenordnung)
 const WORLD_SIZE_3D = WORLD_WIDTH * WORLD_SCALE;
 
