@@ -25,6 +25,7 @@ class NetClient {
     this.activeEventOffer = null; // aktuell angezeigtes Lebensereignis, oder null
     this.onEventOffer = null;
     this.onEventResolved = null;
+    this.onConnectionLost = null;
     this._pendingName = null;
 
     window.addEventListener('keydown', (e) => this.setKey(e.key, true));
@@ -57,6 +58,9 @@ class NetClient {
 
     this.ws.addEventListener('close', () => {
       console.warn('Verbindung getrennt. Neuverbindung in 2s...');
+      // Nach aussen melden, damit die Oberflaeche z.B. den Ladebildschirm
+      // aktualisieren kann statt endlos zu drehen.
+      if (this.onConnectionLost) this.onConnectionLost();
       setTimeout(() => this.connect(this._pendingName), RECONNECT_DELAY_MS);
     });
   }
