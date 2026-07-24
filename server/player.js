@@ -49,6 +49,9 @@ function createPlayer(name, token) {
     activeEvent: null,     // aktuell angezeigtes Lebensereignis (nie Teil von serializePublic)
     eventQueue: [],        // wartende Ereignisse, falls schon eins aktiv ist
     recentEventIds: [],    // Verlauf, um Wiederholungen kurzfristig zu vermeiden
+    jailedUntil: null,     // Zeitstempel, bis wann der Spieler im Gefaengnis sitzt (oder null)
+    lastCrimeAt: 0,        // Zeitstempel der letzten Straftat, fuer das Abklingen des Fahndungslevels
+    lastStealAttemptAt: 0, // Cooldown gegen Diebstahl-Spam
     ws: null, // Laufzeitreferenz, wird niemals serialisiert
   };
 }
@@ -75,6 +78,7 @@ function serializePublic(player) {
     x: player.position.x,
     y: player.position.y,
     connected: player.connected,
+    jailedUntil: player.jailedUntil,
   };
 }
 
