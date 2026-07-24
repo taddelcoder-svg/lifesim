@@ -13,6 +13,7 @@ const {
   serializeMovement,
   WORLD_WIDTH,
   WORLD_HEIGHT,
+  STARTING_CASH,
 } = require('./player');
 const { pickEligibleEvent } = require('./events');
 const {
@@ -45,6 +46,17 @@ const {
   WANTED_DECAY_AMOUNT,
 } = require('./crime');
 const { MAX_CHAT_LENGTH, CHAT_HISTORY_LIMIT, LEADERBOARD_LIMIT } = require('./social');
+const {
+  MARRIAGE_HAPPINESS_BONUS,
+  DIVORCE_HAPPINESS_PENALTY,
+  CHILD_COST,
+  CHILD_HAPPINESS_BONUS,
+  CHILD_NAME_MAX_LENGTH,
+  DEATH_HEALTH_THRESHOLD,
+  INHERITANCE_CHILD_AND_SPOUSE,
+  INHERITANCE_CHILD_ONLY,
+  INHERITANCE_SPOUSE_ONLY,
+} = require('./family');
 
 const MAX_PLAYERS = 20;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
@@ -112,6 +124,12 @@ class GameWorld {
 
     this.friendRequests = new Map(); // id -> { id, fromPlayerId, toPlayerId }
     this.nextFriendRequestId = 1;
+
+    this.marriageRequests = new Map(); // id -> { id, fromPlayerId, toPlayerId }
+    this.nextMarriageRequestId = 1;
+
+    this.children = new Map(); // id -> { id, name, parentIds:[p1,p2], bornAt, inheritedCash, claimed }
+    this.nextChildId = 1;
   }
 
   get playerCount() {
@@ -191,6 +209,7 @@ class GameWorld {
     const player = this.players.get(id);
     if (!player || !player.connected) return;
     if (this.isJailed(player)) return; // Gefaengnisinsassen koennen sich nicht bewegen
+    if (this.isAwaitingReincarnation(player)) return; // Verstorbene warten auf die Weiterleben-Aktion
 
     let dx = 0;
     let dy = 0;
@@ -225,6 +244,11 @@ class GameWorld {
         // Verhaften noch einen Rest-Impuls hatte.
         player.position.x = JAIL_POSITION.x;
         player.position.y = JAIL_POSITION.y;
+        player.velocity.x = 0;
+        player.velocity.y = 0;
+        continue;
+      }
+      if (this.isAwaitingReincarnation(player)) {
         player.velocity.x = 0;
         player.velocity.y = 0;
         continue;
@@ -588,6 +612,10 @@ class GameWorld {
     return player.jailedUntil != null && player.jailedUntil > Date.now();
   }
 
+  isAwaitingReincarnation(player) {
+    return player.pendingReincarnation != null;
+  }
+
   buildCopsState() {
     return this.cops.map((cop) => ({ id: cop.id, x: cop.position.x, y: cop.position.y }));
   }
@@ -801,6 +829,200 @@ class GameWorld {
       .map((p) => ({ id: p.id, name: p.name, value: p.wanted }));
 
     return { richest, mostWanted };
+  }
+
+  // ---------------------------------------------------------------------
+  // FAMILIE: Ehe, Kinder, Tod und Vererbung
+  // ---------------------------------------------------------------------
+
+  /** Schickt einem anderen Spieler einen Heiratsantrag. */
+  proposeMarriage(fromPlayerId, toPlayerId) {
+    const fromPlayer = this.players.get(fromPlayerId);
+    const toPlayer = this.players.get(toPlayerId);
+    if (!fromPlayer || !toPlayer) return { ok: false, reason: 'not_found' };
+    if (fromPlayerId === toPlayerId) return { ok: false, reason: 'self_request' };
+    if (fromPlayer.spouseId != null) return { ok: false, reason: 'already_married' };
+    if (toPlayer.spouseId != null) return { ok: false, reason: 'target_already_married' };
+
+    const alreadyPending = [...this.marriageRequests.values()].some(
+      (r) => r.fromPlayerId === fromPlayerId && r.toPlayerId === toPlayerId
+    );
+    if (alreadyPending) return { ok: false, reason: 'already_pending' };
+
+    const request = { id: this.nextMarriageRequestId++, fromPlayerId, toPlayerId };
+    this.marriageRequests.set(request.id, request);
+    return { ok: true, request };
+  }
+
+  /** Empfaenger nimmt einen Heiratsantrag an oder lehnt ab. */
+  respondMarriageRequest(playerId, requestId, accept) {
+    const request = this.marriageRequests.get(requestId);
+    if (!request) return { ok: false, reason: 'not_found' };
+    if (request.toPlayerId !== playerId) return { ok: false, reason: 'not_recipient' };
+
+    this.marriageRequests.delete(requestId);
+    if (!accept) return { ok: true, accepted: false, request };
+
+    const fromPlayer = this.players.get(request.fromPlayerId);
+    const toPlayer = this.players.get(request.toPlayerId);
+    if (!fromPlayer || !toPlayer) return { ok: false, reason: 'not_found' };
+    if (fromPlayer.spouseId != null || toPlayer.spouseId != null) {
+      return { ok: false, reason: 'already_married' };
+    }
+
+    fromPlayer.spouseId = toPlayer.id;
+    toPlayer.spouseId = fromPlayer.id;
+    fromPlayer.happiness = Math.min(100, fromPlayer.happiness + MARRIAGE_HAPPINESS_BONUS);
+    toPlayer.happiness = Math.min(100, toPlayer.happiness + MARRIAGE_HAPPINESS_BONUS);
+
+    return { ok: true, accepted: true, request };
+  }
+
+  /** Beendet die Ehe. Kann von jedem der beiden Partner ausgeloest werden. */
+  divorce(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (player.spouseId == null) return { ok: false, reason: 'not_married' };
+
+    const spouse = this.players.get(player.spouseId);
+    const exSpouseId = player.spouseId;
+    player.spouseId = null;
+    player.happiness = Math.max(0, player.happiness - DIVORCE_HAPPINESS_PENALTY);
+    if (spouse) {
+      spouse.spouseId = null;
+      spouse.happiness = Math.max(0, spouse.happiness - DIVORCE_HAPPINESS_PENALTY);
+    }
+    return { ok: true, exSpouseId };
+  }
+
+  /** Ein verheiratetes Paar bekommt ein Kind. Kosten traegt der handelnde Spieler. */
+  haveChild(playerId, name) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (player.spouseId == null) return { ok: false, reason: 'not_married' };
+    if (player.cash < CHILD_COST) return { ok: false, reason: 'insufficient_funds' };
+
+    const spouse = this.players.get(player.spouseId);
+    player.cash -= CHILD_COST;
+
+    const child = {
+      id: this.nextChildId++,
+      name: name && String(name).trim() ? String(name).trim().slice(0, CHILD_NAME_MAX_LENGTH) : 'Kind',
+      parentIds: spouse ? [player.id, spouse.id] : [player.id],
+      bornAt: Date.now(),
+      inheritedCash: 0,
+      claimed: false,
+    };
+    this.children.set(child.id, child);
+
+    player.happiness = Math.min(100, player.happiness + CHILD_HAPPINESS_BONUS);
+    if (spouse) spouse.happiness = Math.min(100, spouse.happiness + CHILD_HAPPINESS_BONUS);
+
+    return { ok: true, child };
+  }
+
+  /** Alle (noch nicht als Erbe beanspruchten) Kinder eines Spielers. */
+  buildChildrenForPlayer(playerId) {
+    return [...this.children.values()].filter((c) => c.parentIds.includes(playerId));
+  }
+
+  /** Sucht ein noch nicht beanspruchtes Kind, das dieser Spieler als Erbe antreten koennte. */
+  findUnclaimedHeirChild(playerId) {
+    const candidates = [...this.children.values()].filter(
+      (c) => c.parentIds.includes(playerId) && !c.claimed
+    );
+    if (candidates.length === 0) return null;
+    // Juengstes Kind zuerst - narrativ das naheliegendste Erbe
+    candidates.sort((a, b) => b.bornAt - a.bornAt);
+    return candidates[0];
+  }
+
+  /**
+   * EVENT_TICK: prueft, ob ein Spieler durch Gesundheit <= 0 gestorben ist.
+   * Verteilt das Erbe und markiert den Spieler als wartend auf Wiedergeburt.
+   * @returns {Array} Informationen ueber frisch Verstorbene, fuer Benachrichtigungen
+   */
+  checkDeaths() {
+    const deaths = [];
+    for (const player of this.players.values()) {
+      if (!player.connected) continue;
+      if (this.isAwaitingReincarnation(player)) continue; // schon verarbeitet
+      if (player.health > DEATH_HEALTH_THRESHOLD) continue;
+
+      deaths.push(this.processDeath(player));
+    }
+    return deaths;
+  }
+
+  /** Verteilt das Erbe eines verstorbenen Spielers und setzt ihn auf "wartet auf Wiedergeburt". */
+  processDeath(player) {
+    const spouse = player.spouseId != null ? this.players.get(player.spouseId) : null;
+    const heirChild = this.findUnclaimedHeirChild(player.id);
+    const estate = player.cash;
+
+    let ratios = null;
+    if (heirChild && spouse) ratios = INHERITANCE_CHILD_AND_SPOUSE;
+    else if (heirChild) ratios = INHERITANCE_CHILD_ONLY;
+    else if (spouse) ratios = INHERITANCE_SPOUSE_ONLY;
+
+    if (heirChild && ratios && ratios.child) {
+      heirChild.inheritedCash += Math.round(estate * ratios.child);
+    }
+    if (spouse && ratios && ratios.spouse) {
+      spouse.cash += Math.round(estate * ratios.spouse);
+    }
+
+    player.cash = 0;
+    player.pendingReincarnation = { heirChildId: heirChild ? heirChild.id : null };
+
+    if (spouse) {
+      spouse.spouseId = null; // verwitwet - die Ehe endet mit dem Tod
+    }
+
+    return {
+      player,
+      spouse,
+      heirChild,
+      estate,
+    };
+  }
+
+  /**
+   * Der Spieler entscheidet sich weiterzuleben: entweder als das Erbkind (falls vorhanden)
+   * oder als komplett neues Leben. Bleibt dieselbe Verbindung/ID - kein erneuter Beitritt noetig.
+   */
+  reincarnate(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (!this.isAwaitingReincarnation(player)) return { ok: false, reason: 'not_pending' };
+
+    const heirChildId = player.pendingReincarnation.heirChildId;
+    const child = heirChildId ? this.children.get(heirChildId) : null;
+
+    player.name = child ? child.name : player.name;
+    player.age = 18;
+    player.ageProgress = 0;
+    player.health = 100;
+    player.happiness = 70;
+    player.smarts = 50;
+    player.looks = 50;
+    player.cash = child ? child.inheritedCash : STARTING_CASH;
+    player.bank = 0;
+    player.debt = 0;
+    player.wanted = 0;
+    player.jailedUntil = null;
+    player.criminalRecord = [];
+    player.spouseId = null;
+    player.activeEvent = null;
+    player.eventQueue = [];
+    player.recentEventIds = [];
+    player.pendingReincarnation = null;
+    player.position = { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+    player.velocity = { x: 0, y: 0 };
+
+    if (child) this.children.delete(heirChildId); // als Erbe "aufgebraucht"
+
+    return { ok: true, player, becameChild: !!child };
   }
 }
 
