@@ -28,6 +28,16 @@ class NetClient {
     this.onConnectionLost = null;
     this._pendingName = null;
 
+    // Wirtschaft (Phase 3)
+    this.properties = new Map();  // propertyId -> { id, name, price, incomePerTick, maintenancePerTick, ownerId, position }
+    this.companies = new Map();   // companyId -> { id, ownerId, name }
+    this.incomingTrades = new Map(); // tradeId -> Handelsangebot, das MIR gemacht wurde
+    this.onEconomyState = null;
+    this.onTradeOffer = null;
+    this.onTradeResolved = null;
+    this.onActionError = null;
+    this.onPropertyRepossessed = null;
+
     window.addEventListener('keydown', (e) => this.setKey(e.key, true));
     window.addEventListener('keyup', (e) => this.setKey(e.key, false));
   }
@@ -139,6 +149,37 @@ class NetClient {
         break;
       }
 
+      case 'economyState': {
+        this.properties.clear();
+        for (const p of msg.properties) this.properties.set(p.id, p);
+        this.companies.clear();
+        for (const c of msg.companies) this.companies.set(c.id, c);
+        if (this.onEconomyState) this.onEconomyState();
+        break;
+      }
+
+      case 'tradeOffer': {
+        this.incomingTrades.set(msg.tradeId, msg);
+        if (this.onTradeOffer) this.onTradeOffer(msg);
+        break;
+      }
+
+      case 'tradeResolved': {
+        this.incomingTrades.delete(msg.tradeId);
+        if (this.onTradeResolved) this.onTradeResolved(msg);
+        break;
+      }
+
+      case 'actionError': {
+        if (this.onActionError) this.onActionError(msg);
+        break;
+      }
+
+      case 'propertyRepossessed': {
+        if (this.onPropertyRepossessed) this.onPropertyRepossessed(msg);
+        break;
+      }
+
       default:
         break;
     }
@@ -219,5 +260,37 @@ class NetClient {
 
     this.pendingInputs.push(input);
     this.ws.send(JSON.stringify({ type: 'input', seq: input.seq, keys: keysSnapshot }));
+  }
+
+  /** Kleiner Hilfsmethoden-Block fuer die Wirtschaft - alles serverseitig geprueft, hier nur Versand. */
+  send(obj) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(obj));
+    }
+  }
+
+  buyProperty(propertyId) {
+    this.send({ type: 'buyProperty', propertyId });
+  }
+
+  sellProperty(propertyId) {
+    this.send({ type: 'sellProperty', propertyId });
+  }
+
+  foundCompany(name) {
+    this.send({ type: 'foundCompany', name });
+  }
+
+  closeCompany(companyId) {
+    this.send({ type: 'closeCompany', companyId });
+  }
+
+  proposeTrade(toPlayerId, propertyId, price) {
+    this.send({ type: 'proposeTrade', toPlayerId, propertyId, price });
+  }
+
+  respondTrade(tradeId, accept) {
+    this.send({ type: 'respondTrade', tradeId, accept });
+    this.incomingTrades.delete(tradeId); // sofort ausblenden, Server bestaetigt gleich
   }
 }
