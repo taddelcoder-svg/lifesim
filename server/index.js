@@ -63,6 +63,27 @@ function buildEventOfferMessage(instance) {
   };
 }
 
+function buildEconomyStateMessage() {
+  return {
+    type: 'economyState',
+    properties: world.buildPropertiesState(),
+    companies: world.buildCompaniesState(),
+  };
+}
+
+function buildTradeOfferMessage(trade) {
+  const property = world.properties.get(trade.propertyId);
+  return {
+    type: 'tradeOffer',
+    tradeId: trade.id,
+    fromPlayerId: trade.fromPlayerId,
+    propertyId: trade.propertyId,
+    propertyName: property ? property.name : 'Unbekannte Immobilie',
+    price: trade.price,
+    expiresAt: trade.expiresAt,
+  };
+}
+
 function broadcast(msg, exceptWs) {
   const data = JSON.stringify(msg);
   for (const client of wss.clients) {
@@ -107,6 +128,7 @@ wss.on('connection', (ws) => {
         // Spieler hatte beim Verbindungsabbruch noch ein offenes Ereignis - erneut zustellen
         send(ws, buildEventOfferMessage(result.player.activeEvent));
       }
+      send(ws, buildEconomyStateMessage()); // aktueller Immobilienmarkt + Firmenliste sofort sichtbar
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -143,6 +165,90 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'ping') {
       send(ws, { type: 'pong', t: msg.t });
+    }
+
+    // --- Wirtschaft: Immobilien, Firmen, Handel ---
+
+    if (msg.type === 'buyProperty' && ws.playerId != null) {
+      const result = world.buyProperty(ws.playerId, msg.propertyId);
+      if (result.ok) {
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'buyProperty', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'sellProperty' && ws.playerId != null) {
+      const result = world.sellPropertyToBank(ws.playerId, msg.propertyId);
+      if (result.ok) {
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'sellProperty', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'foundCompany' && ws.playerId != null) {
+      const result = world.foundCompany(ws.playerId, msg.name);
+      if (result.ok) {
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'foundCompany', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'closeCompany' && ws.playerId != null) {
+      const result = world.closeCompany(ws.playerId, msg.companyId);
+      if (result.ok) {
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'closeCompany', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'proposeTrade' && ws.playerId != null) {
+      const result = world.proposeTrade(ws.playerId, msg.toPlayerId, msg.propertyId, msg.price);
+      if (result.ok) {
+        sendToPlayer(msg.toPlayerId, buildTradeOfferMessage(result.trade));
+        send(ws, { type: 'tradeSent', tradeId: result.trade.id });
+      } else {
+        send(ws, { type: 'actionError', action: 'proposeTrade', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'respondTrade' && ws.playerId != null) {
+      const result = world.respondTrade(ws.playerId, msg.tradeId, !!msg.accept);
+      if (result.ok) {
+        const buyerId = result.trade.toPlayerId;
+        const sellerId = result.trade.fromPlayerId;
+        const resolvedMsg = {
+          type: 'tradeResolved',
+          tradeId: result.trade.id,
+          accepted: result.accepted,
+          propertyId: result.trade.propertyId,
+          price: result.trade.price,
+        };
+        sendToPlayer(buyerId, resolvedMsg);
+        sendToPlayer(sellerId, resolvedMsg);
+        if (result.accepted) {
+          broadcast(buildEconomyStateMessage());
+          const buyer = world.players.get(buyerId);
+          const seller = world.players.get(sellerId);
+          const updated = [buyer, seller].filter(Boolean).map(serializePublic);
+          if (updated.length > 0) broadcast({ type: 'statUpdate', players: updated });
+        }
+      } else {
+        send(ws, { type: 'actionError', action: 'respondTrade', reason: result.reason });
+      }
+      return;
     }
   });
 
@@ -186,7 +292,8 @@ setInterval(() => {
   }
 }, FAST_TICK_MS);
 
-// slowTick: individuelle Lebensuhr weiterlaufen lassen, Wirtschaft folgt in Phase 3
+// slowTick: individuelle Lebensuhr weiterlaufen lassen, plus Wirtschaft (Phase 3):
+// Immobilien- und Firmen-Einnahmen abzueglich Instandhaltung/Unterhalt einziehen.
 let lastSlowTick = Date.now();
 setInterval(() => {
   const now = Date.now();
@@ -195,6 +302,20 @@ setInterval(() => {
 
   world.ageConnectedPlayers(dt);
   world.removeStalePlayers();
+
+  const repossessed = world.collectEconomyIncome();
+  world.applyWealthTax();
+  if (repossessed.length > 0) {
+    broadcast(buildEconomyStateMessage());
+    for (const { asset, player } of repossessed) {
+      sendToPlayer(player.id, {
+        type: 'propertyRepossessed',
+        propertyId: asset.id,
+        propertyName: asset.name,
+      });
+    }
+  }
+
   broadcast({ type: 'statUpdate', players: world.buildFullPublicState() });
 }, SLOW_TICK_MS);
 
@@ -219,6 +340,20 @@ setInterval(() => {
   const promoted = world.promoteQueuedEvents();
   for (const { player, instance } of promoted) {
     sendToPlayer(player.id, buildEventOfferMessage(instance));
+  }
+
+  const expiredTrades = world.checkExpiredTrades();
+  for (const trade of expiredTrades) {
+    const msg = {
+      type: 'tradeResolved',
+      tradeId: trade.id,
+      accepted: false,
+      timedOut: true,
+      propertyId: trade.propertyId,
+      price: trade.price,
+    };
+    sendToPlayer(trade.toPlayerId, msg);
+    sendToPlayer(trade.fromPlayerId, msg);
   }
 }, EVENT_TICK_MS);
 
