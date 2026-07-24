@@ -53,6 +53,8 @@ function createPlayer(name, token) {
     lastCrimeAt: 0,        // Zeitstempel der letzten Straftat, fuer das Abklingen des Fahndungslevels
     lastStealAttemptAt: 0, // Cooldown gegen Diebstahl-Spam
     friends: [],           // IDs befreundeter Spieler (nie Teil von serializePublic - privat)
+    spouseId: null,        // Ehepartner-ID, oder null
+    pendingReincarnation: null, // gesetzt bei Tod: { heirChildId } - Spieler wartet auf Weiterleben-Aktion
     ws: null, // Laufzeitreferenz, wird niemals serialisiert
   };
 }
@@ -80,6 +82,8 @@ function serializePublic(player) {
     y: player.position.y,
     connected: player.connected,
     jailedUntil: player.jailedUntil,
+    spouseId: player.spouseId,
+    awaitingReincarnation: player.pendingReincarnation != null,
   };
 }
 
@@ -102,4 +106,5 @@ module.exports = {
   serializeMovement,
   WORLD_WIDTH,
   WORLD_HEIGHT,
+  STARTING_CASH,
 };
