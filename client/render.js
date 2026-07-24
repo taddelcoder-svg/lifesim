@@ -142,18 +142,23 @@ class Renderer {
     const canvasEl = document.createElement('canvas');
     canvasEl.width = 256;
     canvasEl.height = 64;
+
+    // WICHTIG (Safari): Erst auf die Zeichenflaeche malen, DANN als Textur registrieren.
+    // Umgekehrt wirft Safari einen InvalidStateError, weil eine noch komplett leere
+    // Zeichenflaeche nicht als gueltige Bildquelle akzeptiert wird.
+    this.paintCanvasText(canvasEl, text || ' ');
+
     const texture = new THREE.CanvasTexture(canvasEl);
     const material = new THREE.SpriteMaterial({ map: texture, depthTest: false });
     const sprite = new THREE.Sprite(material);
     sprite.scale.set(2.2, 0.55, 1);
     sprite.userData.canvasEl = canvasEl;
     sprite.userData.texture = texture;
-    this.paintLabelSprite(sprite, text);
     return sprite;
   }
 
-  paintLabelSprite(sprite, text) {
-    const canvasEl = sprite.userData.canvasEl;
+  /** Malt Text auf eine Zeichenflaeche - getrennt, damit es auch VOR der Texturerstellung nutzbar ist. */
+  paintCanvasText(canvasEl, text) {
     const ctx = canvasEl.getContext('2d');
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
     ctx.fillStyle = '#e8e8e8';
@@ -161,6 +166,10 @@ class Renderer {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, canvasEl.width / 2, canvasEl.height / 2);
+  }
+
+  paintLabelSprite(sprite, text) {
+    this.paintCanvasText(sprite.userData.canvasEl, text);
     sprite.userData.texture.needsUpdate = true;
   }
 
