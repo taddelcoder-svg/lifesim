@@ -15,6 +15,16 @@ const {
   WORLD_HEIGHT,
 } = require('./player');
 const { pickEligibleEvent } = require('./events');
+const {
+  PROPERTIES,
+  COMPANY_FOUNDING_COST,
+  COMPANY_INCOME_PER_TICK,
+  COMPANY_UPKEEP_PER_TICK,
+  PROPERTY_SELL_BACK_RATIO,
+  COMPANY_CLOSE_REFUND_RATIO,
+  WEALTH_TAX_RATE,
+  TRADE_RESPONSE_DURATION_MS,
+} = require('./economy');
 
 const MAX_PLAYERS = 20;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
@@ -50,6 +60,19 @@ class GameWorld {
     this.players = new Map(); // id -> player
     this.tokenIndex = new Map(); // token -> id
     this.lastBroadcastMovement = new Map(); // id -> zuletzt gesendeter Bewegungs-State
+
+    // Immobilien: feste, begrenzte Liste - Objekte werden NIE neu erzeugt,
+    // dadurch entsteht echte Konkurrenz zwischen Spielern um wenige Objekte.
+    this.properties = new Map();
+    for (const def of PROPERTIES) {
+      this.properties.set(def.id, { ...def, ownerId: null });
+    }
+
+    this.companies = new Map(); // id -> { id, ownerId, name }
+    this.nextCompanyId = 1;
+
+    this.trades = new Map(); // id -> Handelsangebot zwischen zwei Spielern
+    this.nextTradeId = 1;
   }
 
   get playerCount() {
@@ -326,6 +349,186 @@ class GameWorld {
       choiceLabel: instance.choices[choiceIndex]?.label,
       timedOut: false,
     };
+  }
+
+  // ---------------------------------------------------------------------
+  // WIRTSCHAFT: Immobilien, Firmen, Handel zwischen Spielern
+  // ---------------------------------------------------------------------
+
+  buildPropertiesState() {
+    return [...this.properties.values()];
+  }
+
+  buildCompaniesState() {
+    return [...this.companies.values()];
+  }
+
+  /** Kauft eine unbebaute/unbesetzte Immobilie direkt von der Bank. */
+  buyProperty(playerId, propertyId) {
+    const player = this.players.get(playerId);
+    const property = this.properties.get(propertyId);
+    if (!player || !property) return { ok: false, reason: 'not_found' };
+    if (property.ownerId) return { ok: false, reason: 'already_owned' };
+    if (player.cash < property.price) return { ok: false, reason: 'insufficient_funds' };
+
+    player.cash -= property.price;
+    property.ownerId = playerId;
+    return { ok: true, property };
+  }
+
+  /** Verkauft eine eigene Immobilie zurueck an die Bank (reduzierter Preis, kein Arbitrage-Exploit). */
+  sellPropertyToBank(playerId, propertyId) {
+    const player = this.players.get(playerId);
+    const property = this.properties.get(propertyId);
+    if (!player || !property) return { ok: false, reason: 'not_found' };
+    if (property.ownerId !== playerId) return { ok: false, reason: 'not_owner' };
+
+    const refund = Math.round(property.price * PROPERTY_SELL_BACK_RATIO);
+    player.cash += refund;
+    property.ownerId = null;
+    return { ok: true, refund, property };
+  }
+
+  /** Gründet eine neue Firma fuer den Spieler. Kein Limit an der Gesamtzahl - anders als Immobilien. */
+  foundCompany(playerId, name) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (player.cash < COMPANY_FOUNDING_COST) return { ok: false, reason: 'insufficient_funds' };
+
+    player.cash -= COMPANY_FOUNDING_COST;
+    const company = {
+      id: this.nextCompanyId++,
+      ownerId: playerId,
+      name: name && String(name).trim() ? String(name).trim().slice(0, 30) : 'Neue Firma',
+    };
+    this.companies.set(company.id, company);
+    return { ok: true, company };
+  }
+
+  /** Schliesst eine eigene Firma, mit Teilrueckerstattung. */
+  closeCompany(playerId, companyId) {
+    const player = this.players.get(playerId);
+    const company = this.companies.get(companyId);
+    if (!player || !company) return { ok: false, reason: 'not_found' };
+    if (company.ownerId !== playerId) return { ok: false, reason: 'not_owner' };
+
+    const refund = Math.round(COMPANY_FOUNDING_COST * COMPANY_CLOSE_REFUND_RATIO);
+    player.cash += refund;
+    this.companies.delete(companyId);
+    return { ok: true, refund };
+  }
+
+  /**
+   * Wird im slowTick aufgerufen: zieht Einnahmen minus Instandhaltung fuer alle
+   * Immobilien und Firmen ein. Das ist die Geld-SENKE, die verhindert, dass
+   * Vermoegen unbegrenzt waechst. Kann sich ein Spieler die Instandhaltung nicht
+   * mehr leisten, wird die Immobilie zwangsversteigert (zurueck an die Bank, kein
+   * Erloes) statt den Spieler ins Minus rutschen zu lassen.
+   */
+  collectEconomyIncome() {
+    const repossessed = [];
+
+    for (const property of this.properties.values()) {
+      if (!property.ownerId) continue;
+      const owner = this.players.get(property.ownerId);
+      if (!owner) {
+        property.ownerId = null; // Besitzer existiert nicht mehr (sollte selten vorkommen)
+        continue;
+      }
+      const net = property.incomePerTick - property.maintenancePerTick;
+      if (owner.cash + net < 0) {
+        property.ownerId = null;
+        repossessed.push({ type: 'property', asset: property, player: owner });
+        continue;
+      }
+      owner.cash += net;
+    }
+
+    for (const company of this.companies.values()) {
+      const owner = this.players.get(company.ownerId);
+      if (!owner) continue; // Firma bleibt bestehen, falls Besitzer (noch) nicht online
+      const net = COMPANY_INCOME_PER_TICK - COMPANY_UPKEEP_PER_TICK;
+      owner.cash = Math.max(0, owner.cash + net);
+    }
+
+    return repossessed;
+  }
+
+  /**
+   * Die eigentliche Geld-SENKE: kleine Steuer auf das Barvermoegen selbst,
+   * unabhaengig von Immobilien-/Firmenbesitz. Ohne das wuerde Vermoegen bei
+   * Besitz von profitablen Immobilien/Firmen unbegrenzt wachsen.
+   */
+  applyWealthTax() {
+    for (const player of this.players.values()) {
+      if (!player.connected || player.cash <= 0) continue;
+      player.cash = Math.max(0, Math.round(player.cash * (1 - WEALTH_TAX_RATE)));
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // HANDEL: ein Spieler bietet einem anderen eine eigene Immobilie zum Kauf an
+  // ---------------------------------------------------------------------
+
+  /** Bietet einem anderen Spieler eine eigene Immobilie zu einem Preis an. */
+  proposeTrade(fromPlayerId, toPlayerId, propertyId, price) {
+    const fromPlayer = this.players.get(fromPlayerId);
+    const toPlayer = this.players.get(toPlayerId);
+    const property = this.properties.get(propertyId);
+    if (!fromPlayer || !toPlayer || !property) return { ok: false, reason: 'not_found' };
+    if (property.ownerId !== fromPlayerId) return { ok: false, reason: 'not_owner' };
+    if (fromPlayerId === toPlayerId) return { ok: false, reason: 'self_trade' };
+    if (typeof price !== 'number' || price < 0) return { ok: false, reason: 'invalid_price' };
+
+    const trade = {
+      id: this.nextTradeId++,
+      fromPlayerId,
+      toPlayerId,
+      propertyId,
+      price: Math.round(price),
+      expiresAt: Date.now() + TRADE_RESPONSE_DURATION_MS,
+    };
+    this.trades.set(trade.id, trade);
+    return { ok: true, trade };
+  }
+
+  /** Empfaenger nimmt an oder lehnt ab. Bei Annahme wird serverseitig alles geprueft und uebertragen. */
+  respondTrade(playerId, tradeId, accept) {
+    const trade = this.trades.get(tradeId);
+    if (!trade) return { ok: false, reason: 'not_found' };
+    if (trade.toPlayerId !== playerId) return { ok: false, reason: 'not_recipient' };
+
+    this.trades.delete(tradeId);
+
+    if (!accept) {
+      return { ok: true, accepted: false, trade };
+    }
+
+    const buyer = this.players.get(trade.toPlayerId);
+    const seller = this.players.get(trade.fromPlayerId);
+    const property = this.properties.get(trade.propertyId);
+    if (!buyer || !seller || !property) return { ok: false, reason: 'not_found' };
+    if (property.ownerId !== trade.fromPlayerId) return { ok: false, reason: 'no_longer_owned' };
+    if (buyer.cash < trade.price) return { ok: false, reason: 'insufficient_funds' };
+
+    buyer.cash -= trade.price;
+    seller.cash += trade.price;
+    property.ownerId = buyer.id;
+
+    return { ok: true, accepted: true, trade, property };
+  }
+
+  /** Handelsangebote, die niemand rechtzeitig beantwortet hat, verfallen automatisch. */
+  checkExpiredTrades() {
+    const now = Date.now();
+    const expired = [];
+    for (const [id, trade] of this.trades) {
+      if (trade.expiresAt <= now) {
+        this.trades.delete(id);
+        expired.push(trade);
+      }
+    }
+    return expired;
   }
 }
 
