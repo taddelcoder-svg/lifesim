@@ -140,9 +140,40 @@
     background: #4a7cff;
     width: 100%;
   }
+
+  #loadingScreen {
+    position: fixed;
+    inset: 0;
+    background: #1a1d23;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 25;
+    color: #e8e8e8;
+    font-family: system-ui, sans-serif;
+  }
+  #loadingSpinner {
+    width: 44px;
+    height: 44px;
+    border: 3px solid #3a3f4b;
+    border-top-color: #4a7cff;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+    margin-bottom: 18px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loadingTitle { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  #loadingHint { font-size: 13px; color: #9aa0ab; text-align: center; max-width: 300px; line-height: 1.5; }
 </style>
 </head>
 <body>
+  <div id="loadingScreen">
+    <div id="loadingSpinner"></div>
+    <div id="loadingTitle">Welt wird geladen...</div>
+    <div id="loadingHint">Beim ersten Start kann das bis zu einer Minute dauern, weil der Server aufwacht.</div>
+  </div>
+
   <div id="joinOverlay">
     <div id="joinBox">
       <h2>Neues Leben beginnen</h2>
@@ -212,6 +243,7 @@
       }
       const name = nameInput.value.trim() || 'Spieler';
       joinMsg.textContent = '';
+      showLoading('Verbinde mit der Welt...', 'Falls der Server geschlafen hat, dauert das bis zu einer Minute.');
       net.connect(name);
     });
     nameInput.addEventListener('keydown', (e) => {
@@ -230,16 +262,45 @@
       showDebugError('3D-Grafik konnte nicht gestartet werden: ' + err.message);
     }
 
+    // Ladebildschirm: verschwindet, sobald alles aufgebaut ist. Erscheint erneut
+    // waehrend des Verbindens, weil der Gratis-Server nach Inaktivitaet erst
+    // aufwachen muss (bis zu ~1 Minute) - ohne Anzeige wirkt das wie ein Absturz.
+    const loadingScreen = document.getElementById('loadingScreen');
+    const loadingTitle = document.getElementById('loadingTitle');
+    const loadingHint = document.getElementById('loadingHint');
+
+    function showLoading(title, hint) {
+      loadingTitle.textContent = title;
+      loadingHint.textContent = hint;
+      loadingScreen.style.display = 'flex';
+    }
+    function hideLoading() {
+      loadingScreen.style.display = 'none';
+    }
+
+    hideLoading(); // Aufbau abgeschlossen - Namenseingabe freigeben
+
     if (net) {
       net.onWelcome = () => {
+        hideLoading();
         joinOverlay.style.display = 'none';
         if (renderer) renderer.start();
       };
       net.onJoinError = (reason) => {
+        // Ladebildschirm MUSS hier weg, sonst haengt der Nutzer vor einem
+        // ewig drehenden Rad und sieht die eigentliche Fehlermeldung nie.
+        hideLoading();
         joinMsg.textContent =
           reason === 'lobby_full'
             ? 'Diese Welt ist voll (max. 20 Spieler). Bitte später erneut versuchen.'
             : 'Verbindung fehlgeschlagen.';
+      };
+      net.onConnectionLost = () => {
+        // Nur anzeigen, wenn das Spiel bereits lief - beim ersten Verbindungsversuch
+        // uebernimmt stattdessen onJoinError die Rueckmeldung.
+        if (net.myId != null) {
+          showLoading('Verbindung verloren', 'Versuche automatisch neu zu verbinden...');
+        }
       };
     }
 
