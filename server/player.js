@@ -52,6 +52,7 @@ function createPlayer(name, token) {
     jailedUntil: null,     // Zeitstempel, bis wann der Spieler im Gefaengnis sitzt (oder null)
     lastCrimeAt: 0,        // Zeitstempel der letzten Straftat, fuer das Abklingen des Fahndungslevels
     lastStealAttemptAt: 0, // Cooldown gegen Diebstahl-Spam
+    friends: [],           // IDs befreundeter Spieler (nie Teil von serializePublic - privat)
     ws: null, // Laufzeitreferenz, wird niemals serialisiert
   };
 }
