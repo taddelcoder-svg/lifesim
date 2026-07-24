@@ -46,6 +46,9 @@ function createPlayer(name, token) {
     lastSeen: Date.now(),
     connected: true,
     lastProcessedInput: 0,
+    activeEvent: null,     // aktuell angezeigtes Lebensereignis (nie Teil von serializePublic)
+    eventQueue: [],        // wartende Ereignisse, falls schon eins aktiv ist
+    recentEventIds: [],    // Verlauf, um Wiederholungen kurzfristig zu vermeiden
     ws: null, // Laufzeitreferenz, wird niemals serialisiert
   };
 }
