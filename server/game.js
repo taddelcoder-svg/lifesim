@@ -44,6 +44,7 @@ const {
   WANTED_DECAY_INTERVAL_MS,
   WANTED_DECAY_AMOUNT,
 } = require('./crime');
+const { MAX_CHAT_LENGTH, CHAT_HISTORY_LIMIT, LEADERBOARD_LIMIT } = require('./social');
 
 const MAX_PLAYERS = 20;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
@@ -105,6 +106,12 @@ class GameWorld {
         patrolChangeAt: 0,
       });
     }
+
+    this.chatLog = []; // {id, playerId, name, text, timestamp} - begrenzt auf CHAT_HISTORY_LIMIT
+    this.nextChatId = 1;
+
+    this.friendRequests = new Map(); // id -> { id, fromPlayerId, toPlayerId }
+    this.nextFriendRequestId = 1;
   }
 
   get playerCount() {
@@ -711,6 +718,89 @@ class GameWorld {
         player.lastCrimeAt = now; // Timer neu starten fuer die naechste Abklingstufe
       }
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // SOZIALES: Chat, Freundschaften, Ranglisten
+  // ---------------------------------------------------------------------
+
+  /** Sendet eine Chat-Nachricht. Text wird serverseitig gekuerzt/geprueft - der Client bestimmt hier nichts. */
+  sendChatMessage(playerId, text) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+
+    const trimmed = typeof text === 'string' ? text.trim() : '';
+    if (!trimmed) return { ok: false, reason: 'empty' };
+
+    const message = {
+      id: this.nextChatId++,
+      playerId,
+      name: player.name,
+      text: trimmed.slice(0, MAX_CHAT_LENGTH),
+      timestamp: Date.now(),
+    };
+    this.chatLog.push(message);
+    if (this.chatLog.length > CHAT_HISTORY_LIMIT) this.chatLog.shift();
+    return { ok: true, message };
+  }
+
+  buildChatHistory() {
+    return [...this.chatLog];
+  }
+
+  /** Schickt einem anderen Spieler eine Freundschaftsanfrage. */
+  proposeFriendship(fromPlayerId, toPlayerId) {
+    const fromPlayer = this.players.get(fromPlayerId);
+    const toPlayer = this.players.get(toPlayerId);
+    if (!fromPlayer || !toPlayer) return { ok: false, reason: 'not_found' };
+    if (fromPlayerId === toPlayerId) return { ok: false, reason: 'self_request' };
+    if (fromPlayer.friends.includes(toPlayerId)) return { ok: false, reason: 'already_friends' };
+
+    const alreadyPending = [...this.friendRequests.values()].some(
+      (r) => r.fromPlayerId === fromPlayerId && r.toPlayerId === toPlayerId
+    );
+    if (alreadyPending) return { ok: false, reason: 'already_pending' };
+
+    const request = { id: this.nextFriendRequestId++, fromPlayerId, toPlayerId };
+    this.friendRequests.set(request.id, request);
+    return { ok: true, request };
+  }
+
+  /** Empfaenger nimmt eine Freundschaftsanfrage an oder lehnt sie ab. */
+  respondFriendRequest(playerId, requestId, accept) {
+    const request = this.friendRequests.get(requestId);
+    if (!request) return { ok: false, reason: 'not_found' };
+    if (request.toPlayerId !== playerId) return { ok: false, reason: 'not_recipient' };
+
+    this.friendRequests.delete(requestId);
+    if (!accept) return { ok: true, accepted: false, request };
+
+    const fromPlayer = this.players.get(request.fromPlayerId);
+    const toPlayer = this.players.get(request.toPlayerId);
+    if (!fromPlayer || !toPlayer) return { ok: false, reason: 'not_found' };
+
+    if (!fromPlayer.friends.includes(toPlayer.id)) fromPlayer.friends.push(toPlayer.id);
+    if (!toPlayer.friends.includes(fromPlayer.id)) toPlayer.friends.push(fromPlayer.id);
+
+    return { ok: true, accepted: true, request };
+  }
+
+  /** Top-Listen nach Vermoegen und Fahndungslevel - rein aus dem bestehenden Spielerstate abgeleitet. */
+  buildLeaderboards() {
+    const all = [...this.players.values()].filter((p) => p.connected);
+
+    const richest = [...all]
+      .sort((a, b) => b.cash - a.cash)
+      .slice(0, LEADERBOARD_LIMIT)
+      .map((p) => ({ id: p.id, name: p.name, value: p.cash }));
+
+    const mostWanted = [...all]
+      .filter((p) => p.wanted > 0)
+      .sort((a, b) => b.wanted - a.wanted)
+      .slice(0, LEADERBOARD_LIMIT)
+      .map((p) => ({ id: p.id, name: p.name, value: p.wanted }));
+
+    return { richest, mostWanted };
   }
 }
 
