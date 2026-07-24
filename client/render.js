@@ -30,6 +30,13 @@ const CAMERA_SMOOTH = 0.12; // 0..1 - hoeher = Kamera folgt schneller/ruckartige
 
 const FACING_MIN_SPEED = 1; // px/s, darunter wird die letzte Blickrichtung beibehalten (kein Zittern im Stand)
 
+const BUILDING_FOOTPRINT = 3; // Breite/Tiefe aller Immobilien-Gebaeude in 3D-Einheiten
+const BUILDING_MIN_HEIGHT = 4;
+const BUILDING_HEIGHT_PER_PRICE = 1 / 400; // teurere Immobilien wirken sichtbar groesser
+
+// MUSS mit server/crime.js (JAIL_POSITION) uebereinstimmen
+const JAIL_POSITION = { x: 100, y: 1900 };
+
 class Renderer {
   constructor(canvas, net) {
     this.net = net;
@@ -50,6 +57,7 @@ class Renderer {
 
     this.entities = new Map();  // playerId -> { group, headMat, bodyMat, label, lastLabelText }
     this.copEntities = new Map(); // copId -> { group }
+    this.buildingEntities = new Map(); // propertyId -> { group, mat, label, lastLabelText, lastColorKey }
     this.facingById = new Map(); // playerId -> Bogenmass, Blickrichtung bei Stillstand beibehalten
 
     this.smoothedCamPos = this.camera.position.clone();
@@ -77,6 +85,39 @@ class Renderer {
     const grid = new THREE.GridHelper(WORLD_SIZE_3D, Math.round(WORLD_SIZE_3D / 5), 0x3a3f4b, 0x2a2f3a);
     grid.position.set(WORLD_SIZE_3D / 2, 0.01, WORLD_SIZE_3D / 2); // minimal ueber dem Boden gegen Flackern
     this.scene.add(grid);
+
+    this.buildJailMarker();
+  }
+
+  /** Sichtbarer Gefaengnis-Standort: einfacher Kaefig aus duennen Stangen, statt einer unsichtbaren Ecke. */
+  buildJailMarker() {
+    const jx = JAIL_POSITION.x * WORLD_SCALE;
+    const jz = JAIL_POSITION.y * WORLD_SCALE;
+    const size = 5;
+    const barMat = new THREE.MeshStandardMaterial({ color: 0x8a8f9a });
+
+    const floorGeo = new THREE.PlaneGeometry(size, size);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x35302a });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(jx, 0.02, jz);
+    this.scene.add(floor);
+
+    const barPositions = [
+      [-size / 2, -size / 2], [size / 2, -size / 2],
+      [-size / 2, size / 2], [size / 2, size / 2],
+      [0, -size / 2], [0, size / 2], [-size / 2, 0], [size / 2, 0],
+    ];
+    for (const [dx, dz] of barPositions) {
+      const barGeo = new THREE.CylinderGeometry(0.06, 0.06, 2.2, 6);
+      const bar = new THREE.Mesh(barGeo, barMat);
+      bar.position.set(jx + dx, 1.1, jz + dz);
+      this.scene.add(bar);
+    }
+
+    const label = this.createLabelSprite('🚔 Gefängnis');
+    label.position.set(jx, 3, jz);
+    this.scene.add(label);
   }
 
   onResize() {
@@ -98,6 +139,7 @@ class Renderer {
 
     this.net.update(dt);
     this.syncEntities();
+    this.syncBuildings();
     this.updateCamera();
     this.renderer.render(this.scene, this.camera);
     this.updateHud();
@@ -234,7 +276,56 @@ class Renderer {
     this.syncCops();
   }
 
-  /** Erstellt eine Polizeifigur - gleiche Grundform, andere Farbe, eigenes Label. */
+  /** Erstellt ein Immobilien-Gebaeude: Quader, dessen Hoehe den Preis widerspiegelt. */
+  createBuildingEntity(property) {
+    const height = BUILDING_MIN_HEIGHT + property.price * BUILDING_HEIGHT_PER_PRICE;
+    const geo = new THREE.BoxGeometry(BUILDING_FOOTPRINT, height, BUILDING_FOOTPRINT);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x4a5062 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.y = height / 2;
+
+    const group = new THREE.Group();
+    group.add(mesh);
+
+    const label = this.createLabelSprite(property.name);
+    label.position.y = height + 0.6;
+    group.add(label);
+
+    this.scene.add(group);
+    return { group, mesh, mat, label, lastLabelText: property.name, lastColorKey: null, height };
+  }
+
+  /** Farbe zeigt Besitzstatus: grau = frei, blau = dir gehoerend, rot = jemand anderem gehoerend. */
+  colorKeyForProperty(property) {
+    if (!property.ownerId) return 'free';
+    return property.ownerId === this.net.myId ? 'mine' : 'other';
+  }
+
+  /** Positioniert/faerbt alle Immobilien-Gebaeude anhand des zuletzt empfangenen economyState. */
+  syncBuildings() {
+    for (const property of this.net.properties.values()) {
+      let entry = this.buildingEntities.get(property.id);
+      if (!entry) {
+        entry = this.createBuildingEntity(property);
+        this.buildingEntities.set(property.id, entry);
+        entry.group.position.x = property.position.x * WORLD_SCALE;
+        entry.group.position.z = property.position.y * WORLD_SCALE;
+      }
+
+      const colorKey = this.colorKeyForProperty(property);
+      if (colorKey !== entry.lastColorKey) {
+        const colorByKey = { free: 0x4a5062, mine: 0x3a6ceb, other: 0xb84a4a };
+        entry.mat.color.set(colorByKey[colorKey]);
+        entry.lastColorKey = colorKey;
+      }
+
+      const labelText = property.ownerId ? `${property.name} ($${property.price})` : `${property.name} - frei ($${property.price})`;
+      if (entry.lastLabelText !== labelText) {
+        this.paintLabelSprite(entry.label, labelText);
+        entry.lastLabelText = labelText;
+      }
+    }
+  }
   createCopEntity() {
     const group = new THREE.Group();
 
