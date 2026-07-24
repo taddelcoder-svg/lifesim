@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Lebenssimulation - Phase 1</title>
 <style>
   html, body {
@@ -11,11 +11,27 @@
     background: #1a1d23;
     overflow: hidden;
     height: 100%;
+    /* Verhindert auf iPad: Text-Auswahl-Popup bei langem Drücken (stoert Steuerkreuz/Diebstahl-Knopf),
+       Zoomen durch Doppeltipp, und Overscroll-"Gummiband"-Effekt beim Ziehen. */
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    overscroll-behavior: none;
+  }
+  /* Scrollbare Bereiche brauchen ihr eigenes touch-action, sonst liesse sich
+     darin nicht mehr scrollen (das globale "none" oben wuerde das mit sperren). */
+  #marketPanel, #socialPanel, #chatMessages {
+    touch-action: pan-y;
+  }
+  #nameInput, #chatInput, #companyNameInput {
+    -webkit-user-select: text;
+    user-select: text;
   }
   #hud {
     position: fixed;
-    top: 10px;
-    left: 10px;
+    top: max(10px, env(safe-area-inset-top));
+    left: max(10px, env(safe-area-inset-left));
     color: #e8e8e8;
     font-family: system-ui, sans-serif;
     font-size: 14px;
@@ -72,8 +88,8 @@
 
   #touchControls {
     position: fixed;
-    left: 20px;
-    bottom: 20px;
+    left: max(20px, env(safe-area-inset-left));
+    bottom: max(20px, env(safe-area-inset-bottom));
     z-index: 10;
     display: grid;
     grid-template-columns: 56px 56px 56px;
@@ -101,7 +117,7 @@
 
   #eventBanner {
     position: fixed;
-    top: 16px;
+    top: max(16px, env(safe-area-inset-top));
     left: 50%;
     transform: translateX(-50%);
     z-index: 15;
@@ -167,7 +183,7 @@
   #loadingHint { font-size: 13px; color: #9aa0ab; text-align: center; max-width: 300px; line-height: 1.5; }
 
   #marketBtn {
-    position: fixed; top: 10px; right: 10px; z-index: 10;
+    position: fixed; top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); z-index: 10;
     background: rgba(0, 0, 0, 0.45); color: #e8e8e8; border: 1px solid #3a3f4b;
     border-radius: 6px; padding: 8px 12px; font-family: system-ui, sans-serif;
     font-size: 13px; cursor: pointer;
@@ -200,14 +216,17 @@
     background: #1a1d23; color: #e8e8e8; font-size: 12px;
   }
   #actionToast {
-    position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+    position: fixed; bottom: max(10px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
     background: #22262f; border: 1px solid #3a3f4b; color: #e8e8e8; font-size: 13px;
     padding: 9px 16px; border-radius: 8px; z-index: 30; display: none;
     font-family: system-ui, sans-serif;
   }
 
   #stealBtn {
-    position: fixed; right: 20px; bottom: 20px; z-index: 10;
+    position: fixed;
+    right: max(20px, env(safe-area-inset-right));
+    bottom: max(20px, env(safe-area-inset-bottom));
+    z-index: 10;
     background: rgba(224, 90, 90, 0.85); color: white; border: none;
     border-radius: 50%; width: 64px; height: 64px; font-size: 22px; cursor: pointer;
   }
@@ -222,7 +241,7 @@
   #jailOverlay p { color: #9aa0ab; max-width: 300px; }
 
   #socialBtn {
-    position: fixed; top: 10px; right: 100px; z-index: 10;
+    position: fixed; top: max(10px, env(safe-area-inset-top)); right: max(100px, calc(env(safe-area-inset-right) + 90px)); z-index: 10;
     background: rgba(0, 0, 0, 0.45); color: #e8e8e8; border: 1px solid #3a3f4b;
     border-radius: 6px; padding: 8px 12px; font-family: system-ui, sans-serif;
     font-size: 13px; cursor: pointer;
@@ -343,9 +362,9 @@
 
   <canvas id="gameCanvas"></canvas>
 
-  <div id="debugError" style="display:none; position:fixed; bottom:10px; right:10px; max-width:80vw;
-    background:#3a1a1a; color:#ffb0b0; font-size:11px; padding:8px 10px; border-radius:6px;
-    z-index:30; font-family:monospace; white-space:pre-wrap;"></div>
+  <div id="debugError" style="display:none; position:fixed; top:90px; left:max(10px, env(safe-area-inset-left));
+    max-width:min(80vw, 320px); background:#3a1a1a; color:#ffb0b0; font-size:11px; padding:8px 10px;
+    border-radius:6px; z-index:30; font-family:monospace; white-space:pre-wrap;"></div>
 
   <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
   <script src="net.js"></script>
