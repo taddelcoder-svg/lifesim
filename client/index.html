@@ -98,6 +98,48 @@
   #dpadLeft { grid-column: 1; grid-row: 2; }
   #dpadRight { grid-column: 3; grid-row: 2; }
   #dpadDown { grid-column: 2; grid-row: 3; }
+
+  #eventBanner {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 15;
+    background: #22262f;
+    border: 1px solid #3a3f4b;
+    border-radius: 10px;
+    padding: 14px 18px;
+    color: #e8e8e8;
+    font-family: system-ui, sans-serif;
+    min-width: 260px;
+    max-width: min(90vw, 380px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+  #eventBanner h3 { margin: 0 0 6px 0; font-size: 15px; }
+  #eventBanner p { margin: 0 0 10px 0; font-size: 13px; color: #c7ccd6; }
+  #eventChoices { display: flex; gap: 8px; flex-wrap: wrap; }
+  #eventChoices button {
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: none;
+    background: #4a7cff;
+    color: white;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #eventChoices button:hover { background: #3a6ceb; }
+  #eventTimerTrack {
+    margin-top: 10px;
+    height: 4px;
+    background: #3a3f4b;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  #eventTimerFill {
+    height: 100%;
+    background: #4a7cff;
+    width: 100%;
+  }
 </style>
 </head>
 <body>
@@ -111,6 +153,12 @@
   </div>
 
   <div id="hud"></div>
+  <div id="eventBanner" style="display:none;">
+    <h3 id="eventTitle"></h3>
+    <p id="eventText"></p>
+    <div id="eventChoices"></div>
+    <div id="eventTimerTrack"><div id="eventTimerFill"></div></div>
+  </div>
   <div id="touchControls">
     <button id="dpadUp" class="dpad-btn">&#8593;</button>
     <button id="dpadLeft" class="dpad-btn">&#8592;</button>
@@ -182,6 +230,52 @@
     bindDpadButton('dpadLeft', 'a');
     bindDpadButton('dpadRight', 'd');
     bindDpadButton('dpadDown', 's');
+
+    // Lebensereignisse: Banner mit Countdown, wird vom Server per 'eventOffer' ausgeloest.
+    // Reagiert der Spieler nicht innerhalb der Zeit, loest der SERVER die Standardwahl aus
+    // und schickt 'eventResolved' - das Banner wird so oder so ausgeblendet.
+    const eventBanner = document.getElementById('eventBanner');
+    const eventTitleEl = document.getElementById('eventTitle');
+    const eventTextEl = document.getElementById('eventText');
+    const eventChoicesEl = document.getElementById('eventChoices');
+    const eventTimerFillEl = document.getElementById('eventTimerFill');
+    let eventTimerHandle = null;
+
+    net.onEventOffer = (msg) => showEventBanner(msg);
+    net.onEventResolved = () => hideEventBanner();
+
+    function showEventBanner(msg) {
+      eventTitleEl.textContent = msg.title;
+      eventTextEl.textContent = msg.text;
+      eventChoicesEl.innerHTML = '';
+      msg.choices.forEach((choice) => {
+        const btn = document.createElement('button');
+        btn.textContent = choice.label;
+        btn.addEventListener('click', () => {
+          net.chooseEventOption(choice.index);
+          hideEventBanner();
+        });
+        eventChoicesEl.appendChild(btn);
+      });
+      eventBanner.style.display = 'block';
+      startEventTimer(msg.expiresAt);
+    }
+
+    function hideEventBanner() {
+      eventBanner.style.display = 'none';
+      if (eventTimerHandle) cancelAnimationFrame(eventTimerHandle);
+    }
+
+    function startEventTimer(expiresAt) {
+      const total = expiresAt - Date.now();
+      function tick() {
+        const remaining = expiresAt - Date.now();
+        const pct = Math.max(0, Math.min(1, remaining / total));
+        eventTimerFillEl.style.width = (pct * 100) + '%';
+        if (remaining > 0) eventTimerHandle = requestAnimationFrame(tick);
+      }
+      tick();
+    }
   </script>
 </body>
 </html>
