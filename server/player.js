@@ -100,10 +100,29 @@ function serializeMovement(player) {
   };
 }
 
+/**
+ * Vollstaendiger interner State eines Spielers, fuer die persistente Speicherung
+ * (nicht fuer Broadcasts an Clients!). Enthaelt ALLES ausser der Laufzeit-
+ * Verbindungsreferenz - bewusst als generisches "alles ausser ws", damit neue
+ * Felder in createPlayer() automatisch mitgespeichert werden, ohne diese
+ * Funktion jedes Mal von Hand nachpflegen zu muessen.
+ */
+function serializeFull(player) {
+  const { ws, ...rest } = player;
+  return rest;
+}
+
+/** Stellt sicher, dass neu erzeugte Spieler-IDs nie mit wiederhergestellten kollidieren. */
+function setNextPlayerId(n) {
+  if (n > nextPlayerId) nextPlayerId = n;
+}
+
 module.exports = {
   createPlayer,
   serializePublic,
   serializeMovement,
+  serializeFull,
+  setNextPlayerId,
   WORLD_WIDTH,
   WORLD_HEIGHT,
   STARTING_CASH,
