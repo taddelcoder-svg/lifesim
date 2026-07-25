@@ -11,8 +11,10 @@ const PLAYER_SPEED = 200; // px/s - MUSS mit server/game.js übereinstimmen
 
 // Diese drei Werte UND die Formel in stepMovement() muessen EXAKT mit
 // server/game.js uebereinstimmen, sonst driftet die Vorhersage staendig ab.
-const PLAYER_ACCELERATION = 1400;
-const PLAYER_FRICTION = 1800;
+// Bewusst hoch angesetzt (GTA/Roblox-Gefuehl beim On-Foot-Richtungswechsel,
+// kein traeges "Eislaufen") - siehe ausfuehrlichen Kommentar in server/game.js.
+const PLAYER_ACCELERATION = 4000;
+const PLAYER_FRICTION = 5000;
 
 const SNAP_THRESHOLD = 60;     // ab dieser Abweichung (px) wird hart korrigiert statt sanft
 const CORRECTION_BLEND = 0.25; // Anteil, mit dem kleine Abweichungen pro Frame ausgeglichen werden
