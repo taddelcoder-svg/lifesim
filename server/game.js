@@ -11,6 +11,8 @@ const {
   createPlayer,
   serializePublic,
   serializeMovement,
+  serializeFull,
+  setNextPlayerId,
   WORLD_WIDTH,
   WORLD_HEIGHT,
   STARTING_CASH,
@@ -303,6 +305,76 @@ class GameWorld {
       list.push(serializePublic(player));
     }
     return list;
+  }
+
+  // ---------------------------------------------------------------------
+  // PERSISTENZ: kompletter Zustand zum Speichern/Wiederherstellen über
+  // Server-Neustarts hinweg (z.B. bei jedem Render-Deploy). Ohne das wäre
+  // nach jedem Update der komplette Fortschritt aller Spieler verloren.
+  // ---------------------------------------------------------------------
+
+  /** Baut den vollstaendigen, wiederherstellbaren Weltzustand (fuer Disk-Speicherung). */
+  buildFullSnapshot() {
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      nextPlayerId: Math.max(0, ...[...this.players.keys()]) + 1,
+      nextCompanyId: this.nextCompanyId,
+      nextChildId: this.nextChildId,
+      players: [...this.players.values()].map(serializeFull),
+      properties: [...this.properties.values()].map((p) => ({ id: p.id, ownerId: p.ownerId })),
+      companies: [...this.companies.values()],
+      children: [...this.children.values()],
+      chatLog: this.chatLog,
+    };
+  }
+
+  /**
+   * Stellt einen zuvor gespeicherten Weltzustand wieder her (beim Serverstart).
+   * Alle wiederhergestellten Spieler starten als "nicht verbunden" mit frischem
+   * lastSeen (= jetzt) - das gibt ihnen ab dem Moment des Serverstarts die volle
+   * Reconnect-Schonfrist, unabhaengig davon, wie lange der Server offline war.
+   * @returns {number} Anzahl wiederhergestellter Spieler
+   */
+  restoreFromSnapshot(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.players)) return 0;
+
+    for (const saved of snapshot.players) {
+      const player = {
+        ...saved,
+        connected: false,
+        lastSeen: Date.now(),
+        ws: null,
+      };
+      this.players.set(player.id, player);
+      if (player.token) this.tokenIndex.set(player.token, player.id);
+    }
+
+    if (typeof snapshot.nextPlayerId === 'number') setNextPlayerId(snapshot.nextPlayerId);
+    if (typeof snapshot.nextCompanyId === 'number') this.nextCompanyId = snapshot.nextCompanyId;
+    if (typeof snapshot.nextChildId === 'number') this.nextChildId = snapshot.nextChildId;
+
+    if (Array.isArray(snapshot.properties)) {
+      for (const saved of snapshot.properties) {
+        const property = this.properties.get(saved.id);
+        if (property) property.ownerId = saved.ownerId;
+      }
+    }
+
+    if (Array.isArray(snapshot.companies)) {
+      for (const company of snapshot.companies) this.companies.set(company.id, company);
+    }
+
+    if (Array.isArray(snapshot.children)) {
+      for (const child of snapshot.children) this.children.set(child.id, child);
+    }
+
+    if (Array.isArray(snapshot.chatLog)) {
+      this.chatLog = snapshot.chatLog;
+      this.nextChatId = this.chatLog.reduce((max, m) => Math.max(max, m.id + 1), 1);
+    }
+
+    return snapshot.players.length;
   }
 
   /** Merkt sich ein aufgelöstes Event, um kurzfristige Wiederholungen zu vermeiden. */
