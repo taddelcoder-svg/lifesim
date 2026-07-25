@@ -438,9 +438,19 @@ class Renderer {
     if (!me) return;
     const online = [...this.net.players.values()].filter((p) => p.connected !== false).length;
     const wantedText = me.wanted > 0 ? ` &nbsp;|&nbsp; Gesucht: ${'⭐'.repeat(Math.min(me.wanted, 5))}` : '';
+
+    // Berufstitel aus dem Katalog nachschlagen - der Server sendet nur ID + Stufe,
+    // die lesbaren Titel stehen im Katalog, der beim Beitritt mitkommt.
+    let jobText = 'arbeitslos';
+    if (me.job) {
+      const jobDef = this.net.jobCatalog.find((j) => j.id === me.job);
+      const level = jobDef ? jobDef.levels[me.jobLevel] : null;
+      jobText = level ? level.title : 'angestellt';
+    }
+
     this.hud.innerHTML =
       `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}${wantedText}<br>` +
-      `❤️ ${me.health ?? 100} &nbsp; 😊 ${me.happiness ?? 70} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50}<br>` +
+      `❤️ ${me.health ?? 100} &nbsp; 😊 ${me.happiness ?? 70} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}<br>` +
       `Spieler online: ${online} / 20 &nbsp;|&nbsp; Steuerung: WASD`;
   }
 }
