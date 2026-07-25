@@ -8,6 +8,15 @@
 const WORLD_WIDTH = 2000;
 const WORLD_HEIGHT = 2000;
 const PLAYER_SPEED = 200; // px/s - MUSS mit server/game.js übereinstimmen
+
+// Diese drei Werte UND die Formel in stepMovement() muessen EXAKT mit
+// server/game.js uebereinstimmen, sonst driftet die Vorhersage staendig ab.
+const PLAYER_ACCELERATION = 1400;
+const PLAYER_FRICTION = 1800;
+
+const SNAP_THRESHOLD = 60;     // ab dieser Abweichung (px) wird hart korrigiert statt sanft
+const CORRECTION_BLEND = 0.25; // Anteil, mit dem kleine Abweichungen pro Frame ausgeglichen werden
+const MAX_FRAME_DT_MS = 100;   // Deckel gegen Zeitspruenge nach Hintergrund-Tabs
 const RECONNECT_DELAY_MS = 2000;
 
 class NetClient {
@@ -19,6 +28,7 @@ class NetClient {
     this.localPlayer = null;
     this.inputSeq = 0;
     this.pendingInputs = []; // noch nicht vom Server bestätigte Eingaben
+    this.localVelocity = { x: 0, y: 0 }; // eigene Geschwindigkeit fuer die Vorhersage
     this.keys = { w: false, a: false, s: false, d: false };
     this.onWelcome = null;
     this.onJoinError = null;
@@ -386,41 +396,81 @@ class NetClient {
       (inp) => inp.seq > serverState.lastProcessedInput
     );
 
-    let x = serverState.x;
-    let y = serverState.y;
+    // Vom bestaetigten Serverzustand aus alle noch offenen Eingaben neu abspielen.
+    // Wichtig: die Geschwindigkeit gehoert jetzt mit zum Zustand, weil die
+    // Beschleunigung sonst nicht reproduzierbar waere.
+    const state = {
+      pos: { x: serverState.x, y: serverState.y },
+      vel: { x: serverState.vx, y: serverState.vy },
+    };
     for (const inp of this.pendingInputs) {
-      const res = this.simulateStep(x, y, inp.keys, inp.dt);
-      x = res.x;
-      y = res.y;
+      this.stepMovement(state.pos, state.vel, inp.dirX, inp.dirY, inp.dt / 1000);
     }
 
-    p.x = x;
-    p.y = y;
-    p.vx = serverState.vx;
-    p.vy = serverState.vy;
+    // Kleine Abweichungen sanft ausgleichen statt hart zu springen - ein harter
+    // Sprung waere bei jedem Netzwerk-Jitter als Ruckler sichtbar. Grosse
+    // Abweichungen (z.B. Teleport ins Gefaengnis) werden weiterhin sofort uebernommen.
+    const errX = state.pos.x - p.x;
+    const errY = state.pos.y - p.y;
+    const error = Math.hypot(errX, errY);
+
+    if (error > SNAP_THRESHOLD) {
+      p.x = state.pos.x;
+      p.y = state.pos.y;
+    } else {
+      p.x += errX * CORRECTION_BLEND;
+      p.y += errY * CORRECTION_BLEND;
+    }
+
+    p.vx = state.vel.x;
+    p.vy = state.vel.y;
+    this.localVelocity.x = state.vel.x;
+    this.localVelocity.y = state.vel.y;
   }
 
-  /** Identische Bewegungslogik wie server/game.js#applyInput + stepPositions. */
-  simulateStep(x, y, keys, dtMs) {
+  /**
+   * Bewegungsschritt - MUSS exakt dieselbe Formel und dieselben Konstanten
+   * verwenden wie stepMovement() in server/game.js, sonst driftet die Vorhersage
+   * dauerhaft von der Server-Wahrheit ab.
+   * Veraendert pos und vel direkt.
+   */
+  stepMovement(pos, vel, dirX, dirY, dtSec) {
+    const targetVx = dirX * PLAYER_SPEED;
+    const targetVy = dirY * PLAYER_SPEED;
+
+    const isStopping = dirX === 0 && dirY === 0;
+    const maxDelta = (isStopping ? PLAYER_FRICTION : PLAYER_ACCELERATION) * dtSec;
+
+    const dvx = targetVx - vel.x;
+    const dvy = targetVy - vel.y;
+    const dvLen = Math.hypot(dvx, dvy);
+
+    if (dvLen <= maxDelta || dvLen === 0) {
+      vel.x = targetVx;
+      vel.y = targetVy;
+    } else {
+      vel.x += (dvx / dvLen) * maxDelta;
+      vel.y += (dvy / dvLen) * maxDelta;
+    }
+
+    pos.x = Math.max(0, Math.min(WORLD_WIDTH, pos.x + vel.x * dtSec));
+    pos.y = Math.max(0, Math.min(WORLD_HEIGHT, pos.y + vel.y * dtSec));
+  }
+
+  /** Wandelt gedrueckte Tasten in eine normalisierte Richtung um. */
+  keysToDirection(keys) {
     let dx = 0;
     let dy = 0;
     if (keys.w) dy -= 1;
     if (keys.s) dy += 1;
     if (keys.a) dx -= 1;
     if (keys.d) dx += 1;
-
     const len = Math.hypot(dx, dy);
     if (len > 0) {
       dx /= len;
       dy /= len;
     }
-
-    const dtSec = dtMs / 1000;
-    let nx = x + dx * PLAYER_SPEED * dtSec;
-    let ny = y + dy * PLAYER_SPEED * dtSec;
-    nx = Math.max(0, Math.min(WORLD_WIDTH, nx));
-    ny = Math.max(0, Math.min(WORLD_HEIGHT, ny));
-    return { x: nx, y: ny };
+    return { dirX: dx, dirY: dy };
   }
 
   /** Wird von der UI aufgerufen, wenn der Spieler eine Option bei einem Lebensereignis waehlt. */
@@ -438,16 +488,23 @@ class NetClient {
   update(dtMs) {
     if (!this.localPlayer || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
+    // Sehr grosse Zeitspruenge begrenzen (z.B. wenn der Tab im Hintergrund war) -
+    // sonst wuerde die Figur beim Zurueckkehren quer durch die Welt schiessen.
+    const dt = Math.min(dtMs, MAX_FRAME_DT_MS);
+
     const keysSnapshot = { ...this.keys };
+    const { dirX, dirY } = this.keysToDirection(keysSnapshot);
     this.inputSeq += 1;
-    const input = { seq: this.inputSeq, keys: keysSnapshot, dt: dtMs };
 
-    const res = this.simulateStep(this.localPlayer.x, this.localPlayer.y, keysSnapshot, dtMs);
-    this.localPlayer.x = res.x;
-    this.localPlayer.y = res.y;
+    const pos = { x: this.localPlayer.x, y: this.localPlayer.y };
+    this.stepMovement(pos, this.localVelocity, dirX, dirY, dt / 1000);
+    this.localPlayer.x = pos.x;
+    this.localPlayer.y = pos.y;
+    this.localPlayer.vx = this.localVelocity.x;
+    this.localPlayer.vy = this.localVelocity.y;
 
-    this.pendingInputs.push(input);
-    this.ws.send(JSON.stringify({ type: 'input', seq: input.seq, keys: keysSnapshot }));
+    this.pendingInputs.push({ seq: this.inputSeq, dirX, dirY, dt });
+    this.ws.send(JSON.stringify({ type: 'input', seq: this.inputSeq, keys: keysSnapshot }));
   }
 
   /** Kleiner Hilfsmethoden-Block fuer die Wirtschaft - alles serverseitig geprueft, hier nur Versand. */
