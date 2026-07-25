@@ -88,8 +88,15 @@ const PLAYER_SPEED = 200; // px/s - MUSS mit client/net.js übereinstimmen (Pred
 // weniger roboterhaft wirken. Diese Werte UND die Formel in stepMovement()
 // muessen EXAKT mit client/net.js uebereinstimmen, sonst driftet die
 // Client-Vorhersage von der Server-Wahrheit ab und es ruckelt staendig.
-const PLAYER_ACCELERATION = 1400; // px/s² beim Anfahren (~0.14s auf Vollspeed)
-const PLAYER_FRICTION = 1800;     // px/s² beim Abbremsen (~0.11s zum Stillstand)
+//
+// WICHTIG zur Groessenordnung: Diese Werte sind BEWUSST hoch (nicht wie ein
+// Auto mit traeger Physik). On-Foot-Bewegung in GTA/Roblox hat praktisch keine
+// Trägheit beim Richtungswechsel - man dreht nahezu sofort um, nur der Start
+// aus dem Stand hat einen kurzen, kaum wahrnehmbaren Anlauf. Mit den alten,
+// niedrigeren Werten "rutschte" die Figur beim Umkehren sichtbar 6 Ticks lang
+// in die falsche Richtung weiter - das ist der Fehler, den diese Werte beheben.
+const PLAYER_ACCELERATION = 4000; // px/s² - Vollspeed aus dem Stand in 0.05s
+const PLAYER_FRICTION = 5000;     // px/s² - Stillstand aus Vollspeed in 0.04s
 
 /**
  * Ein Bewegungsschritt. Bewusst als reine Funktion ohne Seiteneffekte, damit
