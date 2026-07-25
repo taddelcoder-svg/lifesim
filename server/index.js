@@ -154,6 +154,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'copsState', cops: world.buildCopsState() });
       send(ws, { type: 'chatHistory', messages: world.buildChatHistory() });
       send(ws, { type: 'jobCatalog', jobs: world.buildJobCatalogState() });
+      send(ws, { type: 'courseCatalog', courses: world.buildCourseCatalogState() });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -450,6 +451,40 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // --- Bildung: Kurse belegen ---
+
+    if (msg.type === 'requestCourses' && ws.playerId != null) {
+      send(ws, { type: 'courseCatalog', courses: world.buildCourseCatalogState() });
+      return;
+    }
+
+    if (msg.type === 'enrollInCourse' && ws.playerId != null) {
+      const result = world.enrollInCourse(ws.playerId, msg.courseId);
+      if (result.ok) {
+        const player = world.players.get(ws.playerId);
+        sendToPlayer(ws.playerId, {
+          type: 'courseEnrolled',
+          courseName: result.course.name,
+          requiredTicks: world.requiredTicksFor(player, result.course),
+        });
+        broadcast({ type: 'statUpdate', players: [serializePublic(player)] });
+      } else {
+        send(ws, { type: 'actionError', action: 'enrollInCourse', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'dropCourse' && ws.playerId != null) {
+      const result = world.dropCourse(ws.playerId);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, { type: 'courseDropped' });
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'dropCourse', reason: result.reason });
+      }
+      return;
+    }
+
     if (msg.type === 'reincarnate' && ws.playerId != null) {
       const result = world.reincarnate(ws.playerId);
       if (result.ok) {
@@ -527,6 +562,16 @@ setInterval(() => {
       jobName,
       newTitle,
       newSalary,
+    });
+  }
+
+  const completions = world.progressCourses();
+  for (const { player, courseName, smartsGained, newSmarts } of completions) {
+    sendToPlayer(player.id, {
+      type: 'courseCompleted',
+      courseName,
+      smartsGained,
+      newSmarts,
     });
   }
 
