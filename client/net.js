@@ -66,6 +66,13 @@ class NetClient {
     this.onWidowed = null;
     this.onReincarnated = null;
 
+    // Beruf
+    this.jobCatalog = []; // [{ id, name, minSmarts, maxWanted, levels: [{title, salary}] }]
+    this.onJobCatalog = null;
+    this.onJobStarted = null;
+    this.onJobQuit = null;
+    this.onJobPromotion = null;
+
     window.addEventListener('keydown', (e) => this.setKey(e.key, true));
     window.addEventListener('keyup', (e) => this.setKey(e.key, false));
   }
@@ -312,6 +319,27 @@ class NetClient {
         break;
       }
 
+      case 'jobCatalog': {
+        this.jobCatalog = msg.jobs;
+        if (this.onJobCatalog) this.onJobCatalog(msg);
+        break;
+      }
+
+      case 'jobStarted': {
+        if (this.onJobStarted) this.onJobStarted(msg);
+        break;
+      }
+
+      case 'jobQuit': {
+        if (this.onJobQuit) this.onJobQuit(msg);
+        break;
+      }
+
+      case 'jobPromotion': {
+        if (this.onJobPromotion) this.onJobPromotion(msg);
+        break;
+      }
+
       default:
         break;
     }
@@ -486,5 +514,17 @@ class NetClient {
 
   reincarnate() {
     this.send({ type: 'reincarnate' });
+  }
+
+  requestJobs() {
+    this.send({ type: 'requestJobs' });
+  }
+
+  applyForJob(jobId) {
+    this.send({ type: 'applyForJob', jobId });
+  }
+
+  quitJob() {
+    this.send({ type: 'quitJob' });
   }
 }
