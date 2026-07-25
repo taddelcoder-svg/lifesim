@@ -448,9 +448,17 @@ class Renderer {
       jobText = level ? level.title : 'angestellt';
     }
 
+    // Laufenden Kurs anzeigen, damit man den Fortschritt ohne Panel mitbekommt
+    let studyText = '';
+    if (me.enrolledCourse) {
+      const course = this.net.courseCatalog.find((c) => c.id === me.enrolledCourse);
+      const required = course ? (me.job ? course.durationTicks * 2 : course.durationTicks) : 0;
+      studyText = ` &nbsp;|&nbsp; 🎓 ${course ? course.name : 'Kurs'} ${me.courseProgress ?? 0}/${required}`;
+    }
+
     this.hud.innerHTML =
       `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}${wantedText}<br>` +
-      `❤️ ${me.health ?? 100} &nbsp; 😊 ${me.happiness ?? 70} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}<br>` +
+      `❤️ ${me.health ?? 100} &nbsp; 😊 ${me.happiness ?? 70} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}${studyText}<br>` +
       `Spieler online: ${online} / 20 &nbsp;|&nbsp; Steuerung: WASD`;
   }
 }
