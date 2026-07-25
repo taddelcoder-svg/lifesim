@@ -576,15 +576,41 @@ setInterval(() => {
   }
 }, COPS_TICK_MS);
 
-// Snapshot: In-Memory-State periodisch auf Disk sichern (einfache Persistenz für Phase 1)
-setInterval(() => {
+// Persistenz: kompletter Weltzustand periodisch UND beim Beenden gespeichert.
+// Ohne das "beim Beenden speichern" waere bei jedem Server-Neustart (z.B. jedes
+// Render-Deploy sendet SIGTERM) der Fortschritt seit dem letzten periodischen
+// Speichern verloren - das deckt die Luecke ab.
+function saveSnapshotNow() {
   try {
-    const data = world.buildFullPublicState();
-    fs.writeFileSync(SNAPSHOT_PATH, JSON.stringify(data, null, 2));
+    fs.writeFileSync(SNAPSHOT_PATH, JSON.stringify(world.buildFullSnapshot(), null, 2));
   } catch (err) {
     console.error('Snapshot fehlgeschlagen:', err.message);
   }
-}, SNAPSHOT_INTERVAL_MS);
+}
+
+setInterval(saveSnapshotNow, SNAPSHOT_INTERVAL_MS);
+
+function shutdownGracefully(signal) {
+  console.log(`${signal} erhalten - speichere Weltzustand vor dem Beenden...`);
+  saveSnapshotNow();
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdownGracefully('SIGTERM'));
+process.on('SIGINT', () => shutdownGracefully('SIGINT'));
+
+// Beim Start: falls ein frueherer Weltzustand auf Disk liegt, wiederherstellen -
+// sonst waere nach jedem Neustart der komplette Fortschritt aller Spieler weg.
+try {
+  if (fs.existsSync(SNAPSHOT_PATH)) {
+    const saved = JSON.parse(fs.readFileSync(SNAPSHOT_PATH, 'utf8'));
+    const restoredCount = world.restoreFromSnapshot(saved);
+    console.log(`Weltzustand wiederhergestellt: ${restoredCount} Spieler.`);
+  } else {
+    console.log('Kein vorheriger Weltzustand gefunden - starte mit leerer Welt.');
+  }
+} catch (err) {
+  console.error('Weltzustand konnte nicht geladen werden, starte mit leerer Welt:', err.message);
+}
 
 server.listen(PORT, () => {
   console.log(`Server läuft auf http://localhost:${PORT}`);
