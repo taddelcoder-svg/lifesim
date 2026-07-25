@@ -38,7 +38,9 @@ function createPlayer(name, token) {
     job: null,             // Berufs-ID (z.B. 'office') oder null - Definition liegt in jobs.js
     jobLevel: 0,           // Stufe innerhalb der Karriereleiter
     jobXp: 0,              // gesammelte Berufserfahrung fuer die naechste Befoerderung
-    education: null,
+    education: null,       // ID des hoechsten abgeschlossenen Kurses, oder null
+    enrolledCourse: null,  // ID des aktuell laufenden Kurses, oder null
+    courseProgress: 0,     // gesammelte Lern-Ticks im laufenden Kurs
     criminalRecord: [],
     relationships: [],
     assets: [],
@@ -81,6 +83,8 @@ function serializePublic(player) {
     jobLevel: player.jobLevel,
     jobXp: player.jobXp,
     education: player.education,
+    enrolledCourse: player.enrolledCourse,
+    courseProgress: player.courseProgress,
     wanted: player.wanted,
     x: player.position.x,
     y: player.position.y,
