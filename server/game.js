@@ -65,6 +65,12 @@ const {
   XP_PER_TICK,
   QUIT_HAPPINESS_PENALTY,
 } = require('./jobs');
+const {
+  findCourse,
+  buildCourseCatalog,
+  EMPLOYED_STUDY_SLOWDOWN,
+  MAX_SMARTS,
+} = require('./education');
 
 const MAX_PLAYERS = 20;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
@@ -1093,6 +1099,9 @@ class GameWorld {
     player.job = null;      // ein neues Leben startet arbeitslos, erbt nicht die Stelle
     player.jobLevel = 0;
     player.jobXp = 0;
+    player.education = null;      // Abschluesse werden nicht vererbt
+    player.enrolledCourse = null;
+    player.courseProgress = 0;
     player.spouseId = null;
     player.activeEvent = null;
     player.eventQueue = [];
@@ -1199,6 +1208,105 @@ class GameWorld {
     }
 
     return promotions;
+  }
+
+  // ---------------------------------------------------------------------
+  // BILDUNG: Kurse belegen, lernen, Intelligenz dauerhaft steigern
+  // ---------------------------------------------------------------------
+
+  buildCourseCatalogState() {
+    return buildCourseCatalog();
+  }
+
+  /**
+   * Schreibt einen Spieler in einen Kurs ein. Kosten werden SOFORT abgebucht -
+   * Abbrechen gibt kein Geld zurueck, das macht die Entscheidung verbindlich.
+   */
+  enrollInCourse(playerId, courseId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.enrolledCourse) return { ok: false, reason: 'already_enrolled' };
+
+    const course = findCourse(courseId);
+    if (!course) return { ok: false, reason: 'unknown_course' };
+
+    // Bereits abgeschlossene oder uebersprungene Stufen verhindern
+    if (player.education === course.id) return { ok: false, reason: 'already_completed' };
+    if (course.requires && player.education !== course.requires) {
+      return { ok: false, reason: 'missing_prerequisite' };
+    }
+
+    if (player.cash < course.cost) return { ok: false, reason: 'insufficient_funds' };
+
+    player.cash -= course.cost;
+    player.enrolledCourse = course.id;
+    player.courseProgress = 0;
+
+    return { ok: true, course };
+  }
+
+  /** Bricht den laufenden Kurs ab. Bereits gezahlte Gebuehren sind verloren. */
+  dropCourse(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (!player.enrolledCourse) return { ok: false, reason: 'not_enrolled' };
+
+    player.enrolledCourse = null;
+    player.courseProgress = 0;
+    return { ok: true };
+  }
+
+  /**
+   * Wie viele Lern-Ticks ein Kurs fuer diesen Spieler tatsaechlich braucht.
+   * Wer nebenbei arbeitet, kommt langsamer voran.
+   */
+  requiredTicksFor(player, course) {
+    return player.job ? course.durationTicks * EMPLOYED_STUDY_SLOWDOWN : course.durationTicks;
+  }
+
+  /**
+   * slowTick: Lernfortschritt sammeln und abgeschlossene Kurse auswerten.
+   * Im Gefaengnis oder nach dem Tod wird nicht gelernt.
+   * @returns {Array} abgeschlossene Kurse, fuer Benachrichtigungen
+   */
+  progressCourses() {
+    const completions = [];
+
+    for (const player of this.players.values()) {
+      if (!player.connected || !player.enrolledCourse) continue;
+      if (this.isJailed(player) || this.isAwaitingReincarnation(player)) continue;
+
+      const course = findCourse(player.enrolledCourse);
+      if (!course) {
+        // Kurs existiert nicht mehr (z.B. nach einem Update) - sauber ausbuchen,
+        // statt den Spieler in einem kaputten Zustand haengen zu lassen.
+        player.enrolledCourse = null;
+        player.courseProgress = 0;
+        continue;
+      }
+
+      player.courseProgress += 1;
+
+      const required = this.requiredTicksFor(player, course);
+      if (player.courseProgress >= required) {
+        const smartsBefore = player.smarts;
+        player.smarts = Math.min(MAX_SMARTS, player.smarts + course.smartsGain);
+        player.education = course.id;
+        player.enrolledCourse = null;
+        player.courseProgress = 0;
+
+        completions.push({
+          player,
+          courseName: course.name,
+          smartsGained: player.smarts - smartsBefore,
+          newSmarts: player.smarts,
+        });
+      }
+    }
+
+    return completions;
   }
 }
 
