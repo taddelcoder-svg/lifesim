@@ -153,6 +153,7 @@ wss.on('connection', (ws) => {
       send(ws, buildEconomyStateMessage()); // aktueller Immobilienmarkt + Firmenliste sofort sichtbar
       send(ws, { type: 'copsState', cops: world.buildCopsState() });
       send(ws, { type: 'chatHistory', messages: world.buildChatHistory() });
+      send(ws, { type: 'jobCatalog', jobs: world.buildJobCatalogState() });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -415,6 +416,40 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // --- Beruf: Bewerben, Kuendigen, Katalog ---
+
+    if (msg.type === 'requestJobs' && ws.playerId != null) {
+      send(ws, { type: 'jobCatalog', jobs: world.buildJobCatalogState() });
+      return;
+    }
+
+    if (msg.type === 'applyForJob' && ws.playerId != null) {
+      const result = world.applyForJob(ws.playerId, msg.jobId);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, {
+          type: 'jobStarted',
+          jobName: result.jobName,
+          title: result.title,
+          salary: result.salary,
+        });
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'applyForJob', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'quitJob' && ws.playerId != null) {
+      const result = world.quitJob(ws.playerId);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, { type: 'jobQuit' });
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'quitJob', reason: result.reason });
+      }
+      return;
+    }
+
     if (msg.type === 'reincarnate' && ws.playerId != null) {
       const result = world.reincarnate(ws.playerId);
       if (result.ok) {
@@ -482,6 +517,18 @@ setInterval(() => {
 
   world.ageConnectedPlayers(dt);
   world.removeStalePlayers();
+
+  // Gehaelter BEWUSST vor der Vermoegenssteuer, damit das frische Gehalt
+  // im selben Tick korrekt mitversteuert wird (statt einen Tick "steuerfrei" zu sein).
+  const promotions = world.payAndProgressJobs();
+  for (const { player, jobName, newTitle, newSalary } of promotions) {
+    sendToPlayer(player.id, {
+      type: 'jobPromotion',
+      jobName,
+      newTitle,
+      newSalary,
+    });
+  }
 
   const repossessed = world.collectEconomyIncome();
   world.applyWealthTax();
