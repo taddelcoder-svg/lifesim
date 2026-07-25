@@ -35,7 +35,9 @@ function createPlayer(name, token) {
     cash: STARTING_CASH,
     bank: 0,
     debt: 0,
-    job: null,
+    job: null,             // Berufs-ID (z.B. 'office') oder null - Definition liegt in jobs.js
+    jobLevel: 0,           // Stufe innerhalb der Karriereleiter
+    jobXp: 0,              // gesammelte Berufserfahrung fuer die naechste Befoerderung
     education: null,
     criminalRecord: [],
     relationships: [],
@@ -76,6 +78,8 @@ function serializePublic(player) {
     bank: player.bank,
     debt: player.debt,
     job: player.job,
+    jobLevel: player.jobLevel,
+    jobXp: player.jobXp,
     education: player.education,
     wanted: player.wanted,
     x: player.position.x,
