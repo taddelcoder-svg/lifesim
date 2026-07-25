@@ -480,9 +480,13 @@ class Renderer {
     const me = this.entities.get(this.net.myId);
     if (!me) return;
 
-    const facing = this.facingById.get(this.net.myId) || 0;
-    const dirX = Math.sin(facing);
-    const dirZ = Math.cos(facing);
+    // WICHTIG: Die Kamera folgt jetzt der frei drehbaren cameraYaw (per Wischgeste
+    // gesteuert), NICHT mehr der Bewegungsrichtung. Die Figur selbst dreht sich
+    // weiterhin dahin, wohin sie tatsaechlich laeuft (siehe syncEntities) - das
+    // sind bewusst zwei getrennte Dinge, genau wie in GTA/Roblox.
+    const yaw = this.net.cameraYaw || 0;
+    const dirX = Math.sin(yaw);
+    const dirZ = Math.cos(yaw);
 
     const targetCamPos = new THREE.Vector3(
       me.group.position.x - dirX * CAMERA_DISTANCE,
