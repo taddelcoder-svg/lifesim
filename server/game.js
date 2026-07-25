@@ -84,6 +84,41 @@ const YEARS_PER_MS = 1 / (60 * 60 * 1000); // 1 Spieljahr pro Realstunde aktiver
 const RECONNECT_GRACE_MS = 5 * 60 * 1000; // Zeitfenster, in dem ein Reconnect den alten Spieler übernimmt
 const PLAYER_SPEED = 200; // px/s - MUSS mit client/net.js übereinstimmen (Prediction)
 
+// Beschleunigung/Traegheit statt sofortigem Vollspeed - laesst die Bewegung
+// weniger roboterhaft wirken. Diese Werte UND die Formel in stepMovement()
+// muessen EXAKT mit client/net.js uebereinstimmen, sonst driftet die
+// Client-Vorhersage von der Server-Wahrheit ab und es ruckelt staendig.
+const PLAYER_ACCELERATION = 1400; // px/s² beim Anfahren (~0.14s auf Vollspeed)
+const PLAYER_FRICTION = 1800;     // px/s² beim Abbremsen (~0.11s zum Stillstand)
+
+/**
+ * Ein Bewegungsschritt. Bewusst als reine Funktion ohne Seiteneffekte, damit
+ * Server und Client garantiert dasselbe rechnen koennen.
+ * Veraendert pos und vel direkt.
+ */
+function stepMovement(pos, vel, dirX, dirY, dtSec, worldW, worldH) {
+  const targetVx = dirX * PLAYER_SPEED;
+  const targetVy = dirY * PLAYER_SPEED;
+
+  const isStopping = dirX === 0 && dirY === 0;
+  const maxDelta = (isStopping ? PLAYER_FRICTION : PLAYER_ACCELERATION) * dtSec;
+
+  const dvx = targetVx - vel.x;
+  const dvy = targetVy - vel.y;
+  const dvLen = Math.hypot(dvx, dvy);
+
+  if (dvLen <= maxDelta || dvLen === 0) {
+    vel.x = targetVx;
+    vel.y = targetVy;
+  } else {
+    vel.x += (dvx / dvLen) * maxDelta;
+    vel.y += (dvy / dvLen) * maxDelta;
+  }
+
+  pos.x = Math.max(0, Math.min(worldW, pos.x + vel.x * dtSec));
+  pos.y = Math.max(0, Math.min(worldH, pos.y + vel.y * dtSec));
+}
+
 const MAX_EVENT_QUEUE = 3; // mehr wartende Ereignisse pro Spieler werden nicht angesammelt
 const EVENT_ROLL_CHANCE = 0.05; // Chance pro EVENT_TICK, dass ein neues Ereignis in die Warteschlange kommt
 const RECENT_EVENT_MEMORY = 5; // so viele zuletzt gesehene Event-IDs werden kurzfristig vermieden
@@ -239,8 +274,10 @@ class GameWorld {
       dy /= len;
     }
 
-    player.velocity.x = dx * PLAYER_SPEED;
-    player.velocity.y = dy * PLAYER_SPEED;
+    // Nur die GEWUENSCHTE Richtung merken - die tatsaechliche Geschwindigkeit
+    // wird in stepPositions schrittweise darauf zubewegt (Beschleunigung).
+    player.inputDir.x = dx;
+    player.inputDir.y = dy;
 
     if (typeof input.seq === 'number') {
       player.lastProcessedInput = input.seq;
@@ -260,17 +297,26 @@ class GameWorld {
         player.position.y = JAIL_POSITION.y;
         player.velocity.x = 0;
         player.velocity.y = 0;
+        player.inputDir.x = 0;
+        player.inputDir.y = 0;
         continue;
       }
       if (this.isAwaitingReincarnation(player)) {
         player.velocity.x = 0;
         player.velocity.y = 0;
+        player.inputDir.x = 0;
+        player.inputDir.y = 0;
         continue;
       }
-      player.position.x += player.velocity.x * dtSec;
-      player.position.y += player.velocity.y * dtSec;
-      player.position.x = Math.max(0, Math.min(WORLD_WIDTH, player.position.x));
-      player.position.y = Math.max(0, Math.min(WORLD_HEIGHT, player.position.y));
+      stepMovement(
+        player.position,
+        player.velocity,
+        player.inputDir.x,
+        player.inputDir.y,
+        dtSec,
+        WORLD_WIDTH,
+        WORLD_HEIGHT
+      );
     }
   }
 
@@ -357,6 +403,11 @@ class GameWorld {
         connected: false,
         lastSeen: Date.now(),
         ws: null,
+        // Felder absichern, die es in aelteren Spielstaenden noch nicht gab -
+        // sonst stuerzt die Bewegung beim ersten Tick ab.
+        inputDir: saved.inputDir || { x: 0, y: 0 },
+        velocity: saved.velocity || { x: 0, y: 0 },
+        position: saved.position || { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 },
       };
       this.players.set(player.id, player);
       if (player.token) this.tokenIndex.set(player.token, player.id);
@@ -1320,4 +1371,6 @@ module.exports = {
   SNAPSHOT_INTERVAL_MS,
   SNAPSHOT_PATH,
   PLAYER_SPEED,
+  PLAYER_ACCELERATION,
+  PLAYER_FRICTION,
 };
