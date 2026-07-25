@@ -73,6 +73,13 @@ class NetClient {
     this.onJobQuit = null;
     this.onJobPromotion = null;
 
+    // Bildung
+    this.courseCatalog = []; // [{ id, name, cost, durationTicks, smartsGain, requires }]
+    this.onCourseCatalog = null;
+    this.onCourseEnrolled = null;
+    this.onCourseDropped = null;
+    this.onCourseCompleted = null;
+
     window.addEventListener('keydown', (e) => this.setKey(e.key, true));
     window.addEventListener('keyup', (e) => this.setKey(e.key, false));
   }
@@ -340,6 +347,27 @@ class NetClient {
         break;
       }
 
+      case 'courseCatalog': {
+        this.courseCatalog = msg.courses;
+        if (this.onCourseCatalog) this.onCourseCatalog(msg);
+        break;
+      }
+
+      case 'courseEnrolled': {
+        if (this.onCourseEnrolled) this.onCourseEnrolled(msg);
+        break;
+      }
+
+      case 'courseDropped': {
+        if (this.onCourseDropped) this.onCourseDropped(msg);
+        break;
+      }
+
+      case 'courseCompleted': {
+        if (this.onCourseCompleted) this.onCourseCompleted(msg);
+        break;
+      }
+
       default:
         break;
     }
@@ -526,5 +554,17 @@ class NetClient {
 
   quitJob() {
     this.send({ type: 'quitJob' });
+  }
+
+  requestCourses() {
+    this.send({ type: 'requestCourses' });
+  }
+
+  enrollInCourse(courseId) {
+    this.send({ type: 'enrollInCourse', courseId });
+  }
+
+  dropCourse() {
+    this.send({ type: 'dropCourse' });
   }
 }
