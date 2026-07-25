@@ -99,6 +99,33 @@ const PLAYER_ACCELERATION = 4000; // px/s² - Vollspeed aus dem Stand in 0.05s
 const PLAYER_FRICTION = 5000;     // px/s² - Stillstand aus Vollspeed in 0.04s
 
 /**
+ * Wandelt gedrueckte Tasten + Kamera-Blickrichtung in eine Weltrichtung um.
+ * "W" bedeutet ab jetzt "dorthin, wo die Kamera gerade hinschaut" statt einer
+ * festen Kartenrichtung - das ist der Kern des GTA/Roblox-Steuergefuehls.
+ * MUSS mit derselben Funktion in client/net.js uebereinstimmen (Vorhersage).
+ */
+function keysToWorldDirection(keys, cameraYaw) {
+  const inputForward = (keys.w ? 1 : 0) - (keys.s ? 1 : 0);
+  const inputRight = (keys.d ? 1 : 0) - (keys.a ? 1 : 0);
+
+  if (inputForward === 0 && inputRight === 0) return { dx: 0, dy: 0 };
+
+  const yaw = typeof cameraYaw === 'number' && Number.isFinite(cameraYaw) ? cameraYaw : 0;
+  const sin = Math.sin(yaw);
+  const cos = Math.cos(yaw);
+
+  let dx = inputForward * sin + inputRight * cos;
+  let dy = inputForward * cos - inputRight * sin;
+
+  const len = Math.hypot(dx, dy);
+  if (len > 0) {
+    dx /= len;
+    dy /= len;
+  }
+  return { dx, dy };
+}
+
+/**
  * Ein Bewegungsschritt. Bewusst als reine Funktion ohne Seiteneffekte, damit
  * Server und Client garantiert dasselbe rechnen koennen.
  * Veraendert pos und vel direkt.
@@ -267,19 +294,8 @@ class GameWorld {
     if (this.isJailed(player)) return; // Gefaengnisinsassen koennen sich nicht bewegen
     if (this.isAwaitingReincarnation(player)) return; // Verstorbene warten auf die Weiterleben-Aktion
 
-    let dx = 0;
-    let dy = 0;
     const keys = input.keys || {};
-    if (keys.w) dy -= 1;
-    if (keys.s) dy += 1;
-    if (keys.a) dx -= 1;
-    if (keys.d) dx += 1;
-
-    const len = Math.hypot(dx, dy);
-    if (len > 0) {
-      dx /= len;
-      dy /= len;
-    }
+    const { dx, dy } = keysToWorldDirection(keys, input.cameraYaw);
 
     // Nur die GEWUENSCHTE Richtung merken - die tatsaechliche Geschwindigkeit
     // wird in stepPositions schrittweise darauf zubewegt (Beschleunigung).
