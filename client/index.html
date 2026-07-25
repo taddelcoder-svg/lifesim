@@ -371,6 +371,10 @@
   </div>
 
   <div id="marketPanel" style="display:none;">
+    <h4>💼 Beruf</h4>
+    <div id="jobStatus"></div>
+    <div id="jobList"></div>
+
     <h4>Immobilien</h4>
     <div id="propertyList"></div>
 
@@ -610,8 +614,79 @@
       return p ? p.name : ('Spieler #' + playerId);
     }
 
+    const jobStatusEl = document.getElementById('jobStatus');
+    const jobListEl = document.getElementById('jobList');
+
+    /**
+     * Zeigt entweder den aktuellen Beruf (mit Titel/Gehalt/Fortschritt) oder die
+     * Liste der Bewerbungsmoeglichkeiten. Anforderungen werden hier nur ANGEZEIGT -
+     * geprueft wird ausschliesslich serverseitig.
+     */
+    function renderJobSection() {
+      const me = net.localPlayer;
+      if (!me) return;
+
+      jobStatusEl.innerHTML = '';
+      jobListEl.innerHTML = '';
+
+      if (me.job) {
+        const jobDef = net.jobCatalog.find((j) => j.id === me.job);
+        const level = jobDef ? jobDef.levels[me.jobLevel] : null;
+
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML =
+          `<div><div class="market-item-name">${escapeHtml(level ? level.title : 'Angestellt')}</div>` +
+          `<div class="market-item-detail">${escapeHtml(jobDef ? jobDef.name : '')}` +
+          (level ? ` · $${level.salary} pro Zyklus` : '') +
+          ` · Erfahrung: ${me.jobXp ?? 0}</div></div>`;
+
+        const quitBtn = document.createElement('button');
+        quitBtn.className = 'market-btn-small danger';
+        quitBtn.textContent = 'Kündigen';
+        quitBtn.addEventListener('click', () => net.quitJob());
+        row.appendChild(quitBtn);
+        jobStatusEl.appendChild(row);
+        return;
+      }
+
+      jobStatusEl.innerHTML = '<div class="market-empty">Arbeitslos - bewirb dich unten.</div>';
+
+      if (net.jobCatalog.length === 0) {
+        jobListEl.innerHTML = '<div class="market-empty">Lädt...</div>';
+        return;
+      }
+
+      for (const job of net.jobCatalog) {
+        const smartsOk = (me.smarts ?? 0) >= job.minSmarts;
+        const recordOk = (me.wanted ?? 0) <= job.maxWanted;
+        const qualified = smartsOk && recordOk;
+
+        const row = document.createElement('div');
+        row.className = 'market-item';
+
+        let requirementText = `Start: $${job.levels[0].salary} · bis $${job.levels[job.levels.length - 1].salary}`;
+        if (!smartsOk) requirementText += ` · braucht 🧠 ${job.minSmarts}`;
+        if (!recordOk) requirementText += ' · Vorstrafen zu hoch';
+
+        row.innerHTML =
+          `<div><div class="market-item-name">${escapeHtml(job.name)}</div>` +
+          `<div class="market-item-detail">${requirementText}</div></div>`;
+
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small' + (qualified ? '' : ' ghost');
+        btn.textContent = qualified ? 'Bewerben' : 'Nicht qualifiziert';
+        btn.disabled = !qualified;
+        btn.addEventListener('click', () => net.applyForJob(job.id));
+        row.appendChild(btn);
+        jobListEl.appendChild(row);
+      }
+    }
+
     function renderMarketPanel() {
       if (!net) return;
+
+      renderJobSection();
 
       // Immobilien
       propertyListEl.innerHTML = '';
@@ -736,6 +811,23 @@
       };
       net.onPropertyRepossessed = (msg) => {
         showToast(`"${msg.propertyName}" wurde zwangsversteigert - Instandhaltung nicht bezahlbar.`);
+      };
+
+      // --- Beruf ---
+      net.onJobCatalog = () => {
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onJobStarted = (msg) => {
+        showToast(`Neue Stelle: ${msg.title} bei ${msg.jobName} ($${msg.salary})`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onJobQuit = () => {
+        showToast('Job gekündigt.');
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onJobPromotion = (msg) => {
+        showToast(`🎉 Befördert zu ${msg.newTitle}! Neues Gehalt: $${msg.newSalary}`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
       };
 
       // --- Kriminalität ---
