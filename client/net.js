@@ -31,6 +31,7 @@ class NetClient {
     this.inputSeq = 0;
     this.pendingInputs = []; // noch nicht vom Server bestätigte Eingaben
     this.localVelocity = { x: 0, y: 0 }; // eigene Geschwindigkeit fuer die Vorhersage
+    this.cameraYaw = 0; // frei drehbare Kamera-Blickrichtung (Bogenmass) - per Wischgeste gesteuert
     this.keys = { w: false, a: false, s: false, d: false };
     this.onWelcome = null;
     this.onJoinError = null;
@@ -459,20 +460,30 @@ class NetClient {
     pos.y = Math.max(0, Math.min(WORLD_HEIGHT, pos.y + vel.y * dtSec));
   }
 
-  /** Wandelt gedrueckte Tasten in eine normalisierte Richtung um. */
-  keysToDirection(keys) {
-    let dx = 0;
-    let dy = 0;
-    if (keys.w) dy -= 1;
-    if (keys.s) dy += 1;
-    if (keys.a) dx -= 1;
-    if (keys.d) dx += 1;
-    const len = Math.hypot(dx, dy);
+  /**
+   * Wandelt gedrueckte Tasten + Kamera-Blickrichtung in eine Weltrichtung um.
+   * MUSS exakt mit keysToWorldDirection() in server/game.js uebereinstimmen -
+   * sonst weicht die lokale Vorhersage von dem ab, was der Server tatsaechlich
+   * berechnet, und die Bewegung faengt an zu ruckeln/korrigieren.
+   */
+  keysToWorldDirection(keys, cameraYaw) {
+    const inputForward = (keys.w ? 1 : 0) - (keys.s ? 1 : 0);
+    const inputRight = (keys.d ? 1 : 0) - (keys.a ? 1 : 0);
+
+    if (inputForward === 0 && inputRight === 0) return { dirX: 0, dirY: 0 };
+
+    const sin = Math.sin(cameraYaw);
+    const cos = Math.cos(cameraYaw);
+
+    let dirX = inputForward * sin + inputRight * cos;
+    let dirY = inputForward * cos - inputRight * sin;
+
+    const len = Math.hypot(dirX, dirY);
     if (len > 0) {
-      dx /= len;
-      dy /= len;
+      dirX /= len;
+      dirY /= len;
     }
-    return { dirX: dx, dirY: dy };
+    return { dirX, dirY };
   }
 
   /** Wird von der UI aufgerufen, wenn der Spieler eine Option bei einem Lebensereignis waehlt. */
@@ -495,7 +506,7 @@ class NetClient {
     const dt = Math.min(dtMs, MAX_FRAME_DT_MS);
 
     const keysSnapshot = { ...this.keys };
-    const { dirX, dirY } = this.keysToDirection(keysSnapshot);
+    const { dirX, dirY } = this.keysToWorldDirection(keysSnapshot, this.cameraYaw);
     this.inputSeq += 1;
 
     const pos = { x: this.localPlayer.x, y: this.localPlayer.y };
@@ -506,7 +517,17 @@ class NetClient {
     this.localPlayer.vy = this.localVelocity.y;
 
     this.pendingInputs.push({ seq: this.inputSeq, dirX, dirY, dt });
-    this.ws.send(JSON.stringify({ type: 'input', seq: this.inputSeq, keys: keysSnapshot }));
+    this.ws.send(JSON.stringify({
+      type: 'input',
+      seq: this.inputSeq,
+      keys: keysSnapshot,
+      cameraYaw: this.cameraYaw,
+    }));
+  }
+
+  /** Wird von der Oberflaeche aufgerufen, wenn der Spieler die Kamera per Wischgeste dreht. */
+  rotateCameraYaw(deltaRadians) {
+    this.cameraYaw += deltaRadians;
   }
 
   /** Kleiner Hilfsmethoden-Block fuer die Wirtschaft - alles serverseitig geprueft, hier nur Versand. */
