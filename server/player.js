@@ -46,6 +46,7 @@ function createPlayer(name, token) {
     assets: [],
     position: { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 },
     velocity: { x: 0, y: 0 },
+    inputDir: { x: 0, y: 0 }, // gewuenschte Bewegungsrichtung, velocity naehert sich dem an
     wanted: 0,
     lastSeen: Date.now(),
     connected: true,
