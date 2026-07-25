@@ -59,6 +59,12 @@ const {
   INHERITANCE_CHILD_ONLY,
   INHERITANCE_SPOUSE_ONLY,
 } = require('./family');
+const {
+  findJobDefinition,
+  buildJobCatalog,
+  XP_PER_TICK,
+  QUIT_HAPPINESS_PENALTY,
+} = require('./jobs');
 
 const MAX_PLAYERS = 20;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
@@ -1084,6 +1090,9 @@ class GameWorld {
     player.wanted = 0;
     player.jailedUntil = null;
     player.criminalRecord = [];
+    player.job = null;      // ein neues Leben startet arbeitslos, erbt nicht die Stelle
+    player.jobLevel = 0;
+    player.jobXp = 0;
     player.spouseId = null;
     player.activeEvent = null;
     player.eventQueue = [];
@@ -1095,6 +1104,101 @@ class GameWorld {
     if (child) this.children.delete(heirChildId); // als Erbe "aufgebraucht"
 
     return { ok: true, player, becameChild: !!child };
+  }
+
+  // ---------------------------------------------------------------------
+  // BERUF: Bewerben, Gehalt, Befoerderung
+  // ---------------------------------------------------------------------
+
+  buildJobCatalogState() {
+    return buildJobCatalog();
+  }
+
+  /** Liefert die aktuelle Stufen-Definition eines Spielers, oder null wenn arbeitslos. */
+  getCurrentJobLevel(player) {
+    if (!player.job) return null;
+    const def = findJobDefinition(player.job);
+    if (!def) return null;
+    return def.levels[player.jobLevel] || null;
+  }
+
+  /**
+   * Bewerbung auf einen Beruf. Anforderungen werden AUSSCHLIESSLICH hier geprueft -
+   * der Client kann keine Qualifikation vortaeuschen.
+   */
+  applyForJob(playerId, jobId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.job) return { ok: false, reason: 'already_employed' };
+
+    const def = findJobDefinition(jobId);
+    if (!def) return { ok: false, reason: 'unknown_job' };
+    if (player.smarts < def.minSmarts) return { ok: false, reason: 'not_smart_enough' };
+    if (player.wanted > def.maxWanted) return { ok: false, reason: 'criminal_record' };
+
+    player.job = def.id;
+    player.jobLevel = 0;
+    player.jobXp = 0;
+
+    return { ok: true, jobName: def.name, title: def.levels[0].title, salary: def.levels[0].salary };
+  }
+
+  /** Kuendigt den aktuellen Beruf. Erfahrung ist damit verloren. */
+  quitJob(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (!player.job) return { ok: false, reason: 'not_employed' };
+
+    player.job = null;
+    player.jobLevel = 0;
+    player.jobXp = 0;
+    player.happiness = Math.max(0, player.happiness - QUIT_HAPPINESS_PENALTY);
+
+    return { ok: true };
+  }
+
+  /**
+   * slowTick: zahlt Gehalt an alle arbeitenden Spieler und sammelt Berufserfahrung.
+   * Im Gefaengnis oder nach dem Tod gibt es kein Gehalt und keine Erfahrung.
+   * @returns {Array} Befoerderungen, fuer Benachrichtigungen
+   */
+  payAndProgressJobs() {
+    const promotions = [];
+
+    for (const player of this.players.values()) {
+      if (!player.connected || !player.job) continue;
+      if (this.isJailed(player) || this.isAwaitingReincarnation(player)) continue;
+
+      const def = findJobDefinition(player.job);
+      const level = def ? def.levels[player.jobLevel] : null;
+      if (!def || !level) {
+        // Beruf existiert nicht mehr (z.B. nach einem Update) - sauber freistellen,
+        // statt den Spieler in einem kaputten Zustand haengen zu lassen.
+        player.job = null;
+        player.jobLevel = 0;
+        player.jobXp = 0;
+        continue;
+      }
+
+      player.cash += level.salary;
+      player.jobXp += XP_PER_TICK;
+
+      if (level.xpToPromote != null && player.jobXp >= level.xpToPromote) {
+        player.jobLevel += 1;
+        player.jobXp = 0;
+        const newLevel = def.levels[player.jobLevel];
+        promotions.push({
+          player,
+          jobName: def.name,
+          newTitle: newLevel.title,
+          newSalary: newLevel.salary,
+        });
+      }
+    }
+
+    return promotions;
   }
 }
 
