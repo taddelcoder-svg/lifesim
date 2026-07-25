@@ -30,6 +30,26 @@ const CAMERA_SMOOTH = 0.12; // 0..1 - hoeher = Kamera folgt schneller/ruckartige
 
 const FACING_MIN_SPEED = 1; // px/s, darunter wird die letzte Blickrichtung beibehalten (kein Zittern im Stand)
 
+// Andere Spieler bekommen ihre Position nur ~20x/s ueber das Netz, gezeichnet wird
+// aber ~60x/s. Ohne Interpolation waere jede Bewegung sichtbar stufig. Diese Werte
+// sind Mischanteile pro 60fps-Frame und werden unten bildratenunabhaengig umgerechnet.
+const REMOTE_POSITION_BLEND = 0.2;
+const FACING_BLEND = 0.18;
+const REMOTE_SNAP_DISTANCE = 8; // 3D-Einheiten - darueber wird hart gesetzt (z.B. Teleport ins Gefaengnis)
+
+/** Mischanteil bildratenunabhaengig machen, damit es bei 30fps genauso schnell wirkt wie bei 120fps. */
+function frameRateIndependentBlend(perFrameRate, dtMs) {
+  return 1 - Math.pow(1 - perFrameRate, Math.max(dtMs, 1) / 16.667);
+}
+
+/** Winkel weich angleichen, inklusive korrektem Umgang mit dem Sprung bei ±180°. */
+function lerpAngle(current, target, t) {
+  let diff = target - current;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return current + diff * t;
+}
+
 const BUILDING_FOOTPRINT = 3; // Breite/Tiefe aller Immobilien-Gebaeude in 3D-Einheiten
 const BUILDING_MIN_HEIGHT = 4;
 const BUILDING_HEIGHT_PER_PRICE = 1 / 400; // teurere Immobilien wirken sichtbar groesser
@@ -166,13 +186,17 @@ class Renderer {
 
   loop(now) {
     if (!this.running) return;
-    const dt = now - this.lastFrame;
+    const rawDt = now - this.lastFrame;
     this.lastFrame = now;
 
-    this.net.update(dt);
-    this.syncEntities();
+    // Deckel gegen Zeitspruenge (Tab war im Hintergrund) - sonst wuerde die
+    // Interpolation in einem Frame komplett durchspringen.
+    const dt = Math.min(rawDt, 100);
+
+    this.net.update(rawDt);
+    this.syncEntities(dt);
     this.syncBuildings();
-    this.updateCamera();
+    this.updateCamera(dt);
     this.renderer.render(this.scene, this.camera);
     this.updateHud();
 
@@ -270,9 +294,11 @@ class Renderer {
   }
 
   /** Ueberschreibt Position/Blickrichtung/Label aller sichtbaren Spieler anhand des Netzwerk-State. */
-  syncEntities() {
+  syncEntities(dtMs) {
     const seen = new Set();
     const now = Date.now();
+    const posBlend = frameRateIndependentBlend(REMOTE_POSITION_BLEND, dtMs);
+    const facingBlend = frameRateIndependentBlend(FACING_BLEND, dtMs);
 
     for (const p of this.net.players.values()) {
       if (p.connected === false) continue;
@@ -281,14 +307,35 @@ class Renderer {
       const isSelf = p.id === this.net.myId;
       const entry = this.getOrCreateEntity(p.id, isSelf);
 
-      entry.group.position.x = p.x * WORLD_SCALE;
-      entry.group.position.z = p.y * WORLD_SCALE;
+      const targetX = p.x * WORLD_SCALE;
+      const targetZ = p.y * WORLD_SCALE;
+
+      if (isSelf) {
+        // Eigene Figur: direkt setzen. Die Position kommt aus der lokalen Vorhersage
+        // und ist bereits geglaettet - hier nochmal zu interpolieren wuerde sich
+        // nur wie Eingabeverzoegerung anfuehlen.
+        entry.group.position.x = targetX;
+        entry.group.position.z = targetZ;
+      } else {
+        // Andere Spieler: zwischen den ~20 Netzwerk-Updates pro Sekunde interpolieren,
+        // sonst waere die Bewegung sichtbar stufig.
+        const dist = Math.hypot(entry.group.position.x - targetX, entry.group.position.z - targetZ);
+        if (dist > REMOTE_SNAP_DISTANCE) {
+          entry.group.position.x = targetX;
+          entry.group.position.z = targetZ;
+        } else {
+          entry.group.position.x += (targetX - entry.group.position.x) * posBlend;
+          entry.group.position.z += (targetZ - entry.group.position.z) * posBlend;
+        }
+      }
 
       const speed = Math.hypot(p.vx || 0, p.vy || 0);
       if (speed > FACING_MIN_SPEED) {
         this.facingById.set(p.id, Math.atan2(p.vx, p.vy));
       }
-      entry.group.rotation.y = this.facingById.get(p.id) || 0;
+      // Weich eindrehen statt sofort umzuschnappen
+      const targetFacing = this.facingById.get(p.id) || 0;
+      entry.group.rotation.y = lerpAngle(entry.group.rotation.y, targetFacing, facingBlend);
 
       // Im Gefaengnis: Figur graeulich einfaerben, damit der Status auch optisch erkennbar ist
       const isJailed = p.jailedUntil != null && p.jailedUntil > now;
@@ -309,7 +356,7 @@ class Renderer {
       if (!seen.has(id)) this.removeEntity(id);
     }
 
-    this.syncCops();
+    this.syncCops(dtMs);
   }
 
   /** Erstellt ein Immobilien-Gebaeude: Quader, dessen Hoehe den Preis widerspiegelt. */
@@ -390,18 +437,36 @@ class Renderer {
   }
 
   /** Positioniert die Polizei-NPCs anhand des zuletzt empfangenen copsState. */
-  syncCops() {
+  syncCops(dtMs) {
+    // Polizei-Updates kommen nur 5x/s (COPS_TICK_MS = 200) - ohne Interpolation
+    // waere das die sichtbar ruckeligste Bewegung im ganzen Spiel.
+    const blend = frameRateIndependentBlend(REMOTE_POSITION_BLEND, dtMs);
     const seen = new Set();
+
     for (const cop of this.net.cops.values()) {
       seen.add(cop.id);
       let entry = this.copEntities.get(cop.id);
+      const targetX = cop.x * WORLD_SCALE;
+      const targetZ = cop.y * WORLD_SCALE;
+
       if (!entry) {
         entry = this.createCopEntity();
         this.copEntities.set(cop.id, entry);
+        entry.group.position.x = targetX;
+        entry.group.position.z = targetZ;
+        continue;
       }
-      entry.group.position.x = cop.x * WORLD_SCALE;
-      entry.group.position.z = cop.y * WORLD_SCALE;
+
+      const dist = Math.hypot(entry.group.position.x - targetX, entry.group.position.z - targetZ);
+      if (dist > REMOTE_SNAP_DISTANCE) {
+        entry.group.position.x = targetX;
+        entry.group.position.z = targetZ;
+      } else {
+        entry.group.position.x += (targetX - entry.group.position.x) * blend;
+        entry.group.position.z += (targetZ - entry.group.position.z) * blend;
+      }
     }
+
     for (const [id, entry] of this.copEntities) {
       if (!seen.has(id)) {
         this.scene.remove(entry.group);
@@ -411,7 +476,7 @@ class Renderer {
   }
 
   /** Kamera folgt sanft hinter der Blickrichtung der eigenen Figur (GTA-Stil). */
-  updateCamera() {
+  updateCamera(dtMs) {
     const me = this.entities.get(this.net.myId);
     if (!me) return;
 
@@ -426,8 +491,11 @@ class Renderer {
     );
     const targetLook = new THREE.Vector3(me.group.position.x, CAMERA_LOOK_HEIGHT, me.group.position.z);
 
-    this.smoothedCamPos.lerp(targetCamPos, CAMERA_SMOOTH);
-    this.smoothedCamTarget.lerp(targetLook, CAMERA_SMOOTH);
+    // Bildratenunabhaengig, damit sich die Kamera auf einem 120Hz-Display
+    // nicht doppelt so schnell anfuehlt wie auf einem 60Hz-Display.
+    const blend = frameRateIndependentBlend(CAMERA_SMOOTH, dtMs);
+    this.smoothedCamPos.lerp(targetCamPos, blend);
+    this.smoothedCamTarget.lerp(targetLook, blend);
 
     this.camera.position.copy(this.smoothedCamPos);
     this.camera.lookAt(this.smoothedCamTarget);
