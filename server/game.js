@@ -114,8 +114,10 @@ function keysToWorldDirection(keys, cameraYaw) {
   const sin = Math.sin(yaw);
   const cos = Math.cos(yaw);
 
-  let dx = inputForward * sin + inputRight * cos;
-  let dy = inputForward * cos - inputRight * sin;
+  // "Rechts" relativ zur Kamera ist forward x up (Three.js-Konvention), nicht
+  // umgekehrt - das Vorzeichen hier war zunaechst falsch herum und hat A/D vertauscht.
+  let dx = inputForward * sin - inputRight * cos;
+  let dy = inputForward * cos + inputRight * sin;
 
   const len = Math.hypot(dx, dy);
   if (len > 0) {
