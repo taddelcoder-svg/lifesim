@@ -84,7 +84,7 @@
   }
   #joinBox button:hover { background: #3a6ceb; }
   #joinMsg { color: #ff8080; min-height: 1.2em; font-size: 13px; margin-top: 10px; margin-bottom: 0; }
-  canvas { display: block; }
+  canvas { display: block; touch-action: none; }
 
   #touchControls {
     position: fixed;
@@ -538,6 +538,36 @@
     bindDpadButton('dpadLeft', 'a');
     bindDpadButton('dpadRight', 'd');
     bindDpadButton('dpadDown', 's');
+
+    // Freie Kamera-Drehung per Wischgeste auf der 3D-Ansicht - das ist der Kern
+    // des GTA/Roblox-Steuergefuehls: WASD ist relativ zu DIESER Blickrichtung,
+    // nicht zu festen Kartenrichtungen. Bewusst auf dem Canvas selbst (nicht auf
+    // Steuerkreuz/Knoepfen), damit es die Bedienelemente nicht stoert.
+    const CAMERA_DRAG_SENSITIVITY = 0.008; // Bogenmass pro Pixel horizontaler Wischbewegung
+    let cameraDragActive = false;
+    let cameraDragLastX = 0;
+    let cameraDragPointerId = null;
+
+    canvas.addEventListener('pointerdown', (e) => {
+      cameraDragActive = true;
+      cameraDragPointerId = e.pointerId;
+      cameraDragLastX = e.clientX;
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!cameraDragActive || e.pointerId !== cameraDragPointerId || !net) return;
+      const deltaX = e.clientX - cameraDragLastX;
+      cameraDragLastX = e.clientX;
+      net.rotateCameraYaw(-deltaX * CAMERA_DRAG_SENSITIVITY);
+    });
+    function endCameraDrag(e) {
+      if (e.pointerId === cameraDragPointerId) {
+        cameraDragActive = false;
+        cameraDragPointerId = null;
+      }
+    }
+    canvas.addEventListener('pointerup', endCameraDrag);
+    canvas.addEventListener('pointercancel', endCameraDrag);
+    canvas.addEventListener('pointerleave', endCameraDrag);
 
     // Lebensereignisse: Banner mit Countdown, wird vom Server per 'eventOffer' ausgeloest.
     // Reagiert der Spieler nicht innerhalb der Zeit, loest der SERVER die Standardwahl aus
