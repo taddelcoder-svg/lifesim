@@ -475,8 +475,10 @@ class NetClient {
     const sin = Math.sin(cameraYaw);
     const cos = Math.cos(cameraYaw);
 
-    let dirX = inputForward * sin + inputRight * cos;
-    let dirY = inputForward * cos - inputRight * sin;
+    // "Rechts" relativ zur Kamera ist forward x up (Three.js-Konvention) -
+    // MUSS exakt mit server/game.js uebereinstimmen.
+    let dirX = inputForward * sin - inputRight * cos;
+    let dirY = inputForward * cos + inputRight * sin;
 
     const len = Math.hypot(dirX, dirY);
     if (len > 0) {
