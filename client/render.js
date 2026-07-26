@@ -99,6 +99,7 @@ class Renderer {
     this.copEntities = new Map(); // copId -> { group }
     this.buildingEntities = new Map(); // propertyId -> { group, mat, label, lastLabelText, lastColorKey }
     this.cityMeshes = []; // Strassen und Deko-Gebaeude aus dem Server-Layout
+    this.vehicleEntities = new Map(); // vehicleId -> { group, mat, lastColorKey }
     this.facingById = new Map(); // playerId -> Bogenmass, Blickrichtung bei Stillstand beibehalten
 
     this.smoothedCamPos = this.camera.position.clone();
@@ -242,6 +243,7 @@ class Renderer {
     this.net.update(rawDt);
     this.syncEntities(dt);
     this.syncBuildings();
+    this.syncVehicles(dt);
     this.updateCamera(dt);
     this.renderer.render(this.scene, this.camera);
     this.updateHud();
@@ -382,6 +384,9 @@ class Renderer {
       // Weich eindrehen statt sofort umzuschnappen
       const targetFacing = this.facingById.get(p.id) || 0;
       entry.group.rotation.y = lerpAngle(entry.group.rotation.y, targetFacing, facingBlend);
+
+      // Wer faehrt, sitzt IM Fahrzeug - die Figur wuerde sonst daneben mitschweben.
+      entry.group.visible = p.vehicleId == null;
 
       // Im Gefaengnis: Figur graeulich einfaerben, damit der Status auch optisch erkennbar ist
       const isJailed = p.jailedUntil != null && p.jailedUntil > now;
@@ -574,9 +579,17 @@ class Renderer {
       studyText = ` &nbsp;|&nbsp; 🎓 ${course ? course.name : 'Kurs'} ${me.courseProgress ?? 0}/${required}`;
     }
 
+    // Faehrt der Spieler? Dann Fahrzeug statt "zu Fuss" anzeigen.
+    let travelText = '🚶 zu Fuß';
+    if (me.vehicleId != null) {
+      const v = this.net.vehicles.get(me.vehicleId);
+      const type = v ? this.net.vehicleCatalog.find((t) => t.id === v.typeId) : null;
+      travelText = '🚗 ' + (type ? type.name : 'Fahrzeug');
+    }
+
     this.hud.innerHTML =
       `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}${wantedText}<br>` +
       `❤️ ${me.health ?? 100} &nbsp; 😊 ${me.happiness ?? 70} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}${studyText}<br>` +
-      `Spieler online: ${online} / 20 &nbsp;|&nbsp; Steuerung: WASD`;
+      `Spieler online: ${online} &nbsp;|&nbsp; ${travelText}`;
   }
 }
