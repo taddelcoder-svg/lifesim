@@ -10,6 +10,8 @@ const STARTING_HAPPINESS = 70;
 const STARTING_SMARTS = 50;
 const STARTING_LOOKS = 50;
 const STARTING_AGE = 18;
+const { SPAWN_POSITION } = require('./world');
+
 const WORLD_WIDTH = 2000;
 const WORLD_HEIGHT = 2000;
 
@@ -44,9 +46,10 @@ function createPlayer(name, token) {
     criminalRecord: [],
     relationships: [],
     assets: [],
-    position: { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 },
+    position: { x: SPAWN_POSITION.x, y: SPAWN_POSITION.y },
     velocity: { x: 0, y: 0 },
     inputDir: { x: 0, y: 0 }, // gewuenschte Bewegungsrichtung, velocity naehert sich dem an
+    lastInputAt: 0,           // Zeitstempel der letzten Eingabe, fuer das Bewegungs-Timeout
     wanted: 0,
     lastSeen: Date.now(),
     connected: true,
