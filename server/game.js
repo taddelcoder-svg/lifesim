@@ -77,6 +77,13 @@ const {
   PLAYER_COLLISION_RADIUS,
   SPAWN_POSITION,
 } = require('./world');
+const {
+  findVehicleType,
+  createInitialVehicles,
+  buildVehicleCatalog,
+  VEHICLE_ENTER_RANGE,
+  VEHICLE_THEFT_WANTED,
+} = require('./vehicles');
 
 const MAX_PLAYERS = 20;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
@@ -143,14 +150,22 @@ function keysToWorldDirection(keys, cameraYaw) {
 /**
  * Ein Bewegungsschritt. Bewusst als reine Funktion ohne Seiteneffekte, damit
  * Server und Client garantiert dasselbe rechnen koennen.
+ *
+ * speed/accel/friction werden BEWUSST uebergeben statt fest verdrahtet: zu Fuss
+ * gelten andere Werte als im Fahrzeug. Der Client muss dieselben Werte verwenden,
+ * sonst driftet die Vorhersage - deshalb schickt der Server den Fahrzeugkatalog mit.
  * Veraendert pos und vel direkt.
  */
-function stepMovement(pos, vel, dirX, dirY, dtSec, worldW, worldH) {
-  const targetVx = dirX * PLAYER_SPEED;
-  const targetVy = dirY * PLAYER_SPEED;
+function stepMovement(pos, vel, dirX, dirY, dtSec, worldW, worldH, speed, accel, friction) {
+  const maxSpeed = speed != null ? speed : PLAYER_SPEED;
+  const accelRate = accel != null ? accel : PLAYER_ACCELERATION;
+  const frictionRate = friction != null ? friction : PLAYER_FRICTION;
+
+  const targetVx = dirX * maxSpeed;
+  const targetVy = dirY * maxSpeed;
 
   const isStopping = dirX === 0 && dirY === 0;
-  const maxDelta = (isStopping ? PLAYER_FRICTION : PLAYER_ACCELERATION) * dtSec;
+  const maxDelta = (isStopping ? frictionRate : accelRate) * dtSec;
 
   const dvx = targetVx - vel.x;
   const dvy = targetVy - vel.y;
@@ -238,6 +253,10 @@ class GameWorld {
       ...this.cityLayout.buildings.map((b) => ({ x: b.x, y: b.y, w: b.w, d: b.d })),
       ...PROPERTIES.map((p) => ({ x: p.position.x, y: p.position.y, w: 120, d: 120 })),
     ];
+
+    const vehicleInit = createInitialVehicles();
+    this.vehicles = vehicleInit.vehicles;
+    this.nextVehicleId = vehicleInit.nextVehicleId;
   }
 
   /** Der komplette Stadtaufbau fuer den Client (Rendering + identische Kollision). */
@@ -258,6 +277,109 @@ class GameWorld {
         Math.abs(pos.x - r.x) < r.w / 2 + PLAYER_COLLISION_RADIUS &&
         Math.abs(pos.y - r.y) < r.d / 2 + PLAYER_COLLISION_RADIUS
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // FAHRZEUGE: einsteigen, fahren, kaufen, klauen
+  // ---------------------------------------------------------------------
+
+  buildVehiclesState() {
+    return {
+      catalog: buildVehicleCatalog(),
+      vehicles: [...this.vehicles.values()].map((v) => ({
+        id: v.id, typeId: v.typeId, x: v.x, y: v.y,
+        ownerId: v.ownerId, driverId: v.driverId,
+      })),
+    };
+  }
+
+  /**
+   * Steigt in ein Fahrzeug in Reichweite ein. Gehoert es jemand anderem, gilt das
+   * als Diebstahl und erhoeht das Fahndungslevel - dadurch wird die Polizei
+   * (Phase 4) automatisch auf den Spieler aufmerksam.
+   */
+  enterVehicle(playerId, vehicleId) {
+    const player = this.players.get(playerId);
+    const vehicle = this.vehicles.get(vehicleId);
+    if (!player || !vehicle) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.vehicleId != null) return { ok: false, reason: 'already_driving' };
+    if (vehicle.driverId != null) return { ok: false, reason: 'occupied' };
+
+    const dist = Math.hypot(player.position.x - vehicle.x, player.position.y - vehicle.y);
+    if (dist > VEHICLE_ENTER_RANGE) return { ok: false, reason: 'too_far' };
+
+    const isTheft = vehicle.ownerId != null && vehicle.ownerId !== playerId;
+    if (isTheft) {
+      player.wanted += VEHICLE_THEFT_WANTED;
+      player.lastCrimeAt = Date.now();
+    }
+
+    vehicle.driverId = playerId;
+    player.vehicleId = vehicle.id;
+    // Geschwindigkeit zuruecksetzen, damit man nicht mit Fuss-Impuls losschiesst
+    player.velocity.x = 0;
+    player.velocity.y = 0;
+
+    const type = findVehicleType(vehicle.typeId);
+    return { ok: true, vehicle, wasTheft: isTheft, typeName: type ? type.name : 'Fahrzeug' };
+  }
+
+  /** Steigt aus. Das Fahrzeug bleibt dort stehen, wo man es verlaesst. */
+  exitVehicle(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (player.vehicleId == null) return { ok: false, reason: 'not_driving' };
+
+    const vehicle = this.vehicles.get(player.vehicleId);
+    if (vehicle) {
+      vehicle.driverId = null;
+      vehicle.x = player.position.x;
+      vehicle.y = player.position.y;
+    }
+    player.vehicleId = null;
+    player.velocity.x = 0;
+    player.velocity.y = 0;
+
+    return { ok: true, vehicle };
+  }
+
+  /** Kauft ein herrenloses Fahrzeug, in dem man gerade sitzt oder das in Reichweite ist. */
+  buyVehicle(playerId, vehicleId) {
+    const player = this.players.get(playerId);
+    const vehicle = this.vehicles.get(vehicleId);
+    if (!player || !vehicle) return { ok: false, reason: 'not_found' };
+    if (vehicle.ownerId === playerId) return { ok: false, reason: 'already_owned' };
+    if (vehicle.ownerId != null) return { ok: false, reason: 'owned_by_other' };
+
+    const type = findVehicleType(vehicle.typeId);
+    if (!type) return { ok: false, reason: 'not_found' };
+    if (player.cash < type.price) return { ok: false, reason: 'insufficient_funds' };
+
+    const dist = Math.hypot(player.position.x - vehicle.x, player.position.y - vehicle.y);
+    if (player.vehicleId !== vehicle.id && dist > VEHICLE_ENTER_RANGE) {
+      return { ok: false, reason: 'too_far' };
+    }
+
+    player.cash -= type.price;
+    vehicle.ownerId = playerId;
+    return { ok: true, vehicle, typeName: type.name, price: type.price };
+  }
+
+  /**
+   * Holt den Spieler aus dem Fahrzeug, ohne eine Aktion des Spielers - fuer
+   * Verhaftung und Tod. Ohne das wuerde man "im Auto sitzend" im Gefaengnis landen.
+   */
+  forceExitVehicle(player) {
+    if (player.vehicleId == null) return;
+    const vehicle = this.vehicles.get(player.vehicleId);
+    if (vehicle) {
+      vehicle.driverId = null;
+      vehicle.x = player.position.x;
+      vehicle.y = player.position.y;
+    }
+    player.vehicleId = null;
   }
 
   get playerCount() {
@@ -387,6 +509,10 @@ class GameWorld {
         player.inputDir.y = 0;
       }
 
+      // Faehrt der Spieler? Dann gelten die Werte des Fahrzeugs statt der Fusswerte.
+      const vehicle = player.vehicleId != null ? this.vehicles.get(player.vehicleId) : null;
+      const vType = vehicle ? findVehicleType(vehicle.typeId) : null;
+
       stepMovement(
         player.position,
         player.velocity,
@@ -394,11 +520,20 @@ class GameWorld {
         player.inputDir.y,
         dtSec,
         WORLD_WIDTH,
-        WORLD_HEIGHT
+        WORLD_HEIGHT,
+        vType ? vType.speed : undefined,
+        vType ? vType.acceleration : undefined,
+        vType ? vType.friction : undefined
       );
 
       // Aus Gebaeuden herausschieben. MUSS im Client identisch passieren.
       resolveCollisions(player.position, player.velocity, this.collisionRects, PLAYER_COLLISION_RADIUS);
+
+      // Das gefahrene Fahrzeug bewegt sich mit dem Fahrer
+      if (vehicle) {
+        vehicle.x = player.position.x;
+        vehicle.y = player.position.y;
+      }
     }
   }
 
@@ -919,6 +1054,7 @@ class GameWorld {
         cop.velocity.y = (dy / len) * POLICE_CHASE_SPEED;
 
         if (bestDist <= POLICE_CATCH_RANGE) {
+          this.forceExitVehicle(target); // nicht "im Auto sitzend" im Gefaengnis landen
           target.jailedUntil = now + JAIL_DURATION_MS;
           target.wanted = 0;
           target.position.x = JAIL_POSITION.x;
@@ -1199,6 +1335,7 @@ class GameWorld {
     }
 
     player.cash = 0;
+    this.forceExitVehicle(player); // Fahrzeug bleibt am Sterbeort stehen
     player.pendingReincarnation = { heirChildId: heirChild ? heirChild.id : null };
 
     if (spouse) {
@@ -1241,6 +1378,7 @@ class GameWorld {
     player.job = null;      // ein neues Leben startet arbeitslos, erbt nicht die Stelle
     player.jobLevel = 0;
     player.jobXp = 0;
+    player.vehicleId = null;      // neues Leben startet zu Fuss
     player.education = null;      // Abschluesse werden nicht vererbt
     player.enrolledCourse = null;
     player.courseProgress = 0;
