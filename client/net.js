@@ -43,6 +43,14 @@ class NetClient {
     this.collisionRects = [];
     this.collisionRadius = 18;
     this.onWorldLayout = null;
+
+    // Fahrzeuge
+    this.vehicleCatalog = []; // [{ id, name, price, speed, acceleration, friction }]
+    this.vehicles = new Map(); // vehicleId -> { id, typeId, x, y, ownerId, driverId }
+    this.onVehiclesState = null;
+    this.onVehicleEntered = null;
+    this.onVehicleExited = null;
+    this.onVehicleBought = null;
     this.keys = { w: false, a: false, s: false, d: false };
     this.onWelcome = null;
     this.onJoinError = null;
@@ -409,6 +417,37 @@ class NetClient {
         break;
       }
 
+      case 'vehiclesState': {
+        this.vehicleCatalog = msg.catalog || [];
+        this.vehicles.clear();
+        for (const v of msg.vehicles || []) this.vehicles.set(v.id, v);
+        if (this.onVehiclesState) this.onVehiclesState(msg);
+        break;
+      }
+
+      case 'vehicleDelta': {
+        for (const upd of msg.vehicles || []) {
+          const v = this.vehicles.get(upd.id);
+          if (v) { v.x = upd.x; v.y = upd.y; }
+        }
+        break;
+      }
+
+      case 'vehicleEntered': {
+        if (this.onVehicleEntered) this.onVehicleEntered(msg);
+        break;
+      }
+
+      case 'vehicleExited': {
+        if (this.onVehicleExited) this.onVehicleExited(msg);
+        break;
+      }
+
+      case 'vehicleBought': {
+        if (this.onVehicleBought) this.onVehicleBought(msg);
+        break;
+      }
+
       case 'worldLayout': {
         this.worldRoads = msg.roads || [];
         this.worldBuildings = msg.buildings || [];
@@ -449,7 +488,7 @@ class NetClient {
       vel: { x: serverState.vx, y: serverState.vy },
     };
     for (const inp of this.pendingInputs) {
-      this.stepMovement(state.pos, state.vel, inp.dirX, inp.dirY, inp.dt / 1000);
+      this.stepMovement(state.pos, state.vel, inp.dirX, inp.dirY, inp.dt / 1000, inp.params);
     }
 
     // Kleine Abweichungen sanft ausgleichen statt hart zu springen - ein harter
@@ -479,12 +518,14 @@ class NetClient {
    * dauerhaft von der Server-Wahrheit ab.
    * Veraendert pos und vel direkt.
    */
-  stepMovement(pos, vel, dirX, dirY, dtSec) {
-    const targetVx = dirX * PLAYER_SPEED;
-    const targetVy = dirY * PLAYER_SPEED;
+  stepMovement(pos, vel, dirX, dirY, dtSec, params) {
+    const p = params || this.currentMovementParams();
+
+    const targetVx = dirX * p.speed;
+    const targetVy = dirY * p.speed;
 
     const isStopping = dirX === 0 && dirY === 0;
-    const maxDelta = (isStopping ? PLAYER_FRICTION : PLAYER_ACCELERATION) * dtSec;
+    const maxDelta = (isStopping ? p.friction : p.accel) * dtSec;
 
     const dvx = targetVx - vel.x;
     const dvy = targetVy - vel.y;
@@ -592,14 +633,19 @@ class NetClient {
     const { dirX, dirY } = this.keysToWorldDirection(keysSnapshot, this.cameraYaw);
     this.inputSeq += 1;
 
+    // Bewegungswerte EINMAL bestimmen und mitspeichern: beim spaeteren erneuten
+    // Abspielen in reconcile() muessen dieselben Werte gelten wie jetzt, sonst
+    // rechnet die Korrektur mit Fusswerten, obwohl man damals gefahren ist.
+    const params = this.currentMovementParams();
+
     const pos = { x: this.localPlayer.x, y: this.localPlayer.y };
-    this.stepMovement(pos, this.localVelocity, dirX, dirY, dt / 1000);
+    this.stepMovement(pos, this.localVelocity, dirX, dirY, dt / 1000, params);
     this.localPlayer.x = pos.x;
     this.localPlayer.y = pos.y;
     this.localPlayer.vx = this.localVelocity.x;
     this.localPlayer.vy = this.localVelocity.y;
 
-    this.pendingInputs.push({ seq: this.inputSeq, dirX, dirY, dt });
+    this.pendingInputs.push({ seq: this.inputSeq, dirX, dirY, dt, params });
     this.ws.send(JSON.stringify({
       type: 'input',
       seq: this.inputSeq,
@@ -717,6 +763,44 @@ class NetClient {
 
   quitJob() {
     this.send({ type: 'quitJob' });
+  }
+
+  enterVehicle(vehicleId) {
+    this.send({ type: 'enterVehicle', vehicleId });
+  }
+
+  exitVehicle() {
+    this.send({ type: 'exitVehicle' });
+  }
+
+  buyVehicle(vehicleId) {
+    this.send({ type: 'buyVehicle', vehicleId });
+  }
+
+  /** Naechstes Fahrzeug in Reichweite - nur fuer die Bedienoberflaeche, Server prueft selbst. */
+  findNearestVehicle() {
+    if (!this.localPlayer) return null;
+    let nearest = null;
+    let best = Infinity;
+    for (const v of this.vehicles.values()) {
+      const d = Math.hypot(v.x - this.localPlayer.x, v.y - this.localPlayer.y);
+      if (d < best) { best = d; nearest = v; }
+    }
+    return nearest ? { vehicle: nearest, distance: best } : null;
+  }
+
+  /**
+   * Aktuelle Bewegungswerte: im Fahrzeug gelten die Fahrzeugwerte, sonst die
+   * Fusswerte. MUSS mit der Logik in server/game.js#stepPositions uebereinstimmen.
+   */
+  currentMovementParams() {
+    const vid = this.localPlayer && this.localPlayer.vehicleId;
+    if (vid != null) {
+      const v = this.vehicles.get(vid);
+      const type = v ? this.vehicleCatalog.find((t) => t.id === v.typeId) : null;
+      if (type) return { speed: type.speed, accel: type.acceleration, friction: type.friction };
+    }
+    return { speed: PLAYER_SPEED, accel: PLAYER_ACCELERATION, friction: PLAYER_FRICTION };
   }
 
   requestCourses() {
