@@ -222,6 +222,24 @@
     font-family: system-ui, sans-serif;
   }
 
+  #vehicleBtn {
+    position: fixed;
+    right: max(20px, env(safe-area-inset-right));
+    bottom: max(96px, calc(env(safe-area-inset-bottom) + 76px));
+    z-index: 10;
+    background: rgba(74, 158, 217, 0.85); color: white; border: none;
+    border-radius: 50%; width: 64px; height: 64px; font-size: 22px; cursor: pointer;
+  }
+  #vehicleBtn:disabled { background: rgba(90, 98, 112, 0.5); }
+  #vehicleBuyBtn {
+    position: fixed;
+    right: max(94px, calc(env(safe-area-inset-right) + 74px));
+    bottom: max(96px, calc(env(safe-area-inset-bottom) + 76px));
+    z-index: 10;
+    background: rgba(90, 196, 136, 0.9); color: white; border: none;
+    border-radius: 20px; padding: 10px 14px; font-size: 12px; cursor: pointer;
+    font-family: system-ui, sans-serif; display: none;
+  }
   #stealBtn {
     position: fixed;
     right: max(20px, env(safe-area-inset-right));
@@ -395,6 +413,8 @@
   <div id="actionToast"></div>
 
   <button id="stealBtn" title="Nächsten Spieler bestehlen">✊</button>
+  <button id="vehicleBtn" title="Ein-/Aussteigen">🚗</button>
+  <button id="vehicleBuyBtn">Kaufen</button>
 
   <div id="jailOverlay">
     <h2>🚔 Im Gefängnis</h2>
@@ -1344,6 +1364,69 @@
         deathOverlay.style.display = 'none';
         showToast(msg.becameChild ? `Du spielst jetzt als ${msg.name} weiter.` : 'Neues Leben begonnen.');
       };
+    }
+    // ---------------------------------------------------------------------
+    // Fahrzeuge: Ein-/Aussteigen und Kaufen
+    // ---------------------------------------------------------------------
+    const vehicleBtn = document.getElementById('vehicleBtn');
+    const vehicleBuyBtn = document.getElementById('vehicleBuyBtn');
+    const VEHICLE_RANGE_HINT = 70; // MUSS mit VEHICLE_ENTER_RANGE in server/vehicles.js uebereinstimmen
+
+    vehicleBtn.addEventListener('click', () => {
+      if (!net || !net.localPlayer) return;
+      if (net.localPlayer.vehicleId != null) {
+        net.exitVehicle();
+        return;
+      }
+      const nearest = net.findNearestVehicle();
+      if (!nearest || nearest.distance > VEHICLE_RANGE_HINT) {
+        showToast('Kein Fahrzeug in der Nähe.');
+        return;
+      }
+      net.enterVehicle(nearest.vehicle.id);
+    });
+
+    vehicleBuyBtn.addEventListener('click', () => {
+      if (!net || !net.localPlayer) return;
+      // Im Fahrzeug: dieses kaufen. Sonst: das naechste in Reichweite.
+      const inVehicleId = net.localPlayer.vehicleId;
+      if (inVehicleId != null) { net.buyVehicle(inVehicleId); return; }
+      const nearest = net.findNearestVehicle();
+      if (nearest && nearest.distance <= VEHICLE_RANGE_HINT) net.buyVehicle(nearest.vehicle.id);
+    });
+
+    // Knopf-Zustaende laufend aktualisieren: nur anzeigen, was gerade sinnvoll ist.
+    setInterval(() => {
+      if (!net || !net.localPlayer) return;
+      const driving = net.localPlayer.vehicleId != null;
+      const nearest = net.findNearestVehicle();
+      const inRange = !!nearest && nearest.distance <= VEHICLE_RANGE_HINT;
+
+      vehicleBtn.textContent = driving ? '🚪' : '🚗';
+      vehicleBtn.title = driving ? 'Aussteigen' : 'Einsteigen';
+      vehicleBtn.disabled = !driving && !inRange;
+      vehicleBtn.style.opacity = (driving || inRange) ? '1' : '0.4';
+
+      // Kaufen-Knopf nur bei einem herrenlosen Fahrzeug zeigen
+      const target = driving ? net.vehicles.get(net.localPlayer.vehicleId) : (inRange ? nearest.vehicle : null);
+      const buyable = target && target.ownerId == null;
+      if (buyable) {
+        const type = net.vehicleCatalog.find((t) => t.id === target.typeId);
+        vehicleBuyBtn.textContent = `Kaufen $${type ? type.price : '?'}`;
+        vehicleBuyBtn.style.display = 'block';
+      } else {
+        vehicleBuyBtn.style.display = 'none';
+      }
+    }, 400);
+
+    if (net) {
+      net.onVehicleEntered = (msg) => {
+        showToast(msg.wasTheft
+          ? `${msg.typeName} geklaut! Die Polizei sucht dich jetzt.`
+          : `Eingestiegen: ${msg.typeName}`);
+      };
+      net.onVehicleExited = () => showToast('Ausgestiegen.');
+      net.onVehicleBought = (msg) => showToast(`${msg.typeName} gekauft für $${msg.price}.`);
     }
   </script>
 </body>
