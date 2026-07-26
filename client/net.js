@@ -19,6 +19,9 @@ const PLAYER_FRICTION = 5000;
 const SNAP_THRESHOLD = 60;     // ab dieser Abweichung (px) wird hart korrigiert statt sanft
 const CORRECTION_BLEND = 0.25; // Anteil, mit dem kleine Abweichungen pro Frame ausgeglichen werden
 const MAX_FRAME_DT_MS = 100;   // Deckel gegen Zeitspruenge nach Hintergrund-Tabs
+
+// MUSS mit COLLISION_PASSES in server/world.js uebereinstimmen.
+const COLLISION_PASSES = 4;
 const RECONNECT_DELAY_MS = 2000;
 
 class NetClient {
@@ -32,6 +35,14 @@ class NetClient {
     this.pendingInputs = []; // noch nicht vom Server bestätigte Eingaben
     this.localVelocity = { x: 0, y: 0 }; // eigene Geschwindigkeit fuer die Vorhersage
     this.cameraYaw = 0; // frei drehbare Kamera-Blickrichtung (Bogenmass) - per Wischgeste gesteuert
+
+    // Stadtaufbau - kommt vom Server, damit Rendering UND Kollision garantiert
+    // zu dem passen, was der Server rechnet.
+    this.worldRoads = [];
+    this.worldBuildings = [];
+    this.collisionRects = [];
+    this.collisionRadius = 18;
+    this.onWorldLayout = null;
     this.keys = { w: false, a: false, s: false, d: false };
     this.onWelcome = null;
     this.onJoinError = null;
@@ -95,11 +106,33 @@ class NetClient {
 
     window.addEventListener('keydown', (e) => this.setKey(e.key, true));
     window.addEventListener('keyup', (e) => this.setKey(e.key, false));
+
+    // WICHTIG gegen "laeuft endlos weiter": Verliert das Fenster den Fokus oder
+    // wechselt man den Tab/die App, waehrend eine Taste gedrueckt ist, kommt das
+    // zugehoerige keyup NIE an - die Taste bliebe fuer immer "gedrueckt". Deshalb
+    // hier alle Tasten zuruecksetzen.
+    window.addEventListener('blur', () => this.releaseAllKeys());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.releaseAllKeys();
+    });
+
+    // SICHERHEITSNETZE gegen haengende Tasten: Wechselt man mit gedrueckter Taste
+    // die App oder den Tab, kommt das zugehoerige keyup NIE an - die Figur wuerde
+    // dann endlos weiterlaufen. Diese Handler setzen in solchen Faellen alles zurueck.
+    window.addEventListener('blur', () => this.clearAllKeys());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.clearAllKeys();
+    });
   }
 
   setKey(key, val) {
     const k = key.toLowerCase();
     if (k in this.keys) this.keys[k] = val;
+  }
+
+  /** Alle Tasten loslassen - gegen haengende Tasten bei Fokusverlust/Tabwechsel. */
+  releaseAllKeys() {
+    for (const k of Object.keys(this.keys)) this.keys[k] = false;
   }
 
   connect(name) {
@@ -376,6 +409,15 @@ class NetClient {
         break;
       }
 
+      case 'worldLayout': {
+        this.worldRoads = msg.roads || [];
+        this.worldBuildings = msg.buildings || [];
+        this.collisionRects = msg.collisionRects || [];
+        if (typeof msg.collisionRadius === 'number') this.collisionRadius = msg.collisionRadius;
+        if (this.onWorldLayout) this.onWorldLayout(msg);
+        break;
+      }
+
       case 'courseCompleted': {
         if (this.onCourseCompleted) this.onCourseCompleted(msg);
         break;
@@ -458,6 +500,45 @@ class NetClient {
 
     pos.x = Math.max(0, Math.min(WORLD_WIDTH, pos.x + vel.x * dtSec));
     pos.y = Math.max(0, Math.min(WORLD_HEIGHT, pos.y + vel.y * dtSec));
+
+    // Aus Gebaeuden herausschieben. MUSS exakt mit resolveCollisions() in
+    // server/world.js uebereinstimmen - sonst laeuft die Vorhersage auseinander
+    // und man "zappelt" an Waenden.
+    this.resolveCollisions(pos, vel);
+  }
+
+  /** Identisch zu resolveCollisions() in server/world.js - inklusive Anzahl der Durchgaenge. */
+  resolveCollisions(pos, vel) {
+    const radius = this.collisionRadius;
+
+    for (let pass = 0; pass < COLLISION_PASSES; pass++) {
+      let anyOverlap = false;
+
+      for (const r of this.collisionRects) {
+        const halfW = r.w / 2 + radius;
+        const halfD = r.d / 2 + radius;
+
+        const dx = pos.x - r.x;
+        const dy = pos.y - r.y;
+
+        if (Math.abs(dx) >= halfW || Math.abs(dy) >= halfD) continue;
+
+        anyOverlap = true;
+
+        const overlapX = halfW - Math.abs(dx);
+        const overlapY = halfD - Math.abs(dy);
+
+        if (overlapX < overlapY) {
+          pos.x += dx >= 0 ? overlapX : -overlapX;
+          vel.x = 0;
+        } else {
+          pos.y += dy >= 0 ? overlapY : -overlapY;
+          vel.y = 0;
+        }
+      }
+
+      if (!anyOverlap) break;
+    }
   }
 
   /**
