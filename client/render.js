@@ -462,6 +462,111 @@ class Renderer {
       }
     }
   }
+  /** Erstellt ein Fahrzeug: flacher Quader, Farbe und Groesse je nach Typ. */
+  createVehicleEntity(vehicle) {
+    const group = new THREE.Group();
+
+    const dims = {
+      scooter: { w: 0.6, h: 0.6, d: 1.3, color: 0xd9a13b },
+      compact: { w: 1.1, h: 0.8, d: 2.2, color: 0x4a9ed9 },
+      sedan:   { w: 1.3, h: 0.85, d: 2.8, color: 0x9a5ad9 },
+      sports:  { w: 1.3, h: 0.65, d: 3.0, color: 0xd94a4a },
+    };
+    const cfg = dims[vehicle.typeId] || dims.compact;
+
+    const mat = new THREE.MeshStandardMaterial({ color: cfg.color });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(cfg.w, cfg.h, cfg.d), mat);
+    body.position.y = cfg.h / 2 + 0.1;
+    body.castShadow = true;
+    group.add(body);
+
+    // Dach, damit es nicht wie eine reine Kiste wirkt
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0x22262f });
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(cfg.w * 0.85, cfg.h * 0.5, cfg.d * 0.5), roofMat);
+    roof.position.y = cfg.h + 0.1;
+    roof.castShadow = true;
+    group.add(roof);
+
+    const label = this.createLabelSprite('');
+    label.position.y = cfg.h + 0.9;
+    group.add(label);
+
+    this.scene.add(group);
+    return { group, mat, label, lastLabelText: '', lastColorKey: null };
+  }
+
+  /** Positioniert und beschriftet alle Fahrzeuge. */
+  syncVehicles(dtMs) {
+    const blend = frameRateIndependentBlend(REMOTE_POSITION_BLEND, dtMs);
+    const facingBlend = frameRateIndependentBlend(FACING_BLEND, dtMs);
+    const seen = new Set();
+
+    for (const v of this.net.vehicles.values()) {
+      seen.add(v.id);
+      let entry = this.vehicleEntities.get(v.id);
+      const targetX = v.x * WORLD_SCALE;
+      const targetZ = v.y * WORLD_SCALE;
+
+      if (!entry) {
+        entry = this.createVehicleEntity(v);
+        this.vehicleEntities.set(v.id, entry);
+        entry.group.position.x = targetX;
+        entry.group.position.z = targetZ;
+      } else if (v.driverId === this.net.myId) {
+        // Selbst gefahren: der eigenen vorhergesagten Position direkt folgen,
+        // sonst haengt das Auto sichtbar hinter der eigenen Bewegung her.
+        const me = this.net.localPlayer;
+        if (me) {
+          entry.group.position.x = me.x * WORLD_SCALE;
+          entry.group.position.z = me.y * WORLD_SCALE;
+        }
+      } else if (v.driverId != null) {
+        // Von einem ANDEREN Spieler gefahren: interpolieren (kommt nur ~20x/s)
+        const dist = Math.hypot(entry.group.position.x - targetX, entry.group.position.z - targetZ);
+        if (dist > REMOTE_SNAP_DISTANCE) {
+          entry.group.position.x = targetX;
+          entry.group.position.z = targetZ;
+        } else {
+          entry.group.position.x += (targetX - entry.group.position.x) * blend;
+          entry.group.position.z += (targetZ - entry.group.position.z) * blend;
+        }
+      } else {
+        // Geparkt: einfach setzen
+        entry.group.position.x = targetX;
+        entry.group.position.z = targetZ;
+      }
+
+      // Fahrtrichtung uebernehmen, wenn gefahren
+      if (v.driverId != null) {
+        const facing = this.facingById.get(v.driverId);
+        if (facing != null) {
+          entry.group.rotation.y = lerpAngle(entry.group.rotation.y, facing, facingBlend);
+        }
+      }
+
+      const type = this.net.vehicleCatalog.find((t) => t.id === v.typeId);
+      const typeName = type ? type.name : 'Fahrzeug';
+      let labelText;
+      if (v.driverId != null) labelText = typeName;
+      else if (v.ownerId === this.net.myId) labelText = `${typeName} (dein)`;
+      else if (v.ownerId != null) labelText = `${typeName} (fremd)`;
+      else labelText = `${typeName} - $${type ? type.price : '?'}`;
+
+      if (entry.lastLabelText !== labelText) {
+        this.paintLabelSprite(entry.label, labelText);
+        entry.lastLabelText = labelText;
+      }
+    }
+
+    for (const [id, entry] of this.vehicleEntities) {
+      if (!seen.has(id)) {
+        this.scene.remove(entry.group);
+        this.vehicleEntities.delete(id);
+      }
+    }
+  }
+
+  /** Erstellt eine Polizeifigur - gleiche Grundform, andere Farbe, eigenes Label. */
   createCopEntity() {
     const group = new THREE.Group();
 
