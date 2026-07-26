@@ -50,6 +50,7 @@ function createPlayer(name, token) {
     velocity: { x: 0, y: 0 },
     inputDir: { x: 0, y: 0 }, // gewuenschte Bewegungsrichtung, velocity naehert sich dem an
     lastInputAt: 0,           // Zeitstempel der letzten Eingabe, fuer das Bewegungs-Timeout
+    vehicleId: null,          // ID des gefahrenen Fahrzeugs, oder null (zu Fuss)
     wanted: 0,
     lastSeen: Date.now(),
     connected: true,
@@ -94,6 +95,7 @@ function serializePublic(player) {
     y: player.position.y,
     connected: player.connected,
     jailedUntil: player.jailedUntil,
+    vehicleId: player.vehicleId,
     spouseId: player.spouseId,
     awaitingReincarnation: player.pendingReincarnation != null,
   };
