@@ -150,6 +150,7 @@ wss.on('connection', (ws) => {
         // Spieler hatte beim Verbindungsabbruch noch ein offenes Ereignis - erneut zustellen
         send(ws, buildEventOfferMessage(result.player.activeEvent));
       }
+      send(ws, { type: 'worldLayout', ...world.buildWorldLayoutState() });
       send(ws, buildEconomyStateMessage()); // aktueller Immobilienmarkt + Firmenliste sofort sichtbar
       send(ws, { type: 'copsState', cops: world.buildCopsState() });
       send(ws, { type: 'chatHistory', messages: world.buildChatHistory() });
