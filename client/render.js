@@ -37,6 +37,39 @@ const REMOTE_POSITION_BLEND = 0.2;
 const FACING_BLEND = 0.18;
 const REMOTE_SNAP_DISTANCE = 8; // 3D-Einheiten - darueber wird hart gesetzt (z.B. Teleport ins Gefaengnis)
 
+// --- 3D-Modelle aus dem KayKit "City Builder Bits"-Pack (CC0, Kay Lousberg) ---
+// Alle Modelle stecken in EINER Datei mit gemeinsamer Textur, damit nur ein
+// Ladevorgang noetig ist. Fehlt die Datei, faellt alles auf die einfachen
+// Quader-Darstellungen zurueck - das Spiel bleibt dann spielbar.
+const MODEL_FILE = 'citybits.glb';
+
+// glTF-Norm: die Vorderseite eines Modells zeigt nach -Z. Im Spiel zeigen
+// Fahrzeuge nach +Z, deshalb 180 Grad drehen. Sollten die Autos rueckwaerts
+// fahren, ist das hier die einzige Stelle, die geaendert werden muss.
+const VEHICLE_MODEL_YAW_OFFSET = Math.PI;
+
+const VEHICLE_MODEL_BY_TYPE = {
+  scooter: 'car_hatchback',
+  compact: 'car_taxi',
+  sedan: 'car_sedan',
+  sports: 'car_stationwagon',
+};
+
+// Gewuenschte Laenge im Spiel je Fahrzeugtyp (3D-Einheiten). Zum Vergleich:
+// die Spielfigur ist etwa 1.3 Einheiten hoch.
+const VEHICLE_MODEL_LENGTH = {
+  scooter: 1.6,
+  compact: 2.2,
+  sedan: 2.8,
+  sports: 3.0,
+};
+
+const BUILDING_MODEL_NAMES = [
+  'building_A', 'building_B', 'building_C', 'building_D',
+  'building_E', 'building_F', 'building_G', 'building_H',
+];
+
+
 /** Mischanteil bildratenunabhaengig machen, damit es bei 30fps genauso schnell wirkt wie bei 120fps. */
 function frameRateIndependentBlend(perFrameRate, dtMs) {
   return 1 - Math.pow(1 - perFrameRate, Math.max(dtMs, 1) / 16.667);
@@ -100,12 +133,15 @@ class Renderer {
     this.buildingEntities = new Map(); // propertyId -> { group, mat, label, lastLabelText, lastColorKey }
     this.cityMeshes = []; // Strassen und Deko-Gebaeude aus dem Server-Layout
     this.vehicleEntities = new Map(); // vehicleId -> { group, mat, lastColorKey }
+    this.modelTemplates = new Map();  // Modellname -> Vorlage zum Klonen
+    this.modelsReady = false;
     this.facingById = new Map(); // playerId -> Bogenmass, Blickrichtung bei Stillstand beibehalten
 
     this.smoothedCamPos = this.camera.position.clone();
     this.smoothedCamTarget = new THREE.Vector3(WORLD_SIZE_3D / 2, CAMERA_LOOK_HEIGHT, WORLD_SIZE_3D / 2);
 
     this.buildStaticScene();
+    this.loadModels(); // laeuft im Hintergrund, bis dahin Quader
     window.addEventListener('resize', () => this.onResize());
   }
 
@@ -204,19 +240,115 @@ class Renderer {
     // Deko-Gebaeude: leicht unterschiedliche Grautoene, damit die Stadt nicht
     // wie eine Reihe identischer Kloetze wirkt.
     for (const b of this.net.worldBuildings) {
-      const h = b.height * WORLD_SCALE * 4; // Hoehe etwas betonen, sonst wirkt alles flach
-      const geo = new THREE.BoxGeometry(b.w * WORLD_SCALE, h, b.d * WORLD_SCALE);
-      const shade = 0.55 + ((b.x * 31 + b.y * 17) % 100) / 400; // deterministisch aus der Position
-      const mat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(shade * 0.38, shade * 0.40, shade * 0.46),
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(b.x * WORLD_SCALE, h / 2, b.y * WORLD_SCALE);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      this.scene.add(mesh);
-      this.cityMeshes.push(mesh);
+      // Modell deterministisch aus der Position waehlen, damit alle Clients
+      // dieselbe Stadt sehen und sich beim Neuladen nichts veraendert.
+      const pick = Math.abs(Math.round(b.x * 31 + b.y * 17)) % BUILDING_MODEL_NAMES.length;
+      const footprint = Math.max(b.w, b.d) * WORLD_SCALE;
+      const model = this.cloneModel(BUILDING_MODEL_NAMES[pick], footprint);
+
+      if (model) {
+        model.position.set(b.x * WORLD_SCALE, 0, b.y * WORLD_SCALE);
+        // Viertelrotationen sorgen fuer Abwechslung, ohne die Kollisionsflaeche
+        // zu veraendern (die Modelle haben quadratischen Grundriss).
+        model.rotation.y = (pick % 4) * (Math.PI / 2);
+        this.scene.add(model);
+        this.cityMeshes.push(model);
+      } else {
+        const h = b.height * WORLD_SCALE * 4;
+        const geo = new THREE.BoxGeometry(b.w * WORLD_SCALE, h, b.d * WORLD_SCALE);
+        const shade = 0.55 + ((b.x * 31 + b.y * 17) % 100) / 400;
+        const mat = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(shade * 0.38, shade * 0.40, shade * 0.46),
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(b.x * WORLD_SCALE, h / 2, b.y * WORLD_SCALE);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        this.scene.add(mesh);
+        this.cityMeshes.push(mesh);
+      }
     }
+  }
+
+  /**
+   * Laedt die Modelldatei. Laeuft im Hintergrund - bis sie da ist, zeigt das
+   * Spiel die einfachen Quader. Sobald sie geladen ist, werden die bereits
+   * gebauten Objekte einmal neu erzeugt, damit die Modelle erscheinen.
+   */
+  loadModels() {
+    if (typeof THREE.GLTFLoader === 'undefined') {
+      console.warn('GLTFLoader nicht geladen - Modelle werden nicht angezeigt, Quader bleiben.');
+      return;
+    }
+    const loader = new THREE.GLTFLoader();
+    loader.load(
+      MODEL_FILE,
+      (gltf) => {
+        // Alle benannten Netze einsammeln, damit sie spaeter per Name klonbar sind
+        gltf.scene.traverse((child) => {
+          if (child.isMesh && child.name) {
+            this.modelTemplates.set(child.name, child);
+          }
+        });
+        this.modelsReady = this.modelTemplates.size > 0;
+        console.log('Modelle geladen:', this.modelTemplates.size);
+        this.rebuildWithModels();
+      },
+      undefined,
+      (err) => {
+        console.warn('Modelldatei konnte nicht geladen werden, Quader bleiben:', err && err.message);
+      }
+    );
+  }
+
+  /** Wirft bereits erzeugte Platzhalter weg, damit sie mit Modellen neu entstehen. */
+  rebuildWithModels() {
+    for (const entry of this.vehicleEntities.values()) this.scene.remove(entry.group);
+    this.vehicleEntities.clear();
+    for (const entry of this.buildingEntities.values()) this.scene.remove(entry.group);
+    this.buildingEntities.clear();
+    for (const entry of this.copEntities.values()) this.scene.remove(entry.group);
+    this.copEntities.clear();
+    if (this.net.worldBuildings && this.net.worldBuildings.length > 0) this.buildCityFromLayout();
+  }
+
+  /**
+   * Erzeugt eine Kopie eines geladenen Modells, skaliert auf die gewuenschte
+   * Laenge (z-Achse). Gibt null zurueck, wenn das Modell nicht verfuegbar ist -
+   * der Aufrufer faellt dann auf die Quader-Darstellung zurueck.
+   */
+  cloneModel(name, targetLength) {
+    const template = this.modelTemplates.get(name);
+    if (!template) return null;
+
+    const mesh = template.clone();
+    // Material MITKLONEN: sonst teilen sich alle Kopien dasselbe Material, und
+    // das Einfaerben einer Immobilie wuerde alle anderen mit einfaerben.
+    mesh.material = template.material.clone();
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+
+    // Ausgangsgroesse ermitteln und auf die Zielgroesse skalieren
+    const box = new THREE.Box3().setFromObject(mesh);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    if (targetLength && size.z > 0) {
+      const s = targetLength / size.z;
+      mesh.scale.set(s, s, s);
+    }
+
+    // In eine Gruppe legen und so verschieben, dass das Modell mittig steht
+    // und mit der Unterkante auf dem Boden aufsitzt.
+    const wrapper = new THREE.Group();
+    wrapper.add(mesh);
+    const scaledBox = new THREE.Box3().setFromObject(mesh);
+    const center = new THREE.Vector3();
+    scaledBox.getCenter(center);
+    mesh.position.x -= center.x;
+    mesh.position.z -= center.z;
+    mesh.position.y -= scaledBox.min.y;
+
+    return wrapper;
   }
 
   onResize() {
@@ -413,22 +545,41 @@ class Renderer {
   /** Erstellt ein Immobilien-Gebaeude: Quader, dessen Hoehe den Preis widerspiegelt. */
   createBuildingEntity(property) {
     const height = BUILDING_MIN_HEIGHT + property.price * BUILDING_HEIGHT_PER_PRICE;
-    const geo = new THREE.BoxGeometry(BUILDING_FOOTPRINT, height, BUILDING_FOOTPRINT);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x4a5062 });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.y = height / 2;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-
     const group = new THREE.Group();
-    group.add(mesh);
+
+    // Gebaeudemodell deterministisch aus der ID waehlen, damit alle Clients
+    // dieselbe Immobilie gleich sehen und es beim Neuladen nicht springt.
+    const idNum = parseInt(String(property.id).replace(/\D/g, ''), 10) || 0;
+    const modelName = BUILDING_MODEL_NAMES[idNum % BUILDING_MODEL_NAMES.length];
+    const model = this.cloneModel(modelName, BUILDING_FOOTPRINT * 1.3);
+
+    let mesh = null;
+    let mat = null;
+    let labelHeight;
+
+    if (model) {
+      group.add(model);
+      // Material des geklonten Netzes fuer die Besitz-Einfaerbung merken
+      model.traverse((c) => { if (c.isMesh && !mat) { mesh = c; mat = c.material; } });
+      const box = new THREE.Box3().setFromObject(model);
+      labelHeight = box.max.y + 0.6;
+    } else {
+      const geo = new THREE.BoxGeometry(BUILDING_FOOTPRINT, height, BUILDING_FOOTPRINT);
+      mat = new THREE.MeshStandardMaterial({ color: 0x4a5062 });
+      mesh = new THREE.Mesh(geo, mat);
+      mesh.position.y = height / 2;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+      labelHeight = height + 0.6;
+    }
 
     const label = this.createLabelSprite(property.name);
-    label.position.y = height + 0.6;
+    label.position.y = labelHeight;
     group.add(label);
 
     this.scene.add(group);
-    return { group, mesh, mat, label, lastLabelText: property.name, lastColorKey: null, height };
+    return { group, mesh, mat, label, lastLabelText: property.name, lastColorKey: null, height, hasModel: !!model };
   }
 
   /** Farbe zeigt Besitzstatus: grau = frei, blau = dir gehoerend, rot = jemand anderem gehoerend. */
@@ -449,9 +600,12 @@ class Renderer {
       }
 
       const colorKey = this.colorKeyForProperty(property);
-      if (colorKey !== entry.lastColorKey) {
-        const colorByKey = { free: 0x4a5062, mine: 0x3a6ceb, other: 0xb84a4a };
-        entry.mat.color.set(colorByKey[colorKey]);
+      if (colorKey !== entry.lastColorKey && entry.mat) {
+        // Bei texturierten Modellen wirkt die Farbe als Toenung - deshalb helle,
+        // dezente Werte, sonst waere die Textur nicht mehr zu erkennen.
+        const tinted = { free: 0xffffff, mine: 0x9ec4ff, other: 0xffb0b0 };
+        const plain  = { free: 0x4a5062, mine: 0x3a6ceb, other: 0xb84a4a };
+        entry.mat.color.set((entry.hasModel ? tinted : plain)[colorKey]);
         entry.lastColorKey = colorKey;
       }
 
@@ -462,7 +616,7 @@ class Renderer {
       }
     }
   }
-  /** Erstellt ein Fahrzeug: flacher Quader, Farbe und Groesse je nach Typ. */
+  /** Erstellt ein Fahrzeug - als echtes Modell, sonst als Quader. */
   createVehicleEntity(vehicle) {
     const group = new THREE.Group();
 
@@ -474,25 +628,37 @@ class Renderer {
     };
     const cfg = dims[vehicle.typeId] || dims.compact;
 
-    const mat = new THREE.MeshStandardMaterial({ color: cfg.color });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(cfg.w, cfg.h, cfg.d), mat);
-    body.position.y = cfg.h / 2 + 0.1;
-    body.castShadow = true;
-    group.add(body);
+    const modelName = VEHICLE_MODEL_BY_TYPE[vehicle.typeId];
+    const targetLength = VEHICLE_MODEL_LENGTH[vehicle.typeId] || cfg.d;
+    const model = modelName ? this.cloneModel(modelName, targetLength) : null;
 
-    // Dach, damit es nicht wie eine reine Kiste wirkt
-    const roofMat = new THREE.MeshStandardMaterial({ color: 0x22262f });
-    const roof = new THREE.Mesh(new THREE.BoxGeometry(cfg.w * 0.85, cfg.h * 0.5, cfg.d * 0.5), roofMat);
-    roof.position.y = cfg.h + 0.1;
-    roof.castShadow = true;
-    group.add(roof);
+    let labelHeight;
+    if (model) {
+      // Modelle zeigen nach glTF-Norm nach -Z, im Spiel gilt +Z als vorwaerts
+      model.rotation.y = VEHICLE_MODEL_YAW_OFFSET;
+      group.add(model);
+      labelHeight = targetLength * 0.55;
+    } else {
+      const mat = new THREE.MeshStandardMaterial({ color: cfg.color });
+      const body = new THREE.Mesh(new THREE.BoxGeometry(cfg.w, cfg.h, cfg.d), mat);
+      body.position.y = cfg.h / 2 + 0.1;
+      body.castShadow = true;
+      group.add(body);
+
+      const roofMat = new THREE.MeshStandardMaterial({ color: 0x22262f });
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(cfg.w * 0.85, cfg.h * 0.5, cfg.d * 0.5), roofMat);
+      roof.position.y = cfg.h + 0.1;
+      roof.castShadow = true;
+      group.add(roof);
+      labelHeight = cfg.h + 0.9;
+    }
 
     const label = this.createLabelSprite('');
-    label.position.y = cfg.h + 0.9;
+    label.position.y = labelHeight;
     group.add(label);
 
     this.scene.add(group);
-    return { group, mat, label, lastLabelText: '', lastColorKey: null };
+    return { group, label, lastLabelText: '', lastColorKey: null };
   }
 
   /** Positioniert und beschriftet alle Fahrzeuge. */
@@ -566,9 +732,21 @@ class Renderer {
     }
   }
 
-  /** Erstellt eine Polizeifigur - gleiche Grundform, andere Farbe, eigenes Label. */
+  /** Erstellt eine Polizeieinheit - als Streifenwagen, sonst als Figur. */
   createCopEntity() {
     const group = new THREE.Group();
+
+    // Streifenwagen passt besser zur Stadt mit Strassen als eine laufende Figur
+    const model = this.cloneModel('car_police', 2.6);
+    if (model) {
+      model.rotation.y = VEHICLE_MODEL_YAW_OFFSET;
+      group.add(model);
+      const label = this.createLabelSprite('Polizei');
+      label.position.y = 1.6;
+      group.add(label);
+      this.scene.add(group);
+      return { group };
+    }
 
     const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
     const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2a3a6e });
