@@ -71,6 +71,12 @@ const {
   EMPLOYED_STUDY_SLOWDOWN,
   MAX_SMARTS,
 } = require('./education');
+const {
+  buildCityLayout,
+  resolveCollisions,
+  PLAYER_COLLISION_RADIUS,
+  SPAWN_POSITION,
+} = require('./world');
 
 const MAX_PLAYERS = 20;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
@@ -97,6 +103,13 @@ const PLAYER_SPEED = 200; // px/s - MUSS mit client/net.js übereinstimmen (Pred
 // in die falsche Richtung weiter - das ist der Fehler, den diese Werte beheben.
 const PLAYER_ACCELERATION = 4000; // px/s² - Vollspeed aus dem Stand in 0.05s
 const PLAYER_FRICTION = 5000;     // px/s² - Stillstand aus Vollspeed in 0.04s
+
+// Sicherheitsnetz gegen "laeuft endlos weiter": Der Client sendet Eingaben pro
+// Frame (~60/s). Bleiben sie laenger als diese Spanne aus - Netzwerkaussetzer,
+// Tab im Hintergrund, App minimiert, verpasstes Tasten-Loslassen -, bliebe die
+// gemerkte Richtung sonst FUER IMMER gesetzt und die Figur wuerde unkontrolliert
+// weiterlaufen. Genau dieser Fehler trat auf. Nach dieser Zeit wird gestoppt.
+const INPUT_TIMEOUT_MS = 250;
 
 /**
  * Wandelt gedrueckte Tasten + Kamera-Blickrichtung in eine Weltrichtung um.
@@ -215,6 +228,36 @@ class GameWorld {
 
     this.children = new Map(); // id -> { id, name, parentIds:[p1,p2], bornAt, inheritedCash, claimed }
     this.nextChildId = 1;
+
+    // Stadtaufbau: Strassen + Deko-Gebaeude. Die kaufbaren Immobilien werden dabei
+    // ausgespart und danach als eigene Kollisionsflaechen ergaenzt - so laeuft man
+    // durch KEIN Gebaeude hindurch, egal welcher Art.
+    this.cityLayout = buildCityLayout(PROPERTIES.map((p) => p.position));
+
+    this.collisionRects = [
+      ...this.cityLayout.buildings.map((b) => ({ x: b.x, y: b.y, w: b.w, d: b.d })),
+      ...PROPERTIES.map((p) => ({ x: p.position.x, y: p.position.y, w: 120, d: 120 })),
+    ];
+  }
+
+  /** Der komplette Stadtaufbau fuer den Client (Rendering + identische Kollision). */
+  buildWorldLayoutState() {
+    return {
+      roads: this.cityLayout.roads,
+      buildings: this.cityLayout.buildings,
+      collisionRects: this.collisionRects,
+      collisionRadius: PLAYER_COLLISION_RADIUS,
+    };
+  }
+
+  /** Liegt diese Position in einem Gebaeude? Genutzt beim Laden alter Spielstaende. */
+  isPositionBlocked(pos) {
+    if (!pos) return false;
+    return this.collisionRects.some(
+      (r) =>
+        Math.abs(pos.x - r.x) < r.w / 2 + PLAYER_COLLISION_RADIUS &&
+        Math.abs(pos.y - r.y) < r.d / 2 + PLAYER_COLLISION_RADIUS
+    );
   }
 
   get playerCount() {
@@ -303,6 +346,7 @@ class GameWorld {
     // wird in stepPositions schrittweise darauf zubewegt (Beschleunigung).
     player.inputDir.x = dx;
     player.inputDir.y = dy;
+    player.lastInputAt = Date.now(); // fuer das Timeout-Sicherheitsnetz in stepPositions
 
     if (typeof input.seq === 'number') {
       player.lastProcessedInput = input.seq;
@@ -313,6 +357,7 @@ class GameWorld {
   /** fastTick: bewegt alle verbundenen Spieler und begrenzt sie auf die Weltgrenzen. */
   stepPositions(dtMs) {
     const dtSec = dtMs / 1000;
+    const now = Date.now();
     for (const player of this.players.values()) {
       if (!player.connected) continue;
       if (this.isJailed(player)) {
@@ -333,6 +378,15 @@ class GameWorld {
         player.inputDir.y = 0;
         continue;
       }
+      // SICHERHEITSNETZ gegen endloses Weiterlaufen: Kommen keine frischen
+      // Eingaben mehr (Verbindungsaussetzer, Tab im Hintergrund, verpasstes
+      // Tasten-Loslassen), gilt die gemerkte Richtung als veraltet und wird
+      // verworfen. Die Figur bremst dann ueber die normale Reibung aus.
+      if (player.lastInputAt == null || now - player.lastInputAt > INPUT_TIMEOUT_MS) {
+        player.inputDir.x = 0;
+        player.inputDir.y = 0;
+      }
+
       stepMovement(
         player.position,
         player.velocity,
@@ -342,6 +396,9 @@ class GameWorld {
         WORLD_WIDTH,
         WORLD_HEIGHT
       );
+
+      // Aus Gebaeuden herausschieben. MUSS im Client identisch passieren.
+      resolveCollisions(player.position, player.velocity, this.collisionRects, PLAYER_COLLISION_RADIUS);
     }
   }
 
@@ -432,8 +489,17 @@ class GameWorld {
         // sonst stuerzt die Bewegung beim ersten Tick ab.
         inputDir: saved.inputDir || { x: 0, y: 0 },
         velocity: saved.velocity || { x: 0, y: 0 },
-        position: saved.position || { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 },
+        position: saved.position || { x: SPAWN_POSITION.x, y: SPAWN_POSITION.y },
       };
+
+      // Aeltere Spielstaende wurden gespeichert, BEVOR es Gebaeude gab - eine
+      // damals gueltige Position kann heute in einer Wand liegen. Dann lieber
+      // an den Startpunkt setzen, als den Spieler feststecken zu lassen.
+      if (this.isPositionBlocked(player.position)) {
+        player.position = { x: SPAWN_POSITION.x, y: SPAWN_POSITION.y };
+        player.velocity = { x: 0, y: 0 };
+      }
+
       this.players.set(player.id, player);
       if (player.token) this.tokenIndex.set(player.token, player.id);
     }
@@ -888,8 +954,8 @@ class GameWorld {
     for (const player of this.players.values()) {
       if (player.jailedUntil != null && player.jailedUntil <= now) {
         player.jailedUntil = null;
-        player.position.x = WORLD_WIDTH / 2;
-        player.position.y = WORLD_HEIGHT / 2;
+        player.position.x = SPAWN_POSITION.x;
+        player.position.y = SPAWN_POSITION.y;
         released.push(player);
       }
     }
@@ -1183,7 +1249,7 @@ class GameWorld {
     player.eventQueue = [];
     player.recentEventIds = [];
     player.pendingReincarnation = null;
-    player.position = { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+    player.position = { x: SPAWN_POSITION.x, y: SPAWN_POSITION.y };
     player.velocity = { x: 0, y: 0 };
 
     if (child) this.children.delete(heirChildId); // als Erbe "aufgebraucht"
