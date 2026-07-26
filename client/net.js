@@ -123,14 +123,6 @@ class NetClient {
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) this.releaseAllKeys();
     });
-
-    // SICHERHEITSNETZE gegen haengende Tasten: Wechselt man mit gedrueckter Taste
-    // die App oder den Tab, kommt das zugehoerige keyup NIE an - die Figur wuerde
-    // dann endlos weiterlaufen. Diese Handler setzen in solchen Faellen alles zurueck.
-    window.addEventListener('blur', () => this.clearAllKeys());
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) this.clearAllKeys();
-    });
   }
 
   setKey(key, val) {
