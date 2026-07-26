@@ -156,6 +156,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'chatHistory', messages: world.buildChatHistory() });
       send(ws, { type: 'jobCatalog', jobs: world.buildJobCatalogState() });
       send(ws, { type: 'courseCatalog', courses: world.buildCourseCatalogState() });
+      send(ws, { type: 'vehiclesState', ...world.buildVehiclesState() });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -186,6 +187,54 @@ wss.on('connection', (ws) => {
         for (const { player: p, instance } of promoted) {
           sendToPlayer(p.id, buildEventOfferMessage(instance));
         }
+      }
+      return;
+    }
+
+    // --- Fahrzeuge: einsteigen, aussteigen, kaufen ---
+
+    if (msg.type === 'enterVehicle' && ws.playerId != null) {
+      const result = world.enterVehicle(ws.playerId, msg.vehicleId);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, {
+          type: 'vehicleEntered',
+          vehicleId: result.vehicle.id,
+          typeName: result.typeName,
+          wasTheft: result.wasTheft,
+        });
+        broadcast({ type: 'vehiclesState', ...world.buildVehiclesState() });
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'enterVehicle', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'exitVehicle' && ws.playerId != null) {
+      const result = world.exitVehicle(ws.playerId);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, { type: 'vehicleExited' });
+        broadcast({ type: 'vehiclesState', ...world.buildVehiclesState() });
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'exitVehicle', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'buyVehicle' && ws.playerId != null) {
+      const result = world.buyVehicle(ws.playerId, msg.vehicleId);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, {
+          type: 'vehicleBought',
+          vehicleId: result.vehicle.id,
+          typeName: result.typeName,
+          price: result.price,
+        });
+        broadcast({ type: 'vehiclesState', ...world.buildVehiclesState() });
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'buyVehicle', reason: result.reason });
       }
       return;
     }
@@ -540,6 +589,15 @@ setInterval(() => {
   const deltas = world.buildMovementDeltas();
   if (deltas.length > 0) {
     broadcast({ type: 'delta', players: deltas });
+  }
+
+  // Positionen der GEFAHRENEN Fahrzeuge mitsenden - geparkte aendern sich nicht
+  // und wuerden nur unnoetig Bandbreite kosten.
+  const movingVehicles = [...world.vehicles.values()]
+    .filter((v) => v.driverId != null)
+    .map((v) => ({ id: v.id, x: v.x, y: v.y }));
+  if (movingVehicles.length > 0) {
+    broadcast({ type: 'vehicleDelta', vehicles: movingVehicles });
   }
 }, FAST_TICK_MS);
 
