@@ -497,6 +497,11 @@
         joinOverlay.style.display = 'none';
         if (renderer) renderer.start();
       };
+      // Stadtaufbau kommt direkt nach dem Beitritt (und erneut bei Reconnect) -
+      // erst dann koennen Strassen und Gebaeude gezeichnet werden.
+      net.onWorldLayout = () => {
+        if (renderer) renderer.buildCityFromLayout();
+      };
       net.onJoinError = (reason) => {
         // Ladebildschirm MUSS hier weg, sonst haengt der Nutzer vor einem
         // ewig drehenden Rad und sieht die eigentliche Fehlermeldung nie.
@@ -517,27 +522,67 @@
 
     // Touch-Steuerkreuz: setzt dieselben keys wie WASD, funktioniert also
     // gleichzeitig mit einer angeschlossenen Tastatur (z.B. iPad-Keyboard-Case).
+    // Merkt sich, welcher Zeiger welche Taste haelt - noetig fuer das Auffangnetz
+    // weiter unten, falls ein pointerup/pointercancel den Knopf nie erreicht.
+    const activePointerKeys = new Map(); // pointerId -> { keyName, el }
+
+    function releaseKeyForPointer(pointerId) {
+      const entry = activePointerKeys.get(pointerId);
+      if (!entry) return;
+      if (net) net.setKey(entry.keyName, false);
+      entry.el.classList.remove('active');
+      activePointerKeys.delete(pointerId);
+    }
+
     function bindDpadButton(elementId, keyName) {
       const el = document.getElementById(elementId);
-      const press = (e) => {
+
+      el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
+        // Explizite Zeiger-Aufnahme: sorgt dafuer, dass pointerup GARANTIERT auf
+        // diesem Element landet, auch wenn der Finger vorher wegrutscht.
+        try { el.setPointerCapture(e.pointerId); } catch (err) { /* aeltere Browser */ }
+        activePointerKeys.set(e.pointerId, { keyName, el });
         if (net) net.setKey(keyName, true);
         el.classList.add('active');
-      };
+      });
+
       const release = (e) => {
         e.preventDefault();
-        if (net) net.setKey(keyName, false);
-        el.classList.remove('active');
+        releaseKeyForPointer(e.pointerId);
       };
-      el.addEventListener('pointerdown', press);
       el.addEventListener('pointerup', release);
       el.addEventListener('pointercancel', release);
-      el.addEventListener('pointerleave', release);
     }
     bindDpadButton('dpadUp', 'w');
     bindDpadButton('dpadLeft', 'a');
     bindDpadButton('dpadRight', 'd');
     bindDpadButton('dpadDown', 's');
+
+    // AUFFANGNETZ gegen steckenbleibende Tasten: Selbst wenn ein Knopf sein
+    // pointerup nie sieht (Finger rutscht weg, Browser-Eigenheit, Geste
+    // abgebrochen), wird die Taste hier zuverlaessig losgelassen. Genau dieses
+    // Auffangnetz fehlte - deshalb lief die Figur teilweise endlos weiter.
+    window.addEventListener('pointerup', (e) => releaseKeyForPointer(e.pointerId));
+    window.addEventListener('pointercancel', (e) => releaseKeyForPointer(e.pointerId));
+
+    /** Alle Tasten hart loslassen - fuer Faelle, in denen gar kein Event mehr kommt. */
+    function releaseAllKeys() {
+      for (const pointerId of [...activePointerKeys.keys()]) releaseKeyForPointer(pointerId);
+      if (net) {
+        net.setKey('w', false);
+        net.setKey('a', false);
+        net.setKey('s', false);
+        net.setKey('d', false);
+      }
+    }
+
+    // Tab-Wechsel / App in den Hintergrund: Ohne das bliebe eine gedrueckte Taste
+    // haengen, weil das keyup/pointerup im Hintergrund nie ankommt.
+    window.addEventListener('blur', releaseAllKeys);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) releaseAllKeys();
+    });
 
     // Freie Kamera-Drehung per Wischgeste auf der 3D-Ansicht - das ist der Kern
     // des GTA/Roblox-Steuergefuehls: WASD ist relativ zu DIESER Blickrichtung,
