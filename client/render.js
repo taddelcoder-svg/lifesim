@@ -84,7 +84,7 @@ class Renderer {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x1a1d23);
-    this.scene.fog = new THREE.Fog(0x1a1d23, 20, 70);
+    this.scene.fog = new THREE.Fog(0x1a1d23, 45, 130);
 
     this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 300);
     this.camera.position.set(WORLD_SIZE_3D / 2, CAMERA_HEIGHT, WORLD_SIZE_3D / 2 + CAMERA_DISTANCE);
@@ -98,6 +98,7 @@ class Renderer {
     this.entities = new Map();  // playerId -> { group, headMat, bodyMat, label, lastLabelText }
     this.copEntities = new Map(); // copId -> { group }
     this.buildingEntities = new Map(); // propertyId -> { group, mat, label, lastLabelText, lastColorKey }
+    this.cityMeshes = []; // Strassen und Deko-Gebaeude aus dem Server-Layout
     this.facingById = new Map(); // playerId -> Bogenmass, Blickrichtung bei Stillstand beibehalten
 
     this.smoothedCamPos = this.camera.position.clone();
@@ -134,9 +135,8 @@ class Renderer {
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    const grid = new THREE.GridHelper(WORLD_SIZE_3D, Math.round(WORLD_SIZE_3D / 5), 0x3a3f4b, 0x2a2f3a);
-    grid.position.set(WORLD_SIZE_3D / 2, 0.01, WORLD_SIZE_3D / 2); // minimal ueber dem Boden gegen Flackern
-    this.scene.add(grid);
+    // Kein Hilfsraster mehr: Die echten Strassen aus dem Server-Layout uebernehmen
+    // jetzt die Orientierungsfunktion, zusaetzliche Rasterlinien wuerden nur stoeren.
 
     this.buildJailMarker();
   }
@@ -170,6 +170,52 @@ class Renderer {
     const label = this.createLabelSprite('🚔 Gefängnis');
     label.position.set(jx, 3, jz);
     this.scene.add(label);
+  }
+
+  /** Baut Strassen und Deko-Gebaeude aus dem Server-Layout. Wird einmal aufgerufen, sobald es ankommt. */
+  buildCityFromLayout() {
+    // Vorherigen Aufbau entfernen, falls das Layout erneut ankommt (Reconnect)
+    for (const mesh of this.cityMeshes) this.scene.remove(mesh);
+    this.cityMeshes = [];
+
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x15171c });
+    const worldSize3D = WORLD_SIZE_3D;
+
+    for (const road of this.net.worldRoads) {
+      const widthScaled = road.width * WORLD_SCALE;
+      const isVertical = road.orientation === 'vertical';
+      const geo = new THREE.PlaneGeometry(
+        isVertical ? widthScaled : worldSize3D,
+        isVertical ? worldSize3D : widthScaled
+      );
+      const mesh = new THREE.Mesh(geo, roadMat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(
+        isVertical ? road.center * WORLD_SCALE : worldSize3D / 2,
+        0.03, // knapp ueber dem Boden, damit es nicht mit dem Untergrund flackert
+        isVertical ? worldSize3D / 2 : road.center * WORLD_SCALE
+      );
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
+      this.cityMeshes.push(mesh);
+    }
+
+    // Deko-Gebaeude: leicht unterschiedliche Grautoene, damit die Stadt nicht
+    // wie eine Reihe identischer Kloetze wirkt.
+    for (const b of this.net.worldBuildings) {
+      const h = b.height * WORLD_SCALE * 4; // Hoehe etwas betonen, sonst wirkt alles flach
+      const geo = new THREE.BoxGeometry(b.w * WORLD_SCALE, h, b.d * WORLD_SCALE);
+      const shade = 0.55 + ((b.x * 31 + b.y * 17) % 100) / 400; // deterministisch aus der Position
+      const mat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(shade * 0.38, shade * 0.40, shade * 0.46),
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(b.x * WORLD_SCALE, h / 2, b.y * WORLD_SCALE);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
+      this.cityMeshes.push(mesh);
+    }
   }
 
   onResize() {
