@@ -57,6 +57,14 @@ class NetClient {
     this.onBankState = null;
     this.onBankAction = null;
     this.onForeclosure = null;
+
+    // Firmen: Anstellungen
+    this.incomingEmploymentOffers = new Map(); // offerId -> Angebot
+    this.onEmploymentOffer = null;
+    this.onEmploymentResolved = null;
+    this.onEmploymentEnded = null;
+    this.onEmployeeQuit = null;
+    this.onCompanyUpgraded = null;
     this.keys = { w: false, a: false, s: false, d: false };
     this.onWelcome = null;
     this.onJoinError = null;
@@ -412,6 +420,37 @@ class NetClient {
 
       case 'courseDropped': {
         if (this.onCourseDropped) this.onCourseDropped(msg);
+        break;
+      }
+
+      case 'employmentOffer': {
+        this.incomingEmploymentOffers.set(msg.offerId, msg);
+        if (this.onEmploymentOffer) this.onEmploymentOffer(msg);
+        break;
+      }
+
+      case 'employmentOfferExpired': {
+        this.incomingEmploymentOffers.delete(msg.offerId);
+        break;
+      }
+
+      case 'employmentResolved': {
+        if (this.onEmploymentResolved) this.onEmploymentResolved(msg);
+        break;
+      }
+
+      case 'employmentEnded': {
+        if (this.onEmploymentEnded) this.onEmploymentEnded(msg);
+        break;
+      }
+
+      case 'employeeQuit': {
+        if (this.onEmployeeQuit) this.onEmployeeQuit(msg);
+        break;
+      }
+
+      case 'companyUpgraded': {
+        if (this.onCompanyUpgraded) this.onCompanyUpgraded(msg);
         break;
       }
 
@@ -793,6 +832,15 @@ class NetClient {
   buyVehicle(vehicleId) {
     this.send({ type: 'buyVehicle', vehicleId });
   }
+
+  upgradeCompany(companyId) { this.send({ type: 'upgradeCompany', companyId }); }
+  offerEmployment(companyId, toPlayerId) { this.send({ type: 'offerEmployment', companyId, toPlayerId }); }
+  respondEmployment(offerId, accept) {
+    this.send({ type: 'respondEmployment', offerId, accept });
+    this.incomingEmploymentOffers.delete(offerId);
+  }
+  leaveEmployment() { this.send({ type: 'leaveEmployment' }); }
+  dismissEmployee(companyId, employeeId) { this.send({ type: 'dismissEmployee', companyId, employeeId }); }
 
   requestBank() {
     this.send({ type: 'requestBank' });
