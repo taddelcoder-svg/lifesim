@@ -421,6 +421,7 @@
       <button class="market-btn-small" id="foundCompanyBtn">Gründen ($500)</button>
     </div>
     <div id="companyList"></div>
+    <div id="employmentBox"></div>
 
     <h4>Eingehende Angebote</h4>
     <div id="tradeList"></div>
@@ -943,16 +944,70 @@
         companyListEl.innerHTML = '<div class="market-empty">Noch keine eigene Firma.</div>';
       }
       for (const company of myCompanies) {
+        const emps = company.employees || [];
         const row = document.createElement('div');
         row.className = 'market-item';
-        row.innerHTML = `<div class="market-item-name">${company.name}</div>`;
-        const btn = document.createElement('button');
-        btn.className = 'market-btn-small danger';
-        btn.textContent = 'Schließen';
-        btn.addEventListener('click', () => net.closeCompany(company.id));
-        row.appendChild(btn);
+        row.innerHTML =
+          `<div><div class="market-item-name">${escapeHtml(company.name)}</div>` +
+          `<div class="market-item-detail">Stufe ${company.level} · +${company.income}/-${company.upkeep} pro Zyklus · ` +
+          `${emps.length}/${company.maxEmployees} Mitarbeiter</div></div>`;
+
+        const btnGroup = document.createElement('div');
+        btnGroup.style.display = 'flex';
+        btnGroup.style.gap = '6px';
+
+        if (company.upgradeCost != null) {
+          const up = document.createElement('button');
+          up.className = 'market-btn-small';
+          up.textContent = `Ausbauen $${company.upgradeCost}`;
+          up.addEventListener('click', () => net.upgradeCompany(company.id));
+          btnGroup.appendChild(up);
+        }
+        const close = document.createElement('button');
+        close.className = 'market-btn-small danger';
+        close.textContent = 'Schließen';
+        close.addEventListener('click', () => net.closeCompany(company.id));
+        btnGroup.appendChild(close);
+        row.appendChild(btnGroup);
         companyListEl.appendChild(row);
+
+        // Aktuelle Mitarbeiter mit Entlassen-Knopf
+        for (const empId of emps) {
+          const eRow = document.createElement('div');
+          eRow.className = 'market-item';
+          eRow.innerHTML = `<div class="market-item-detail">👤 ${escapeHtml(playerName(empId))}</div>`;
+          const fire = document.createElement('button');
+          fire.className = 'market-btn-small ghost';
+          fire.textContent = 'Entlassen';
+          fire.addEventListener('click', () => net.dismissEmployee(company.id, empId));
+          eRow.appendChild(fire);
+          companyListEl.appendChild(eRow);
+        }
+
+        // Freie Plaetze: andere Spieler zum Einstellen anbieten
+        if (emps.length < company.maxEmployees) {
+          const candidates = [...net.players.values()].filter(
+            (p) => p.id !== net.myId && p.connected !== false &&
+                   !emps.includes(p.id) && !p.job && p.employerCompanyId == null
+          );
+          for (const cand of candidates.slice(0, 5)) {
+            const cRow = document.createElement('div');
+            cRow.className = 'market-item';
+            cRow.innerHTML = `<div class="market-item-detail">${escapeHtml(cand.name)} (arbeitslos)</div>`;
+            const hire = document.createElement('button');
+            hire.className = 'market-btn-small';
+            hire.textContent = 'Einstellen';
+            hire.addEventListener('click', () => {
+              net.offerEmployment(company.id, cand.id);
+              showToast('Anstellungsangebot gesendet.');
+            });
+            cRow.appendChild(hire);
+            companyListEl.appendChild(cRow);
+          }
+        }
       }
+
+      renderEmploymentBox();
 
       // Eingehende Handelsangebote
       tradeListEl.innerHTML = '';
@@ -1512,6 +1567,83 @@
       };
       net.onForeclosure = (msg) => {
         showToast(`Die Bank hat "${msg.propertyName}" verwertet - die Schulden waren zu hoch.`);
+      };
+    }
+    // ---------------------------------------------------------------------
+    // Anstellungen bei Mitspielern
+    // ---------------------------------------------------------------------
+    const employmentBoxEl = document.getElementById('employmentBox');
+
+    function renderEmploymentBox() {
+      if (!net || !net.localPlayer) return;
+      employmentBoxEl.innerHTML = '';
+
+      const myEmployer = net.localPlayer.employerCompanyId;
+      if (myEmployer != null) {
+        const c = net.companies.get(myEmployer);
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML =
+          `<div><div class="market-item-name">Angestellt bei ${escapeHtml(c ? c.name : 'einer Firma')}</div>` +
+          `<div class="market-item-detail">Lohn wird pro Zyklus ausgezahlt</div></div>`;
+        const quit = document.createElement('button');
+        quit.className = 'market-btn-small danger';
+        quit.textContent = 'Kündigen';
+        quit.addEventListener('click', () => net.leaveEmployment());
+        row.appendChild(quit);
+        employmentBoxEl.appendChild(row);
+      }
+
+      for (const offer of net.incomingEmploymentOffers.values()) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML =
+          `<div><div class="market-item-name">Jobangebot: ${escapeHtml(offer.companyName)}</div>` +
+          `<div class="market-item-detail">von ${escapeHtml(offer.fromName)} · $${offer.wage} pro Zyklus</div></div>`;
+        const grp = document.createElement('div');
+        grp.style.display = 'flex'; grp.style.gap = '6px';
+        const yes = document.createElement('button');
+        yes.className = 'market-btn-small';
+        yes.textContent = 'Annehmen';
+        yes.addEventListener('click', () => { net.respondEmployment(offer.offerId, true); renderMarketPanel(); });
+        const no = document.createElement('button');
+        no.className = 'market-btn-small ghost';
+        no.textContent = 'Ablehnen';
+        no.addEventListener('click', () => { net.respondEmployment(offer.offerId, false); renderMarketPanel(); });
+        grp.appendChild(yes); grp.appendChild(no);
+        row.appendChild(grp);
+        employmentBoxEl.appendChild(row);
+      }
+    }
+
+    if (net) {
+      net.onEmploymentOffer = (msg) => {
+        showToast(`Jobangebot von ${msg.fromName}: $${msg.wage} pro Zyklus`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onEmploymentResolved = (msg) => {
+        if (msg.employeeName) showToast(msg.accepted ? `${msg.employeeName} hat angenommen.` : `${msg.employeeName} hat abgelehnt.`);
+        else if (msg.accepted) showToast(`Angestellt bei ${msg.companyName}.`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onEmploymentEnded = (msg) => {
+        const texts = {
+          quit: 'Anstellung gekündigt.',
+          dismissed: `Von ${msg.companyName} entlassen.`,
+          unpaid: `${msg.companyName} konnte den Lohn nicht zahlen - Anstellung beendet.`,
+        };
+        showToast(texts[msg.reason] || 'Anstellung beendet.');
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onEmployeeQuit = (msg) => {
+        showToast(msg.reason === 'unpaid'
+          ? `${msg.employeeName} hat gekündigt - Lohn nicht bezahlbar.`
+          : `${msg.employeeName} hat gekündigt.`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onCompanyUpgraded = (msg) => {
+        showToast(`${msg.name} auf Stufe ${msg.level} ausgebaut ($${msg.cost}).`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
       };
     }
   </script>
