@@ -21,8 +21,10 @@ const { pickEligibleEvent } = require('./events');
 const {
   PROPERTIES,
   COMPANY_FOUNDING_COST,
-  COMPANY_INCOME_PER_TICK,
-  COMPANY_UPKEEP_PER_TICK,
+  COMPANY_LEVELS,
+  EMPLOYEE_INCOME_PER_TICK,
+  EMPLOYEE_WAGE_PER_TICK,
+  EMPLOYMENT_OFFER_DURATION_MS,
   PROPERTY_SELL_BACK_RATIO,
   COMPANY_CLOSE_REFUND_RATIO,
   WEALTH_TAX_RATE,
@@ -245,6 +247,9 @@ class GameWorld {
 
     this.friendRequests = new Map(); // id -> { id, fromPlayerId, toPlayerId }
     this.nextFriendRequestId = 1;
+
+    this.employmentOffers = new Map(); // id -> { id, companyId, fromPlayerId, toPlayerId, expiresAt }
+    this.nextEmploymentOfferId = 1;
 
     this.marriageRequests = new Map(); // id -> { id, fromPlayerId, toPlayerId }
     this.nextMarriageRequestId = 1;
@@ -802,7 +807,153 @@ class GameWorld {
   }
 
   buildCompaniesState() {
-    return [...this.companies.values()];
+    return [...this.companies.values()].map((c) => ({
+      id: c.id,
+      ownerId: c.ownerId,
+      name: c.name,
+      level: c.level || 1,
+      employees: (c.employees || []).slice(),
+      maxEmployees: this.companyLevel(c).maxEmployees,
+      income: this.companyLevel(c).income,
+      upkeep: this.companyLevel(c).upkeep,
+      upgradeCost: this.nextCompanyLevel(c) ? this.nextCompanyLevel(c).upgradeCost : null,
+    }));
+  }
+
+  /** Die Stufendaten einer Firma. Faellt bei unbekannter Stufe auf Stufe 1 zurueck. */
+  companyLevel(company) {
+    return COMPANY_LEVELS[(company.level || 1) - 1] || COMPANY_LEVELS[0];
+  }
+
+  /** Die naechsthoehere Stufe, oder null wenn schon maximal ausgebaut. */
+  nextCompanyLevel(company) {
+    return COMPANY_LEVELS[(company.level || 1)] || null;
+  }
+
+  /** Baut eine eigene Firma eine Stufe aus. */
+  upgradeCompany(playerId, companyId) {
+    const player = this.players.get(playerId);
+    const company = this.companies.get(companyId);
+    if (!player || !company) return { ok: false, reason: 'not_found' };
+    if (company.ownerId !== playerId) return { ok: false, reason: 'not_owner' };
+
+    const next = this.nextCompanyLevel(company);
+    if (!next) return { ok: false, reason: 'max_level' };
+    if (player.cash < next.upgradeCost) return { ok: false, reason: 'insufficient_funds' };
+
+    player.cash -= next.upgradeCost;
+    company.level = next.level;
+    return { ok: true, company, newLevel: next.level, cost: next.upgradeCost };
+  }
+
+  /**
+   * Bietet einem anderen Spieler eine Anstellung an. Der Angesprochene muss
+   * zustimmen - niemand wird ungefragt eingestellt.
+   */
+  offerEmployment(ownerId, companyId, targetPlayerId) {
+    const owner = this.players.get(ownerId);
+    const target = this.players.get(targetPlayerId);
+    const company = this.companies.get(companyId);
+    if (!owner || !target || !company) return { ok: false, reason: 'not_found' };
+    if (company.ownerId !== ownerId) return { ok: false, reason: 'not_owner' };
+    if (ownerId === targetPlayerId) return { ok: false, reason: 'self_employment' };
+    if (company.employees.includes(targetPlayerId)) return { ok: false, reason: 'already_employed_here' };
+    if (target.employerCompanyId != null) return { ok: false, reason: 'target_has_employer' };
+    if (target.job) return { ok: false, reason: 'target_has_job' };
+
+    const level = this.companyLevel(company);
+    if (company.employees.length >= level.maxEmployees) {
+      return { ok: false, reason: 'no_free_position' };
+    }
+
+    const alreadyPending = [...this.employmentOffers.values()].some(
+      (o) => o.companyId === companyId && o.toPlayerId === targetPlayerId
+    );
+    if (alreadyPending) return { ok: false, reason: 'already_pending' };
+
+    const offer = {
+      id: this.nextEmploymentOfferId++,
+      companyId,
+      fromPlayerId: ownerId,
+      toPlayerId: targetPlayerId,
+      expiresAt: Date.now() + EMPLOYMENT_OFFER_DURATION_MS,
+    };
+    this.employmentOffers.set(offer.id, offer);
+    return { ok: true, offer, company };
+  }
+
+  /** Der Angesprochene nimmt an oder lehnt ab. */
+  respondEmployment(playerId, offerId, accept) {
+    const offer = this.employmentOffers.get(offerId);
+    if (!offer) return { ok: false, reason: 'not_found' };
+    if (offer.toPlayerId !== playerId) return { ok: false, reason: 'not_recipient' };
+
+    this.employmentOffers.delete(offerId);
+    if (!accept) return { ok: true, accepted: false, offer };
+
+    const player = this.players.get(playerId);
+    const company = this.companies.get(offer.companyId);
+    if (!player || !company) return { ok: false, reason: 'not_found' };
+    if (player.employerCompanyId != null) return { ok: false, reason: 'already_employed' };
+    if (player.job) return { ok: false, reason: 'has_job' };
+
+    const level = this.companyLevel(company);
+    if (company.employees.length >= level.maxEmployees) {
+      return { ok: false, reason: 'no_free_position' };
+    }
+
+    company.employees.push(playerId);
+    player.employerCompanyId = company.id;
+    return { ok: true, accepted: true, offer, company };
+  }
+
+  /** Mitarbeiter kuendigt selbst. */
+  leaveEmployment(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (player.employerCompanyId == null) return { ok: false, reason: 'not_employed' };
+
+    const company = this.companies.get(player.employerCompanyId);
+    if (company) {
+      company.employees = company.employees.filter((id) => id !== playerId);
+    }
+    player.employerCompanyId = null;
+    return { ok: true, company };
+  }
+
+  /** Inhaber entlaesst einen Mitarbeiter. */
+  dismissEmployee(ownerId, companyId, employeeId) {
+    const company = this.companies.get(companyId);
+    if (!company) return { ok: false, reason: 'not_found' };
+    if (company.ownerId !== ownerId) return { ok: false, reason: 'not_owner' };
+    if (!company.employees.includes(employeeId)) return { ok: false, reason: 'not_employed_here' };
+
+    company.employees = company.employees.filter((id) => id !== employeeId);
+    const emp = this.players.get(employeeId);
+    if (emp) emp.employerCompanyId = null;
+    return { ok: true, company, employeeId };
+  }
+
+  /** Loest alle Anstellungen einer Firma - beim Schliessen. */
+  releaseAllEmployees(company) {
+    for (const empId of company.employees || []) {
+      const emp = this.players.get(empId);
+      if (emp) emp.employerCompanyId = null;
+    }
+    company.employees = [];
+  }
+
+  /** Abgelaufene Anstellungsangebote verfallen lassen. */
+  checkExpiredEmploymentOffers() {
+    const now = Date.now();
+    const expired = [];
+    for (const [id, offer] of this.employmentOffers) {
+      if (offer.expiresAt <= now) {
+        this.employmentOffers.delete(id);
+        expired.push(offer);
+      }
+    }
+    return expired;
   }
 
   /** Kauft eine unbebaute/unbesetzte Immobilie direkt von der Bank. */
@@ -842,6 +993,8 @@ class GameWorld {
       id: this.nextCompanyId++,
       ownerId: playerId,
       name: name && String(name).trim() ? String(name).trim().slice(0, 30) : 'Neue Firma',
+      level: 1,
+      employees: [], // Spieler-IDs
     };
     this.companies.set(company.id, company);
     return { ok: true, company };
@@ -854,6 +1007,7 @@ class GameWorld {
     if (!player || !company) return { ok: false, reason: 'not_found' };
     if (company.ownerId !== playerId) return { ok: false, reason: 'not_owner' };
 
+    this.releaseAllEmployees(company); // sonst haengen Mitarbeiter an einer Firma, die es nicht mehr gibt
     const refund = Math.round(COMPANY_FOUNDING_COST * COMPANY_CLOSE_REFUND_RATIO);
     player.cash += refund;
     this.companies.delete(companyId);
@@ -869,6 +1023,7 @@ class GameWorld {
    */
   collectEconomyIncome() {
     const repossessed = [];
+    const quits = []; // Mitarbeiter, die wegen unbezahlter Loehne gehen
 
     for (const property of this.properties.values()) {
       if (!property.ownerId) continue;
@@ -889,11 +1044,39 @@ class GameWorld {
     for (const company of this.companies.values()) {
       const owner = this.players.get(company.ownerId);
       if (!owner) continue; // Firma bleibt bestehen, falls Besitzer (noch) nicht online
-      const net = COMPANY_INCOME_PER_TICK - COMPANY_UPKEEP_PER_TICK;
+
+      const level = this.companyLevel(company);
+      let net = level.income - level.upkeep;
+
+      // Mitarbeiter bringen Ertrag, kosten aber Lohn. Kann der Inhaber die
+      // Loehne nicht zahlen, kuendigen die Betroffenen von selbst - sonst
+      // koennte man unbegrenzt Leute beschaeftigen, ohne sie zu bezahlen.
+      const stillEmployed = [];
+      for (const empId of company.employees) {
+        const emp = this.players.get(empId);
+        if (!emp) continue;
+
+        const affordable = owner.cash + owner.bank >= EMPLOYEE_WAGE_PER_TICK;
+        if (!affordable) {
+          emp.employerCompanyId = null;
+          quits.push({ employee: emp, company, reason: 'unpaid' });
+          continue;
+        }
+
+        const fromCash = Math.min(owner.cash, EMPLOYEE_WAGE_PER_TICK);
+        owner.cash -= fromCash;
+        owner.bank -= (EMPLOYEE_WAGE_PER_TICK - fromCash);
+        emp.cash += EMPLOYEE_WAGE_PER_TICK;
+
+        net += EMPLOYEE_INCOME_PER_TICK;
+        stillEmployed.push(empId);
+      }
+      company.employees = stillEmployed;
+
       owner.cash = Math.max(0, owner.cash + net);
     }
 
-    return repossessed;
+    return { repossessed, quits };
   }
 
   /**
@@ -1524,6 +1707,7 @@ class GameWorld {
     player.jailedUntil = null;
     player.criminalRecord = [];
     player.job = null;      // ein neues Leben startet arbeitslos, erbt nicht die Stelle
+    if (player.employerCompanyId != null) this.leaveEmployment(player.id);
     player.jobLevel = 0;
     player.jobXp = 0;
     player.vehicleId = null;      // neues Leben startet zu Fuss
@@ -1569,6 +1753,8 @@ class GameWorld {
     if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
     if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
     if (player.job) return { ok: false, reason: 'already_employed' };
+    // Nicht gleichzeitig bei einem Mitspieler angestellt sein
+    if (player.employerCompanyId != null) return { ok: false, reason: 'employed_by_player' };
 
     const def = findJobDefinition(jobId);
     if (!def) return { ok: false, reason: 'unknown_job' };
