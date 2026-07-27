@@ -51,6 +51,12 @@ class NetClient {
     this.onVehicleEntered = null;
     this.onVehicleExited = null;
     this.onVehicleBought = null;
+
+    // Bank
+    this.bank = { cash: 0, savings: 0, debt: 0, creditLimit: 0, savingsRate: 0, loanRate: 0 };
+    this.onBankState = null;
+    this.onBankAction = null;
+    this.onForeclosure = null;
     this.keys = { w: false, a: false, s: false, d: false };
     this.onWelcome = null;
     this.onJoinError = null;
@@ -406,6 +412,25 @@ class NetClient {
 
       case 'courseDropped': {
         if (this.onCourseDropped) this.onCourseDropped(msg);
+        break;
+      }
+
+      case 'bankState': {
+        this.bank = {
+          cash: msg.cash, savings: msg.savings, debt: msg.debt,
+          creditLimit: msg.creditLimit, savingsRate: msg.savingsRate, loanRate: msg.loanRate,
+        };
+        if (this.onBankState) this.onBankState(this.bank);
+        break;
+      }
+
+      case 'bankAction': {
+        if (this.onBankAction) this.onBankAction(msg);
+        break;
+      }
+
+      case 'foreclosure': {
+        if (this.onForeclosure) this.onForeclosure(msg);
         break;
       }
 
@@ -768,6 +793,15 @@ class NetClient {
   buyVehicle(vehicleId) {
     this.send({ type: 'buyVehicle', vehicleId });
   }
+
+  requestBank() {
+    this.send({ type: 'requestBank' });
+  }
+
+  deposit(amount) { this.send({ type: 'deposit', amount }); }
+  withdraw(amount) { this.send({ type: 'withdraw', amount }); }
+  takeLoan(amount) { this.send({ type: 'takeLoan', amount }); }
+  repayLoan(amount) { this.send({ type: 'repayLoan', amount }); }
 
   /** Naechstes Fahrzeug in Reichweite - nur fuer die Bedienoberflaeche, Server prueft selbst. */
   findNearestVehicle() {
