@@ -1,4 +1,3 @@
-
 'use strict';
 
 // server/index.js
@@ -21,6 +20,7 @@ const {
   SNAPSHOT_PATH,
 } = require('./game');
 const { serializePublic } = require('./player');
+const { EMPLOYEE_WAGE_PER_TICK } = require('./economy');
 
 const PORT = process.env.PORT || 3000;
 
@@ -262,6 +262,92 @@ wss.on('connection', (ws) => {
         broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
       } else {
         send(ws, { type: 'actionError', action: msg.type, reason: result.reason, limit: result.limit });
+      }
+      return;
+    }
+
+    // --- Firmen: Ausbau und Mitarbeiter ---
+
+    if (msg.type === 'upgradeCompany' && ws.playerId != null) {
+      const result = world.upgradeCompany(ws.playerId, msg.companyId);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, { type: 'companyUpgraded', name: result.company.name, level: result.newLevel, cost: result.cost });
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'upgradeCompany', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'offerEmployment' && ws.playerId != null) {
+      const result = world.offerEmployment(ws.playerId, msg.companyId, msg.toPlayerId);
+      if (result.ok) {
+        const owner = world.players.get(ws.playerId);
+        sendToPlayer(msg.toPlayerId, {
+          type: 'employmentOffer',
+          offerId: result.offer.id,
+          companyName: result.company.name,
+          fromName: owner ? owner.name : 'Unbekannt',
+          wage: EMPLOYEE_WAGE_PER_TICK,
+          expiresAt: result.offer.expiresAt,
+        });
+        send(ws, { type: 'employmentOfferSent' });
+      } else {
+        send(ws, { type: 'actionError', action: 'offerEmployment', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'respondEmployment' && ws.playerId != null) {
+      const result = world.respondEmployment(ws.playerId, msg.offerId, !!msg.accept);
+      if (result.ok) {
+        const emp = world.players.get(ws.playerId);
+        sendToPlayer(result.offer.fromPlayerId, {
+          type: 'employmentResolved',
+          accepted: result.accepted,
+          employeeName: emp ? emp.name : 'Jemand',
+        });
+        sendToPlayer(ws.playerId, {
+          type: 'employmentResolved',
+          accepted: result.accepted,
+          companyName: result.company ? result.company.name : '',
+        });
+        if (result.accepted) {
+          broadcast(buildEconomyStateMessage());
+          broadcast({ type: 'statUpdate', players: [serializePublic(emp)] });
+        }
+      } else {
+        send(ws, { type: 'actionError', action: 'respondEmployment', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'leaveEmployment' && ws.playerId != null) {
+      const result = world.leaveEmployment(ws.playerId);
+      if (result.ok) {
+        sendToPlayer(ws.playerId, { type: 'employmentEnded', reason: 'quit', companyName: result.company ? result.company.name : '' });
+        if (result.company) {
+          const emp = world.players.get(ws.playerId);
+          sendToPlayer(result.company.ownerId, { type: 'employeeQuit', employeeName: emp ? emp.name : 'Jemand', reason: 'quit' });
+        }
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'leaveEmployment', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'dismissEmployee' && ws.playerId != null) {
+      const result = world.dismissEmployee(ws.playerId, msg.companyId, msg.employeeId);
+      if (result.ok) {
+        sendToPlayer(result.employeeId, { type: 'employmentEnded', reason: 'dismissed', companyName: result.company.name });
+        broadcast(buildEconomyStateMessage());
+        const emp = world.players.get(result.employeeId);
+        if (emp) broadcast({ type: 'statUpdate', players: [serializePublic(emp)] });
+      } else {
+        send(ws, { type: 'actionError', action: 'dismissEmployee', reason: result.reason });
       }
       return;
     }
@@ -661,7 +747,12 @@ setInterval(() => {
     });
   }
 
-  const repossessed = world.collectEconomyIncome();
+  const { repossessed, quits } = world.collectEconomyIncome();
+  for (const q of quits) {
+    sendToPlayer(q.employee.id, { type: 'employmentEnded', reason: 'unpaid', companyName: q.company.name });
+    sendToPlayer(q.company.ownerId, { type: 'employeeQuit', employeeName: q.employee.name, reason: 'unpaid' });
+  }
+  if (quits.length > 0) broadcast(buildEconomyStateMessage());
 
   // Bankzinsen VOR der Steuer: sonst waeren frisch gutgeschriebene Zinsen
   // einen Zyklus lang steuerfrei.
@@ -712,6 +803,10 @@ setInterval(() => {
   const promoted = world.promoteQueuedEvents();
   for (const { player, instance } of promoted) {
     sendToPlayer(player.id, buildEventOfferMessage(instance));
+  }
+
+  for (const offer of world.checkExpiredEmploymentOffers()) {
+    sendToPlayer(offer.toPlayerId, { type: 'employmentOfferExpired', offerId: offer.id });
   }
 
   const expiredTrades = world.checkExpiredTrades();
