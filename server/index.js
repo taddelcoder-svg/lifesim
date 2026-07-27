@@ -1,3 +1,4 @@
+
 'use strict';
 
 // server/index.js
@@ -157,6 +158,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'jobCatalog', jobs: world.buildJobCatalogState() });
       send(ws, { type: 'courseCatalog', courses: world.buildCourseCatalogState() });
       send(ws, { type: 'vehiclesState', ...world.buildVehiclesState() });
+      send(ws, { type: 'bankState', ...world.buildBankState(result.player.id) });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -235,6 +237,31 @@ wss.on('connection', (ws) => {
         broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
       } else {
         send(ws, { type: 'actionError', action: 'buyVehicle', reason: result.reason });
+      }
+      return;
+    }
+
+    // --- Bank: Sparkonto und Kredite ---
+
+    if (msg.type === 'requestBank' && ws.playerId != null) {
+      send(ws, { type: 'bankState', ...world.buildBankState(ws.playerId) });
+      return;
+    }
+
+    if (['deposit', 'withdraw', 'takeLoan', 'repayLoan'].includes(msg.type) && ws.playerId != null) {
+      const fn = {
+        deposit: 'depositToBank',
+        withdraw: 'withdrawFromBank',
+        takeLoan: 'takeLoan',
+        repayLoan: 'repayLoan',
+      }[msg.type];
+      const result = world[fn](ws.playerId, msg.amount);
+      if (result.ok) {
+        send(ws, { type: 'bankState', ...world.buildBankState(ws.playerId) });
+        send(ws, { type: 'bankAction', action: msg.type, amount: result.amount });
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason, limit: result.limit });
       }
       return;
     }
@@ -635,6 +662,20 @@ setInterval(() => {
   }
 
   const repossessed = world.collectEconomyIncome();
+
+  // Bankzinsen VOR der Steuer: sonst waeren frisch gutgeschriebene Zinsen
+  // einen Zyklus lang steuerfrei.
+  const bankEvents = world.applyBankInterest();
+  for (const ev of bankEvents) {
+    if (ev.type === 'foreclosure') {
+      sendToPlayer(ev.player.id, {
+        type: 'foreclosure',
+        propertyName: ev.property.name,
+      });
+      broadcast(buildEconomyStateMessage());
+    }
+  }
+
   world.applyWealthTax();
   if (repossessed.length > 0) {
     broadcast(buildEconomyStateMessage());
