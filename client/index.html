@@ -210,6 +210,17 @@
   .market-btn-small.danger { background: #e05a5a; }
   .market-btn-small.ghost { background: #3a3f4b; }
   .market-empty { color: #6a7080; font-size: 12px; padding: 4px 0; }
+  #bankOverview { margin-bottom: 10px; }
+  .bank-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+  .bank-row .bank-label { color: #9aa0ab; }
+  .bank-row.debt .bank-value { color: #e08080; }
+  .bank-row.savings .bank-value { color: #7fd88f; }
+  .bank-op { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+  .bank-op input {
+    flex: 1; min-width: 0; padding: 7px 8px; border-radius: 4px; border: 1px solid #3a3f4b;
+    background: #1a1d23; color: #e8e8e8; font-size: 12px;
+  }
+  .bank-op button { white-space: nowrap; }
   #foundCompanyRow { display: flex; gap: 6px; margin-bottom: 10px; }
   #foundCompanyRow input {
     flex: 1; padding: 7px 8px; border-radius: 4px; border: 1px solid #3a3f4b;
@@ -389,6 +400,10 @@
   </div>
 
   <div id="marketPanel" style="display:none;">
+    <h4>🏦 Bank</h4>
+    <div id="bankOverview"></div>
+    <div id="bankActions"></div>
+
     <h4>💼 Beruf</h4>
     <div id="jobStatus"></div>
     <div id="jobList"></div>
@@ -706,7 +721,10 @@
     marketBtn.addEventListener('click', () => {
       const opening = marketPanel.style.display === 'none';
       marketPanel.style.display = opening ? 'block' : 'none';
-      if (opening) renderMarketPanel();
+      if (opening) {
+        if (net) net.requestBank(); // frische Zahlen holen, Zinsen laufen ja weiter
+        renderMarketPanel();
+      }
     });
 
     function playerName(playerId) {
@@ -872,6 +890,7 @@
     function renderMarketPanel() {
       if (!net) return;
 
+      renderBankSection();
       renderJobSection();
       renderCourseSection();
 
@@ -1428,6 +1447,72 @@
       };
       net.onVehicleExited = () => showToast('Ausgestiegen.');
       net.onVehicleBought = (msg) => showToast(`${msg.typeName} gekauft für $${msg.price}.`);
+    }
+    // ---------------------------------------------------------------------
+    // Bank: Sparkonto und Kredite
+    // ---------------------------------------------------------------------
+    const bankOverviewEl = document.getElementById('bankOverview');
+    const bankActionsEl = document.getElementById('bankActions');
+
+    function renderBankSection() {
+      if (!net) return;
+      const b = net.bank;
+
+      const pct = (r) => (r * 100).toFixed(1) + '%';
+      bankOverviewEl.innerHTML =
+        `<div class="bank-row"><span class="bank-label">Bargeld (klaubar)</span><span class="bank-value">$${b.cash}</span></div>` +
+        `<div class="bank-row savings"><span class="bank-label">Guthaben (sicher, +${pct(b.savingsRate)})</span><span class="bank-value">$${b.savings}</span></div>` +
+        (b.debt > 0
+          ? `<div class="bank-row debt"><span class="bank-label">Schulden (-${pct(b.loanRate)})</span><span class="bank-value">$${b.debt}</span></div>`
+          : '') +
+        `<div class="bank-row"><span class="bank-label">Kreditrahmen</span><span class="bank-value">$${b.debt} / $${b.creditLimit}</span></div>`;
+
+      // Bedienzeilen nur einmal bauen, sonst verliert man beim Tippen den Fokus
+      if (bankActionsEl.dataset.built) return;
+      bankActionsEl.dataset.built = '1';
+      bankActionsEl.innerHTML = '';
+
+      const ops = [
+        { label: 'Einzahlen', cls: '', fn: (v) => net.deposit(v) },
+        { label: 'Abheben', cls: 'ghost', fn: (v) => net.withdraw(v) },
+        { label: 'Leihen', cls: '', fn: (v) => net.takeLoan(v) },
+        { label: 'Tilgen', cls: 'ghost', fn: (v) => net.repayLoan(v) },
+      ];
+      for (const op of ops) {
+        const row = document.createElement('div');
+        row.className = 'bank-op';
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = '1';
+        input.placeholder = 'Betrag';
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small ' + op.cls;
+        btn.textContent = op.label;
+        const run = () => {
+          const v = Math.floor(Number(input.value));
+          if (!Number.isFinite(v) || v <= 0) { showToast('Bitte einen Betrag eingeben.'); return; }
+          op.fn(v);
+          input.value = '';
+        };
+        btn.addEventListener('click', run);
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+        row.appendChild(input);
+        row.appendChild(btn);
+        bankActionsEl.appendChild(row);
+      }
+    }
+
+    if (net) {
+      net.onBankState = () => {
+        if (marketPanel.style.display !== 'none') renderBankSection();
+      };
+      net.onBankAction = (msg) => {
+        const labels = { deposit: 'Eingezahlt', withdraw: 'Abgehoben', takeLoan: 'Kredit erhalten', repayLoan: 'Getilgt' };
+        showToast(`${labels[msg.action] || 'Erledigt'}: $${msg.amount}`);
+      };
+      net.onForeclosure = (msg) => {
+        showToast(`Die Bank hat "${msg.propertyName}" verwertet - die Schulden waren zu hoch.`);
+      };
     }
   </script>
 </body>
