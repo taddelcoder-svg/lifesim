@@ -25,10 +25,24 @@ const PROPERTIES = [
 ];
 
 const COMPANY_FOUNDING_COST = 500;
-const COMPANY_INCOME_PER_TICK = 14;
-const COMPANY_UPKEEP_PER_TICK = 5;
 
-const PROPERTY_SELL_BACK_RATIO = 0.7; // Rueckverkauf an die Bank zu 70% des Kaufpreises
+// Ausbaustufen. Stufe 1 bekommt man beim Gruenden, hoehere kosten Geld und
+// bringen mehr Ertrag sowie Platz fuer mehr Mitarbeiter.
+const COMPANY_LEVELS = [
+  { level: 1, upgradeCost: null, income: 14, upkeep: 5,  maxEmployees: 1 },
+  { level: 2, upgradeCost: 1200, income: 24, upkeep: 9,  maxEmployees: 2 },
+  { level: 3, upgradeCost: 3000, income: 40, upkeep: 15, maxEmployees: 4 },
+];
+
+// Mitarbeiter: Was ein Angestellter der Firma einbringt und was er kostet.
+// Der Lohn liegt bewusst ueber dem Einstiegsgehalt im Einzelhandel (18), damit
+// eine Anstellung bei einem Mitspieler fuer Neulinge attraktiv ist. Die Differenz
+// bleibt beim Firmeninhaber - so lohnt sich Einstellen fuer beide Seiten.
+const EMPLOYEE_INCOME_PER_TICK = 40;
+const EMPLOYEE_WAGE_PER_TICK = 25;
+const EMPLOYMENT_OFFER_DURATION_MS = 60000;
+
+const PROPERTY_SELL_BACK_RATIO = 0.7;   // Rueckverkauf an die Bank zu 70% des Kaufpreises
 const COMPANY_CLOSE_REFUND_RATIO = 0.5; // Teilrueckerstattung bei Firmenschliessung
 
 // WICHTIG: Immobilien/Firmen werfen bewusst mehr ab als sie an Unterhalt kosten
@@ -42,8 +56,10 @@ const TRADE_RESPONSE_DURATION_MS = 60000; // 60s Zeit, ein Handelsangebot anzune
 module.exports = {
   PROPERTIES,
   COMPANY_FOUNDING_COST,
-  COMPANY_INCOME_PER_TICK,
-  COMPANY_UPKEEP_PER_TICK,
+  COMPANY_LEVELS,
+  EMPLOYEE_INCOME_PER_TICK,
+  EMPLOYEE_WAGE_PER_TICK,
+  EMPLOYMENT_OFFER_DURATION_MS,
   PROPERTY_SELL_BACK_RATIO,
   COMPANY_CLOSE_REFUND_RATIO,
   WEALTH_TAX_RATE,
