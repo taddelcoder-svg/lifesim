@@ -69,6 +69,21 @@ const BUILDING_MODEL_NAMES = [
   'building_E', 'building_F', 'building_G', 'building_H',
 ];
 
+// --- Stadtdeko (Laternen, Ampeln, Baenke, Buesche, Hydranten) ---
+// Rein dekorativ: KEINE Kollision, damit man nicht staendig an Laternenmasten
+// haengenbleibt. Alle Objekte eines Typs werden als eine einzige "Instanz-Gruppe"
+// gezeichnet - so kosten 100 Laternen nur einen Zeichenaufruf statt hundert.
+const PROP_SCALE = {
+  streetlight: 2.7,   // Modell ist 0.96 hoch -> ca. 2.6 Einheiten (Figur: 1.3)
+  trafficlight_A: 2.7,
+  bench: 3.0,
+  bush: 2.4,
+  firehydrant: 3.2,
+};
+
+const STREETLIGHT_SPACING = 400; // Server-Einheiten zwischen zwei Laternen
+const PROP_EDGE_OFFSET = 56;     // Abstand von der Strassenmitte zum Gehweg
+
 
 /** Mischanteil bildratenunabhaengig machen, damit es bei 30fps genauso schnell wirkt wie bei 120fps. */
 function frameRateIndependentBlend(perFrameRate, dtMs) {
@@ -268,6 +283,20 @@ class Renderer {
         this.cityMeshes.push(mesh);
       }
     }
+
+    // Stadtdeko - nur wenn die Modelle geladen sind, sonst bleibt die Stadt schlicht
+    if (this.modelsReady) {
+      let propCount = 0;
+      for (const [name, placements] of this.buildPropPlacements()) {
+        const inst = this.createPropInstances(name, placements);
+        if (inst) {
+          this.scene.add(inst);
+          this.cityMeshes.push(inst);
+          propCount += placements.length;
+        }
+      }
+      if (propCount > 0) console.log('Stadtdeko platziert:', propCount, 'Objekte');
+    }
   }
 
   /**
@@ -349,6 +378,104 @@ class Renderer {
     mesh.position.y -= scaledBox.min.y;
 
     return wrapper;
+  }
+
+  /**
+   * Berechnet, wo welche Deko steht. Alles deterministisch aus dem Strassenraster
+   * abgeleitet, damit jeder Client dieselbe Stadt sieht - ohne dass der Server
+   * dafuer Daten schicken muss.
+   * @returns {Map} Modellname -> [{ x, y, rotY }] in Server-Koordinaten
+   */
+  buildPropPlacements() {
+    const placements = new Map();
+    const add = (name, x, y, rotY) => {
+      if (!placements.has(name)) placements.set(name, []);
+      placements.get(name).push({ x, y, rotY });
+    };
+
+    const roads = this.net.worldRoads || [];
+    const verticals = roads.filter((r) => r.orientation === 'vertical').map((r) => r.center);
+    const horizontals = roads.filter((r) => r.orientation === 'horizontal').map((r) => r.center);
+    const worldSize = WORLD_WIDTH;
+
+    // Laternen entlang der Strassen, abwechselnd links und rechts
+    let flip = false;
+    for (const cx of verticals) {
+      for (let y = STREETLIGHT_SPACING / 2; y < worldSize; y += STREETLIGHT_SPACING) {
+        flip = !flip;
+        const side = flip ? 1 : -1;
+        const x = cx + side * PROP_EDGE_OFFSET;
+        if (x < 20 || x > worldSize - 20) continue;
+        // Laterne zeigt zur Strasse hin
+        add('streetlight', x, y, side > 0 ? Math.PI / 2 : -Math.PI / 2);
+      }
+    }
+    for (const cy of horizontals) {
+      for (let x = STREETLIGHT_SPACING / 2; x < worldSize; x += STREETLIGHT_SPACING) {
+        flip = !flip;
+        const side = flip ? 1 : -1;
+        const y = cy + side * PROP_EDGE_OFFSET;
+        if (y < 20 || y > worldSize - 20) continue;
+        add('streetlight', x, y, side > 0 ? Math.PI : 0);
+      }
+    }
+
+    // Ampeln an den inneren Kreuzungen (nicht am Kartenrand, dort ist kein Verkehr)
+    for (const cx of verticals) {
+      for (const cy of horizontals) {
+        if (cx <= 0 || cx >= worldSize || cy <= 0 || cy >= worldSize) continue;
+        add('trafficlight_A', cx - PROP_EDGE_OFFSET, cy - PROP_EDGE_OFFSET, Math.PI / 4);
+        add('trafficlight_A', cx + PROP_EDGE_OFFSET, cy + PROP_EDGE_OFFSET, -Math.PI * 0.75);
+      }
+    }
+
+    // Kleinkram an den Gehwegen: Baenke, Buesche, Hydranten.
+    // Reihenfolge und Verteilung sind fest (kein Zufall), damit es reproduzierbar bleibt.
+    const smallProps = ['bench', 'bush', 'bush', 'firehydrant'];
+    let i = 0;
+    for (const cx of verticals) {
+      for (let y = 120; y < worldSize; y += 260) {
+        const name = smallProps[i % smallProps.length];
+        i++;
+        const side = i % 2 === 0 ? 1 : -1;
+        const x = cx + side * (PROP_EDGE_OFFSET + 14);
+        if (x < 20 || x > worldSize - 20) continue;
+        add(name, x, y, side > 0 ? -Math.PI / 2 : Math.PI / 2);
+      }
+    }
+
+    return placements;
+  }
+
+  /**
+   * Zeichnet alle Objekte eines Deko-Typs als EINE Instanz-Gruppe.
+   * Das ist der entscheidende Unterschied zu einzelnen Kopien: 60 Laternen
+   * kosten so einen statt sechzig Zeichenaufrufe - wichtig fuers iPad.
+   */
+  createPropInstances(name, placements) {
+    const template = this.modelTemplates.get(name);
+    if (!template || placements.length === 0) return null;
+
+    const scale = PROP_SCALE[name] || 1;
+    const mesh = new THREE.InstancedMesh(template.geometry, template.material, placements.length);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+
+    const matrix = new THREE.Matrix4();
+    const quat = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const scl = new THREE.Vector3(scale, scale, scale);
+    const up = new THREE.Vector3(0, 1, 0);
+
+    placements.forEach((p, idx) => {
+      pos.set(p.x * WORLD_SCALE, 0, p.y * WORLD_SCALE);
+      quat.setFromAxisAngle(up, p.rotY || 0);
+      matrix.compose(pos, quat, scl);
+      mesh.setMatrixAt(idx, matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+
+    return mesh;
   }
 
   onResize() {
