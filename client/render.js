@@ -998,7 +998,10 @@ class Renderer {
     }
 
     this.hud.innerHTML =
-      `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}${wantedText}<br>` +
+      `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}` +
+      ((me.bank ?? 0) > 0 ? ` &nbsp;|&nbsp; 🏦 $${me.bank}` : '') +
+      ((me.debt ?? 0) > 0 ? ` &nbsp;|&nbsp; <span style="color:#e08080">Schulden $${me.debt}</span>` : '') +
+      `${wantedText}<br>` +
       `❤️ ${me.health ?? 100} &nbsp; 😊 ${me.happiness ?? 70} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}${studyText}<br>` +
       `Spieler online: ${online} &nbsp;|&nbsp; ${travelText}`;
   }
