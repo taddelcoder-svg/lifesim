@@ -78,6 +78,14 @@ const {
   SPAWN_POSITION,
 } = require('./world');
 const {
+  SAVINGS_INTEREST_RATE,
+  LOAN_INTEREST_RATE,
+  LOAN_BASE_LIMIT,
+  LOAN_LIMIT_PER_PROPERTY_VALUE,
+  LOAN_LIMIT_PER_JOB_LEVEL,
+  FORECLOSURE_THRESHOLD,
+} = require('./bank');
+const {
   findVehicleType,
   createInitialVehicles,
   buildVehicleCatalog,
@@ -895,9 +903,149 @@ class GameWorld {
    */
   applyWealthTax() {
     for (const player of this.players.values()) {
-      if (!player.connected || player.cash <= 0) continue;
-      player.cash = Math.max(0, Math.round(player.cash * (1 - WEALTH_TAX_RATE)));
+      if (!player.connected) continue;
+      // BEIDES besteuern - waere nur Bargeld betroffen, wuerden alle ihr Geld
+      // einfach auf die Bank schieben und die Steuer liefe ins Leere.
+      if (player.cash > 0) player.cash = Math.max(0, Math.round(player.cash * (1 - WEALTH_TAX_RATE)));
+      if (player.bank > 0) player.bank = Math.max(0, Math.round(player.bank * (1 - WEALTH_TAX_RATE)));
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // BANK: Sparkonto und Kredite
+  // ---------------------------------------------------------------------
+
+  /** Wie viel darf dieser Spieler insgesamt schulden? Haengt an seinen Sicherheiten. */
+  creditLimit(player) {
+    let propertyValue = 0;
+    for (const prop of this.properties.values()) {
+      if (prop.ownerId === player.id) propertyValue += prop.price;
+    }
+    const jobBonus = player.job ? LOAN_LIMIT_PER_JOB_LEVEL * (player.jobLevel + 1) : 0;
+    return Math.round(LOAN_BASE_LIMIT + propertyValue * LOAN_LIMIT_PER_PROPERTY_VALUE + jobBonus);
+  }
+
+  buildBankState(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return null;
+    return {
+      cash: player.cash,
+      savings: player.bank,
+      debt: player.debt,
+      creditLimit: this.creditLimit(player),
+      savingsRate: SAVINGS_INTEREST_RATE,
+      loanRate: LOAN_INTEREST_RATE,
+    };
+  }
+
+  /** Bargeld aufs Sparkonto - dort ist es vor Diebstahl sicher. */
+  depositToBank(playerId, amount) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    const amt = Math.floor(Number(amount));
+    if (!Number.isFinite(amt) || amt <= 0) return { ok: false, reason: 'invalid_amount' };
+    if (player.cash < amt) return { ok: false, reason: 'insufficient_funds' };
+
+    player.cash -= amt;
+    player.bank += amt;
+    return { ok: true, amount: amt };
+  }
+
+  /** Guthaben abheben. */
+  withdrawFromBank(playerId, amount) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    const amt = Math.floor(Number(amount));
+    if (!Number.isFinite(amt) || amt <= 0) return { ok: false, reason: 'invalid_amount' };
+    if (player.bank < amt) return { ok: false, reason: 'insufficient_savings' };
+
+    player.bank -= amt;
+    player.cash += amt;
+    return { ok: true, amount: amt };
+  }
+
+  /** Kredit aufnehmen, begrenzt durch den Kreditrahmen. */
+  takeLoan(playerId, amount) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    const amt = Math.floor(Number(amount));
+    if (!Number.isFinite(amt) || amt <= 0) return { ok: false, reason: 'invalid_amount' };
+
+    const limit = this.creditLimit(player);
+    if (player.debt + amt > limit) return { ok: false, reason: 'over_credit_limit', limit };
+
+    player.debt += amt;
+    player.cash += amt;
+    return { ok: true, amount: amt, debt: player.debt, limit };
+  }
+
+  /** Schulden tilgen - zuerst vom Bargeld, dann vom Sparkonto. */
+  repayLoan(playerId, amount) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (player.debt <= 0) return { ok: false, reason: 'no_debt' };
+
+    let amt = Math.floor(Number(amount));
+    if (!Number.isFinite(amt) || amt <= 0) return { ok: false, reason: 'invalid_amount' };
+    amt = Math.min(amt, player.debt);
+
+    const available = player.cash + player.bank;
+    if (available < amt) return { ok: false, reason: 'insufficient_funds' };
+
+    const fromCash = Math.min(player.cash, amt);
+    player.cash -= fromCash;
+    player.bank -= (amt - fromCash);
+    player.debt -= amt;
+
+    return { ok: true, amount: amt, debt: player.debt };
+  }
+
+  /**
+   * slowTick: Sparzinsen gutschreiben, Kreditzinsen abbuchen.
+   * Reicht das Geld fuer die Zinsen nicht, waechst die Schuld weiter - das ist
+   * die Schuldenspirale. Wird sie zu gross, verwertet die Bank eine Immobilie.
+   * @returns {Array} Ereignisse fuer Benachrichtigungen
+   */
+  applyBankInterest() {
+    const events = [];
+
+    for (const player of this.players.values()) {
+      if (!player.connected) continue;
+
+      if (player.bank > 0) {
+        player.bank += Math.round(player.bank * SAVINGS_INTEREST_RATE);
+      }
+
+      if (player.debt > 0) {
+        const interest = Math.max(1, Math.round(player.debt * LOAN_INTEREST_RATE));
+
+        // Zuerst Bargeld, dann Guthaben. Reicht beides nicht, waechst die Schuld.
+        let remaining = interest;
+        const fromCash = Math.min(player.cash, remaining);
+        player.cash -= fromCash;
+        remaining -= fromCash;
+        const fromBank = Math.min(player.bank, remaining);
+        player.bank -= fromBank;
+        remaining -= fromBank;
+        if (remaining > 0) player.debt += remaining;
+
+        // Zwangsverwertung, wenn die Schuld den Rahmen deutlich sprengt
+        const limit = this.creditLimit(player);
+        if (player.debt > limit * FORECLOSURE_THRESHOLD) {
+          const owned = [...this.properties.values()].filter((p) => p.ownerId === player.id);
+          if (owned.length > 0) {
+            // Teuerste zuerst verwerten, damit eine Verwertung meist reicht
+            owned.sort((a, b) => b.price - a.price);
+            const seized = owned[0];
+            seized.ownerId = null;
+            player.debt = Math.max(0, player.debt - seized.price);
+            events.push({ type: 'foreclosure', player, property: seized });
+          }
+        }
+      }
+    }
+
+    return events;
   }
 
   // ---------------------------------------------------------------------
