@@ -72,7 +72,11 @@ const PLACES = [
     dative: 'zum Maklerbüro',
     icon: '🏠',
     position: { x: 200, y: 200 },
-    actions: ['buyProperty', 'sellProperty'],
+    // Alarmanlage und Versicherung gehoeren hierher statt in einen eigenen
+    // zehnten Ort: das Maklerbuero verwaltet ohnehin alles rund um Immobilien,
+    // und von den 25 Blockmitten waere sonst KEINE mehr frei (14 Immobilien,
+    // 9 Orte) - die letzte bleibt bewusst fuer etwas Groesseres reserviert.
+    actions: ['buyProperty', 'sellProperty', 'buyAlarm', 'setInsurance'],
   },
   {
     id: 'cityhall',
