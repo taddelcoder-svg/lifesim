@@ -39,6 +39,19 @@ const {
   STEAL_MAX_AMOUNT,
   STEAL_WANTED_ON_ATTEMPT,
   STEAL_WANTED_ON_SUCCESS_BONUS,
+  BURGLARY_RANGE,
+  BURGLARY_COOLDOWN_MS,
+  BURGLARY_SUCCESS_CHANCE,
+  BURGLARY_DISABLE_MS,
+  BURGLARY_WANTED_ON_ATTEMPT,
+  BURGLARY_WANTED_ON_SUCCESS_BONUS,
+  VAULT_TAX_SHARE,
+  ROBBERY_COOLDOWN_MS,
+  ROBBERY_SUCCESS_CHANCE,
+  ROBBERY_LOOT_SHARE,
+  ROBBERY_MIN_VAULT,
+  ROBBERY_WANTED_ON_ATTEMPT,
+  ROBBERY_WANTED_ON_SUCCESS_BONUS,
   POLICE_COUNT,
   POLICE_CHASE_SPEED,
   POLICE_PATROL_SPEED,
@@ -248,6 +261,11 @@ class GameWorld {
 
     this.trades = new Map(); // id -> Handelsangebot zwischen zwei Spielern
     this.nextTradeId = 1;
+
+    // Banktresor: wird aus der Vermoegenssteuer gespeist und ist das Ziel von
+    // Bankueberfaellen. Siehe VAULT_TAX_SHARE in crime.js - das Geld ist bereits
+    // aus dem Umlauf gezogen, ein Ueberfall bringt es zurueck statt neues zu schaffen.
+    this.bankVault = 0;
 
     // Polizei-NPCs: keine echten Spieler, einfache Verfolgungs-KI serverseitig.
     this.cops = [];
@@ -670,7 +688,12 @@ class GameWorld {
       nextCompanyId: this.nextCompanyId,
       nextChildId: this.nextChildId,
       players: [...this.players.values()].map(serializeFull),
-      properties: [...this.properties.values()].map((p) => ({ id: p.id, ownerId: p.ownerId })),
+      properties: [...this.properties.values()].map((p) => ({
+        id: p.id,
+        ownerId: p.ownerId,
+        disabledUntil: p.disabledUntil || null,
+      })),
+      bankVault: this.bankVault,
       companies: [...this.companies.values()],
       children: [...this.children.values()],
       chatLog: this.chatLog,
@@ -717,13 +740,17 @@ class GameWorld {
     }
 
     if (typeof snapshot.nextPlayerId === 'number') setNextPlayerId(snapshot.nextPlayerId);
+    if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
     if (typeof snapshot.nextCompanyId === 'number') this.nextCompanyId = snapshot.nextCompanyId;
     if (typeof snapshot.nextChildId === 'number') this.nextChildId = snapshot.nextChildId;
 
     if (Array.isArray(snapshot.properties)) {
       for (const saved of snapshot.properties) {
         const property = this.properties.get(saved.id);
-        if (property) property.ownerId = saved.ownerId;
+        if (property) {
+          property.ownerId = saved.ownerId;
+          property.disabledUntil = saved.disabledUntil || null;
+        }
       }
     }
 
@@ -1109,7 +1136,10 @@ class GameWorld {
         property.ownerId = null; // Besitzer existiert nicht mehr (sollte selten vorkommen)
         continue;
       }
-      const net = property.incomePerTick - property.maintenancePerTick;
+      // Nach einem Einbruch faellt der Ertrag zeitweise aus - die Instandhaltung
+      // laeuft aber weiter. Genau dieser Ausfall ist die Beute des Einbrechers.
+      const disabled = property.disabledUntil && property.disabledUntil > Date.now();
+      const net = (disabled ? 0 : property.incomePerTick) - property.maintenancePerTick;
       if (owner.cash + net < 0) {
         property.ownerId = null;
         repossessed.push({ type: 'property', asset: property, player: owner });
@@ -1166,8 +1196,20 @@ class GameWorld {
       if (!player.connected) continue;
       // BEIDES besteuern - waere nur Bargeld betroffen, wuerden alle ihr Geld
       // einfach auf die Bank schieben und die Steuer liefe ins Leere.
-      if (player.cash > 0) player.cash = Math.max(0, Math.round(player.cash * (1 - WEALTH_TAX_RATE)));
-      if (player.bank > 0) player.bank = Math.max(0, Math.round(player.bank * (1 - WEALTH_TAX_RATE)));
+      let collected = 0;
+      if (player.cash > 0) {
+        const after = Math.max(0, Math.round(player.cash * (1 - WEALTH_TAX_RATE)));
+        collected += player.cash - after;
+        player.cash = after;
+      }
+      if (player.bank > 0) {
+        const after = Math.max(0, Math.round(player.bank * (1 - WEALTH_TAX_RATE)));
+        collected += player.bank - after;
+        player.bank = after;
+      }
+      // Ein Teil der Steuer verschwindet weiterhin (Geld-Senke), der Rest
+      // wandert sichtbar in den Banktresor und wird dort zur Beute.
+      this.bankVault += Math.round(collected * VAULT_TAX_SHARE);
     }
   }
 
@@ -1195,6 +1237,10 @@ class GameWorld {
       creditLimit: this.creditLimit(player),
       savingsRate: SAVINGS_INTEREST_RATE,
       loanRate: LOAN_INTEREST_RATE,
+      // Tresorstand ist bewusst fuer ALLE sichtbar: er waechst mit der Steuer,
+      // die alle zahlen, und macht den Ueberfall planbar statt zum Gluecksspiel.
+      // Das erzeugt ausserdem einen Wettlauf, wer zuerst zugreift.
+      vault: this.bankVault,
     };
   }
 
@@ -1434,6 +1480,110 @@ class GameWorld {
     thief.wanted += STEAL_WANTED_ON_SUCCESS_BONUS;
 
     return { ok: true, success: true, amount, thief, victim };
+  }
+
+  /**
+   * Einbruch in eine fremde Immobilie. Greift den ERTRAGSSTROM an, nicht das
+   * gespeicherte Geld: die Immobilie wirft fuer BURGLARY_DISABLE_MS nichts mehr
+   * ab, und genau dieser entgangene Ertrag ist die Beute.
+   *
+   * Dadurch bleibt das Sparkonto weiterhin diebstahlsicher (sein Hauptzweck),
+   * reiche Spieler sind aber trotzdem angreifbar - und lohnendere Ziele als arme,
+   * weil teure Objekte mehr abwerfen.
+   *
+   * Es entsteht KEIN neues Geld: der Besitzer verliert exakt, was der Einbrecher
+   * bekommt.
+   */
+  attemptBurglary(burglarId, propertyId) {
+    const burglar = this.players.get(burglarId);
+    const property = this.properties.get(propertyId);
+    if (!burglar || !property) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(burglar)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(burglar)) return { ok: false, reason: 'dead' };
+    if (!property.ownerId) return { ok: false, reason: 'not_owned' };
+    if (property.ownerId === burglarId) return { ok: false, reason: 'own_property' };
+
+    const now = Date.now();
+    if (now - (burglar.lastBurglaryAt || 0) < BURGLARY_COOLDOWN_MS) {
+      return { ok: false, reason: 'cooldown' };
+    }
+    // Zweimal dieselbe Immobilie hintereinander bringt nichts - der Ertrag
+    // faellt ja ohnehin schon aus. Sonst koennte man denselben Ausfall
+    // mehrfach kassieren.
+    if (property.disabledUntil && property.disabledUntil > now) {
+      return { ok: false, reason: 'already_burgled' };
+    }
+
+    const dist = Math.hypot(burglar.position.x - property.position.x, burglar.position.y - property.position.y);
+    if (dist > BURGLARY_RANGE) return { ok: false, reason: 'too_far' };
+
+    const owner = this.players.get(property.ownerId);
+
+    burglar.lastBurglaryAt = now;
+    burglar.lastCrimeAt = now;
+    burglar.wanted += BURGLARY_WANTED_ON_ATTEMPT;
+
+    if (Math.random() >= BURGLARY_SUCCESS_CHANCE) {
+      return { ok: true, success: false, burglar, owner, property };
+    }
+
+    // Beute = entgangener Ertrag ueber die Ausfallzeit, in slowTicks gerechnet.
+    const ticks = BURGLARY_DISABLE_MS / SLOW_TICK_MS;
+    const loot = Math.max(1, Math.round(property.incomePerTick * ticks));
+
+    property.disabledUntil = now + BURGLARY_DISABLE_MS;
+    burglar.cash += loot;
+    burglar.wanted += BURGLARY_WANTED_ON_SUCCESS_BONUS;
+
+    return { ok: true, success: true, loot, burglar, owner, property };
+  }
+
+  /**
+   * Bankueberfall auf die Bankfiliale. Der Tresor speist sich aus der
+   * Vermoegenssteuer (VAULT_TAX_SHARE) - das Geld war also bereits aus dem
+   * Umlauf gezogen und kehrt bei Erfolg zurueck, statt neu zu entstehen.
+   *
+   * Deutlich riskanter als alles andere: niedrige Erfolgschance, hohes
+   * Fahndungslevel und bei Fehlschlag SOFORT Gefaengnis statt nur Fahndung.
+   * Die Ortsbindung an die Bankfiliale kommt aus places.js.
+   */
+  attemptBankRobbery(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+
+    const now = Date.now();
+    if (now - (player.lastRobberyAt || 0) < ROBBERY_COOLDOWN_MS) {
+      return { ok: false, reason: 'cooldown' };
+    }
+    if (this.bankVault < ROBBERY_MIN_VAULT) {
+      return { ok: false, reason: 'vault_empty', vault: this.bankVault };
+    }
+
+    const away = this.checkPlaceRequirement(player, 'robBank');
+    if (away) return away;
+
+    player.lastRobberyAt = now;
+    player.lastCrimeAt = now;
+    player.wanted += ROBBERY_WANTED_ON_ATTEMPT;
+
+    if (Math.random() >= ROBBERY_SUCCESS_CHANCE) {
+      // Fehlschlag: direkt ins Gefaengnis. forceExitVehicle, sonst saesse man
+      // "im Auto" in der Zelle - dasselbe Problem wie bei einer Verhaftung.
+      this.forceExitVehicle(player);
+      player.jailedUntil = now + JAIL_DURATION_MS;
+      player.position = { x: JAIL_POSITION.x, y: JAIL_POSITION.y };
+      player.velocity = { x: 0, y: 0 };
+      return { ok: true, success: false, jailed: true, player };
+    }
+
+    const loot = Math.round(this.bankVault * ROBBERY_LOOT_SHARE);
+    this.bankVault -= loot;
+    player.cash += loot;
+    player.wanted += ROBBERY_WANTED_ON_SUCCESS_BONUS;
+
+    return { ok: true, success: true, loot, vault: this.bankVault, player };
   }
 
   /**
