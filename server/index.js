@@ -159,6 +159,9 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'courseCatalog', courses: world.buildCourseCatalogState() });
       send(ws, { type: 'vehiclesState', ...world.buildVehiclesState() });
       send(ws, { type: 'bankState', ...world.buildBankState(result.player.id) });
+      // Politischer Stand gehoert zum Beitritt: wer neu dazukommt, muss sehen,
+      // ob gerade Wahl ist und wer regiert.
+      send(ws, { type: 'politicsState', ...world.buildPoliticsState() });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -519,6 +522,25 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // --- Politik: Kandidatur, Stimme, Steuersatz ---
+
+    if (['runForMayor', 'castVote', 'setTaxRate'].includes(msg.type) && ws.playerId != null) {
+      const result = msg.type === 'runForMayor'
+        ? world.runForMayor(ws.playerId)
+        : msg.type === 'castVote'
+          ? world.castVote(ws.playerId, msg.candidateId)
+          : world.setTaxRate(ws.playerId, msg.rate);
+      if (result.ok) {
+        send(ws, { type: 'politicsAction', action: msg.type, fee: result.fee, taxRate: result.taxRate });
+        // Kandidatenliste, Stimmenstand und Steuersatz betreffen alle.
+        broadcast({ type: 'politicsState', ...world.buildPoliticsState() });
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
+      } else {
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
+      }
+      return;
+    }
+
     if (['buyAlarm', 'setInsurance'].includes(msg.type) && ws.playerId != null) {
       const result = msg.type === 'buyAlarm'
         ? world.buyAlarm(ws.playerId, msg.propertyId)
@@ -865,6 +887,14 @@ setInterval(() => {
   const now = Date.now();
   const dt = now - lastSlowTick;
   lastSlowTick = now;
+
+  // Wahlphase/Amtszeit voranbringen. Meldet nur etwas, wenn ein Wechsel
+  // stattgefunden hat - sonst laege bei jedem Tick ein Broadcast an.
+  const politicsEvent = world.advancePolitics();
+  if (politicsEvent) {
+    broadcast({ type: 'politicsState', ...world.buildPoliticsState() });
+    broadcast({ type: 'politicsEvent', ...politicsEvent });
+  }
 
   world.ageConnectedPlayers(dt);
   world.applyHealthAndHappinessDecay();
