@@ -224,6 +224,75 @@ class Renderer {
     this.scene.add(label);
   }
 
+  /**
+   * Die festen Orte (Bank, Uni, Arbeitsamt, ...) als erkennbare Gebaeude mit
+   * farbiger Bodenplatte und Beschriftung. Die Platte hat bewusst genau den
+   * Durchmesser der Interaktionsreichweite aus dem Server-Katalog: wer mit
+   * beiden Fuessen darauf steht, ist garantiert nah genug. So muss niemand
+   * raten, wie dicht man herangehen muss.
+   *
+   * Die Meshes landen in cityMeshes, damit sie bei einem erneuten Layout
+   * (Reconnect) zusammen mit dem Rest abgeraeumt werden.
+   */
+  buildPlaceMarkers() {
+    const plateColors = {
+      jobcenter: 0x3f6b46,
+      university: 0x4a4a8c,
+      bank: 0x2f6d78,
+      realestate: 0x7a5a2e,
+      cityhall: 0x74364f,
+    };
+
+    for (const place of this.net.places) {
+      const px = place.position.x * WORLD_SCALE;
+      const pz = place.position.y * WORLD_SCALE;
+
+      // Bodenplatte = Reichweite. Radius, nicht Durchmesser - deshalb kein /2.
+      const plateGeo = new THREE.CircleGeometry(place.range * WORLD_SCALE, 32);
+      const plateMat = new THREE.MeshStandardMaterial({
+        color: plateColors[place.id] || 0x555555,
+        transparent: true,
+        opacity: 0.55,
+      });
+      const plate = new THREE.Mesh(plateGeo, plateMat);
+      plate.rotation.x = -Math.PI / 2;
+      // Knapp ueber der Strasse (die liegt auf 0.03), sonst flackern beide gegeneinander
+      plate.position.set(px, 0.04, pz);
+      plate.receiveShadow = true;
+      this.scene.add(plate);
+      this.cityMeshes.push(plate);
+
+      const footprint = place.size * WORLD_SCALE;
+      const modelName = BUILDING_MODEL_NAMES[
+        Math.abs(Math.round(place.position.x * 31 + place.position.y * 17)) % BUILDING_MODEL_NAMES.length
+      ];
+      const model = this.cloneModel(modelName, footprint);
+
+      if (model) {
+        model.position.set(px, 0, pz);
+        this.scene.add(model);
+        this.cityMeshes.push(model);
+      } else {
+        // Ohne geladene Modelle: einfacher Quader, damit der Ort trotzdem steht
+        // und nicht bloss eine bemalte Flaeche ist.
+        const h = footprint * 1.4;
+        const geo = new THREE.BoxGeometry(footprint, h, footprint);
+        const mat = new THREE.MeshStandardMaterial({ color: plateColors[place.id] || 0x555555 });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(px, h / 2, pz);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        this.scene.add(mesh);
+        this.cityMeshes.push(mesh);
+      }
+
+      const label = this.createLabelSprite(`${place.icon} ${place.name}`);
+      label.position.set(px, footprint * 1.7, pz);
+      this.scene.add(label);
+      this.cityMeshes.push(label);
+    }
+  }
+
   /** Baut Strassen und Deko-Gebaeude aus dem Server-Layout. Wird einmal aufgerufen, sobald es ankommt. */
   buildCityFromLayout() {
     // Vorherigen Aufbau entfernen, falls das Layout erneut ankommt (Reconnect)
@@ -297,6 +366,10 @@ class Renderer {
       }
       if (propCount > 0) console.log('Stadtdeko platziert:', propCount, 'Objekte');
     }
+
+    // Zuletzt, damit die Bodenplatten der Orte ueber der Strasse liegen und
+    // nicht von spaeter hinzugefuegter Deko ueberdeckt werden.
+    this.buildPlaceMarkers();
   }
 
   /**
@@ -997,12 +1070,20 @@ class Renderer {
       travelText = '🚗 ' + (type ? type.name : 'Fahrzeug');
     }
 
+    // Steht der Spieler auf der Platte eines Ortes? Dann sagen, dass hier etwas
+    // geht - sonst muesste man es durch Ausprobieren im Menue herausfinden.
+    const place = this.net.currentPlace();
+    const placeText = place
+      ? `<br><span style="color:#8fd8a0">${place.icon} ${place.name} — Schalter geöffnet</span>`
+      : '';
+
     this.hud.innerHTML =
       `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}` +
       ((me.bank ?? 0) > 0 ? ` &nbsp;|&nbsp; 🏦 $${me.bank}` : '') +
       ((me.debt ?? 0) > 0 ? ` &nbsp;|&nbsp; <span style="color:#e08080">Schulden $${me.debt}</span>` : '') +
       `${wantedText}<br>` +
       `❤️ ${me.health ?? 100} &nbsp; 😊 ${me.happiness ?? 70} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}${studyText}<br>` +
-      `Spieler online: ${online} &nbsp;|&nbsp; ${travelText}`;
+      `Spieler online: ${online} &nbsp;|&nbsp; ${travelText}` +
+      placeText;
   }
 }
