@@ -63,6 +63,10 @@ class NetClient {
     this.onBankAction = null;
     this.onForeclosure = null;
 
+    // Schutz: Alarmanlage und Versicherung
+    this.onProtectionChanged = null;
+    this.onAlarmTriggered = null;
+
     // Kriminalitaet: Einbruch und Bankueberfall
     this.onBurglaryResult = null;
     this.onBurgledFrom = null;
@@ -493,6 +497,16 @@ class NetClient {
 
       case 'bankAction': {
         if (this.onBankAction) this.onBankAction(msg);
+        break;
+      }
+
+      case 'protectionChanged': {
+        if (this.onProtectionChanged) this.onProtectionChanged(msg);
+        break;
+      }
+
+      case 'alarmTriggered': {
+        if (this.onAlarmTriggered) this.onAlarmTriggered(msg);
         break;
       }
 
@@ -988,6 +1002,14 @@ class NetClient {
 
   buyNewVehicle(typeId) {
     this.send({ type: 'buyNewVehicle', typeId });
+  }
+
+  buyAlarm(propertyId) {
+    this.send({ type: 'buyAlarm', propertyId });
+  }
+
+  setInsurance(propertyId, on) {
+    this.send({ type: 'setInsurance', propertyId, on });
   }
 
   postBail() {
