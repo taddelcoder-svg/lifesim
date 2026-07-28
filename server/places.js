@@ -103,6 +103,17 @@ const PLACES = [
     position: { x: 1800, y: 1000 },
     actions: ['relax'],
   },
+  {
+    id: 'dealership',
+    name: 'Autohaus',
+    dative: 'zum Autohaus',
+    icon: '🚗',
+    // Eine der letzten freien Blockmitten. Entfernung zum Startpunkt ~1020 -
+    // passend, denn selbst der guenstigste Neuwagen (Roller, 500) ist keine
+    // Anschaffung fuer die erste Spielminute.
+    position: { x: 600, y: 1800 },
+    actions: ['buyNewVehicle'],
+  },
 ];
 
 // Umkehrtabelle Aktion -> Ort, einmal beim Laden aufgebaut. Wird bei jeder
