@@ -14,6 +14,7 @@ const JOBS = [
     id: 'retail',
     name: 'Einzelhandel',
     minSmarts: 0,
+    minLooks: 0,
     maxWanted: 3, // bei hoeherem Fahndungslevel keine Anstellung
     levels: [
       { title: 'Aushilfe', salary: 18, xpToPromote: 8 },
@@ -25,6 +26,7 @@ const JOBS = [
     id: 'office',
     name: 'Büro',
     minSmarts: 40,
+    minLooks: 0,
     maxWanted: 2,
     levels: [
       { title: 'Sachbearbeiter', salary: 30, xpToPromote: 10 },
@@ -36,6 +38,7 @@ const JOBS = [
     id: 'tech',
     name: 'IT & Technik',
     minSmarts: 60,
+    minLooks: 0,
     maxWanted: 2,
     levels: [
       { title: 'Junior-Entwickler', salary: 40, xpToPromote: 12 },
@@ -47,6 +50,7 @@ const JOBS = [
     id: 'medicine',
     name: 'Medizin',
     minSmarts: 75,
+    minLooks: 0,
     maxWanted: 0, // Vorstrafen sind hier ein Ausschlusskriterium
     levels: [
       { title: 'Assistenzarzt', salary: 45, xpToPromote: 16 },
@@ -58,11 +62,29 @@ const JOBS = [
     id: 'construction',
     name: 'Bau & Handwerk',
     minSmarts: 20,
+    minLooks: 0,
     maxWanted: 4, // hier wird am wenigsten auf die Vergangenheit geschaut
     levels: [
       { title: 'Bauhelfer', salary: 24, xpToPromote: 8 },
       { title: 'Facharbeiter', salary: 40, xpToPromote: 18 },
       { title: 'Vorarbeiter', salary: 62, xpToPromote: null },
+    ],
+  },
+  {
+    id: 'media',
+    name: 'Medien & Auftritt',
+    minSmarts: 30,
+    // Der einzige Beruf mit einer Aussehen-Schranke. `looks` war seit der
+    // Grundfassung eine tote Statistik: gesetzt, von Lebensereignissen
+    // veraendert, im HUD angezeigt - aber nirgends geprueft, waehrend `smarts`
+    // ueber minSmarts den Berufszugang steuerte. Hier bekommt sie dieselbe
+    // Rolle. Erhoehen laesst sich looks im Fitnessstudio (siehe wellbeing.js).
+    minLooks: 70,
+    maxWanted: 1, // wer im Rampenlicht steht, kann sich wenig leisten
+    levels: [
+      { title: 'Statist', salary: 26, xpToPromote: 10 },
+      { title: 'Moderator', salary: 65, xpToPromote: 22 },
+      { title: 'Aushängeschild', salary: 120, xpToPromote: null },
     ],
   },
 ];
@@ -77,6 +99,7 @@ function buildJobCatalog() {
     id: job.id,
     name: job.name,
     minSmarts: job.minSmarts,
+    minLooks: job.minLooks || 0,
     maxWanted: job.maxWanted,
     levels: job.levels.map((l) => ({ title: l.title, salary: l.salary })),
   }));
