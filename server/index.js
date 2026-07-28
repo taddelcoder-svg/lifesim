@@ -478,6 +478,26 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'buyNewVehicle' && ws.playerId != null) {
+      const result = world.buyNewVehicle(ws.playerId, msg.typeId);
+      if (result.ok) {
+        send(ws, {
+          type: 'vehicleBought',
+          vehicleId: result.vehicle.id,
+          typeName: result.typeName,
+          price: result.price,
+        });
+        // Vollstaendiger Fahrzeugzustand an ALLE: das Auto ist neu und den
+        // anderen Clients sonst unbekannt - ein blosses Delta wuerde ins Leere
+        // laufen, weil sie das Fahrzeug gar nicht kennen.
+        broadcast({ type: 'vehiclesState', ...world.buildVehiclesState() });
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: 'buyNewVehicle', reason: result.reason });
+      }
+      return;
+    }
+
     if (msg.type === 'burgle' && ws.playerId != null) {
       const result = world.attemptBurglary(ws.playerId, msg.propertyId);
       if (result.ok) {
