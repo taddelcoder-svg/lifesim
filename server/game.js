@@ -360,6 +360,11 @@ class GameWorld {
       buildings: this.cityLayout.buildings,
       collisionRects: this.collisionRects,
       collisionRadius: PLAYER_COLLISION_RADIUS,
+      // Wurde bisher berechnet, aber nie gesendet. Der Client spiegelt die
+      // Weltgroesse zwangslaeufig als eigene Konstante (kein Build-Schritt) -
+      // mit diesem Wert kann er wenigstens PRUEFEN, ob sein Spiegel noch stimmt,
+      // statt still auseinanderzulaufen.
+      worldSize: this.cityLayout.worldSize,
       places: buildPlacesCatalog(),
     };
   }
