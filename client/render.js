@@ -241,6 +241,8 @@ class Renderer {
       bank: 0x2f6d78,
       realestate: 0x7a5a2e,
       cityhall: 0x74364f,
+      hospital: 0x8c3a3a,
+      gym: 0x3a7a6a,
     };
 
     for (const place of this.net.places) {
@@ -1088,7 +1090,7 @@ class Renderer {
     // geht - sonst muesste man es durch Ausprobieren im Menue herausfinden.
     const place = this.net.currentPlace();
     const placeText = place
-      ? `<br><span style="color:#8fd8a0">${place.icon} ${place.name} — Schalter geöffnet</span>`
+      ? `<br><span style="color:#8fd8a0">${place.icon} ${place.name} — hier verfügbar</span>`
       : '';
 
     this.hud.innerHTML =
@@ -1096,7 +1098,7 @@ class Renderer {
       ((me.bank ?? 0) > 0 ? ` &nbsp;|&nbsp; 🏦 $${me.bank}` : '') +
       ((me.debt ?? 0) > 0 ? ` &nbsp;|&nbsp; <span style="color:#e08080">Schulden $${me.debt}</span>` : '') +
       `${wantedText}<br>` +
-      `❤️ ${me.health ?? 100} &nbsp; 😊 ${me.happiness ?? 70} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}${studyText}<br>` +
+      `❤️ ${Math.round(me.health ?? 100)} &nbsp; 😊 ${Math.round(me.happiness ?? 70)} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}${studyText}<br>` +
       `Spieler online: ${online} &nbsp;|&nbsp; ${travelText}` +
       placeText;
   }
