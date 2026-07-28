@@ -62,7 +62,9 @@ const PLACES = [
     // Die Entfernung zum Startpunkt (~850) ist Absicht: Bargeld ist als einziges
     // bestehlbar, und der Weg zur Filiale ist genau das Risikofenster dafuer.
     position: { x: 1400, y: 1400 },
-    actions: ['deposit', 'withdraw', 'takeLoan'],
+    // robBank gehoert bewusst hierher: der Ueberfall braucht dieselbe
+    // Ortsbindung wie die legalen Bankgeschaefte.
+    actions: ['deposit', 'withdraw', 'takeLoan', 'robBank'],
   },
   {
     id: 'realestate',
