@@ -400,6 +400,9 @@
   </div>
 
   <div id="marketPanel" style="display:none;">
+    <h4>🏥 Gesundheit &amp; Freizeit</h4>
+    <div id="wellbeingActions"></div>
+
     <h4>🏦 Bank</h4>
     <div id="bankOverview"></div>
     <div id="bankActions"></div>
@@ -758,7 +761,7 @@
           `<div><div class="market-item-name">${escapeHtml(level ? level.title : 'Angestellt')}</div>` +
           `<div class="market-item-detail">${escapeHtml(jobDef ? jobDef.name : '')}` +
           (level ? ` · $${level.salary} pro Zyklus` : '') +
-          ` · Erfahrung: ${me.jobXp ?? 0}</div></div>`;
+          ` · Erfahrung: ${Math.round(me.jobXp ?? 0)}</div></div>`;
 
         const quitBtn = document.createElement('button');
         quitBtn.className = 'market-btn-small danger';
@@ -891,6 +894,7 @@
     function renderMarketPanel() {
       if (!net) return;
 
+      renderWellbeingSection();
       renderBankSection();
       renderJobSection();
       renderCourseSection();
@@ -1080,6 +1084,9 @@
           not_owner: 'Gehört dir nicht.',
           not_found: 'Nicht gefunden.',
           no_longer_owned: 'Gehört dem Verkäufer nicht mehr.',
+          already_full: 'Du bist schon bei voller Gesundheit.',
+          already_happy: 'Zufriedener geht es nicht.',
+          too_soon: 'Zu früh — du warst gerade erst trainieren.',
         };
         showToast(reasons[msg.reason] || ('Aktion fehlgeschlagen: ' + msg.reason));
       };
@@ -1517,6 +1524,67 @@
       net.onVehicleBought = (msg) => showToast(`${msg.typeName} gekauft für $${msg.price}.`);
     }
     // ---------------------------------------------------------------------
+    // Gesundheit & Freizeit: Krankenhaus und Fitnessstudio
+    // ---------------------------------------------------------------------
+    const wellbeingActionsEl = document.getElementById('wellbeingActions');
+
+    // Muessen mit den Werten in server/wellbeing.js uebereinstimmen. Sie dienen
+    // NUR der Vorschau ("was kostet mich das?") - abgerechnet wird ausschliesslich
+    // serverseitig, der Client kann hier nichts erzwingen.
+    const HOSPITAL_COST_PER_HEALTH = 6;
+    const GYM_COST = 30;
+
+    function renderWellbeingSection() {
+      if (!net || !net.localPlayer) return;
+      const me = net.localPlayer;
+      const health = Math.round(me.health ?? 100);
+      const happiness = Math.round(me.happiness ?? 70);
+
+      // Kosten VOR dem Losgehen anzeigen: der Weg zum Krankenhaus ist lang, und
+      // dort erst zu erfahren, dass das Geld nicht reicht, waere aergerlich.
+      const healCost = Math.max(1, Math.round((100 - health) * HOSPITAL_COST_PER_HEALTH));
+
+      wellbeingActionsEl.innerHTML = '';
+
+      const rows = [
+        {
+          label: `🏥 Behandlung ($${healCost})`,
+          detail: `Gesundheit ${health}/100` + (health < 30 ? ' — krank, halbes Gehalt!' : ''),
+          warn: health < 30,
+          disabled: health >= 100,
+          fn: () => net.treatHealth(),
+        },
+        {
+          label: `💪 Training ($${GYM_COST})`,
+          detail: `Zufriedenheit ${happiness}/100` + (happiness < 30 ? ' — unmotiviert, halbe Erfahrung!' : ''),
+          warn: happiness < 30,
+          disabled: happiness >= 100,
+          fn: () => net.relax(),
+        },
+      ];
+
+      for (const r of rows) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+
+        const info = document.createElement('div');
+        info.innerHTML =
+          `<div class="market-item-name">${r.label}</div>` +
+          `<div class="market-item-detail"${r.warn ? ' style="color:#e08080"' : ''}>${r.detail}</div>`;
+        row.appendChild(info);
+
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small';
+        btn.textContent = r.disabled ? 'Voll' : 'Los';
+        btn.disabled = !!r.disabled;
+        if (!r.disabled) btn.addEventListener('click', r.fn);
+        row.appendChild(btn);
+
+        wellbeingActionsEl.appendChild(row);
+      }
+    }
+
+    // ---------------------------------------------------------------------
     // Bank: Sparkonto und Kredite
     // ---------------------------------------------------------------------
     const bankOverviewEl = document.getElementById('bankOverview');
@@ -1580,6 +1648,19 @@
       };
       net.onForeclosure = (msg) => {
         showToast(`Die Bank hat "${msg.propertyName}" verwertet - die Schulden waren zu hoch.`);
+      };
+      net.onWellbeingAction = (msg) => {
+        if (msg.action === 'treatHealth') {
+          showToast(`🏥 Behandelt für $${msg.cost} — Gesundheit wieder bei ${Math.round(msg.newHealth)}.`);
+        } else {
+          showToast(`💪 Trainiert für $${msg.cost} — Zufriedenheit jetzt ${Math.round(msg.newHappiness)}.`);
+        }
+        if (marketPanel.style.display !== 'none') renderWellbeingSection();
+      };
+      // Werte sinken durch den Verfall auch ohne Zutun - der Bereich muss also
+      // mitwandern, sonst zeigt er bei offenem Panel veraltete Kosten an.
+      net.onStatUpdate = () => {
+        if (marketPanel.style.display !== 'none') renderWellbeingSection();
       };
     }
     // ---------------------------------------------------------------------
