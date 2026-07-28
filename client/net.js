@@ -5,8 +5,12 @@
 // WICHTIG: Diese Datei bestimmt niemals die "wahre" Position - sie zeigt nur
 // eine Vorhersage an, bis der Server die tatsächliche Position bestätigt.
 
-const WORLD_WIDTH = 2000;
-const WORLD_HEIGHT = 2000;
+// GESPIEGELT aus server/world.js (WORLD_SIZE). Ohne Build-Schritt gibt es keine
+// gemeinsame Quelle - aendert sich die Weltgroesse dort, MUSS sie hier mit
+// (Grundprinzip 2). Laeuft es auseinander, korrigiert der Server jede Bewegung
+// am Rand, sichtbar als Ruckeln.
+const WORLD_WIDTH = 2800;
+const WORLD_HEIGHT = 2800;
 const PLAYER_SPEED = 200; // px/s - MUSS mit server/game.js übereinstimmen
 
 // Diese drei Werte UND die Formel in stepMovement() muessen EXAKT mit
@@ -576,6 +580,17 @@ class NetClient {
         this.worldBuildings = msg.buildings || [];
         this.collisionRects = msg.collisionRects || [];
         this.places = msg.places || [];
+
+        // Grundprinzip 2 in der Praxis: laeuft die gespiegelte Weltgroesse aus
+        // dem Server auseinander, korrigiert der Server jede Bewegung am Rand -
+        // sichtbar nur als unerklaerliches Ruckeln. Lieber sofort und deutlich
+        // melden, statt es beim Spielen suchen zu muessen.
+        if (typeof msg.worldSize === 'number' && msg.worldSize !== WORLD_WIDTH) {
+          console.error(
+            `WELTGRÖSSE LÄUFT AUSEINANDER: Server ${msg.worldSize}, Client ${WORLD_WIDTH}. ` +
+            'WORLD_WIDTH/WORLD_HEIGHT in client/net.js an server/world.js (WORLD_SIZE) angleichen.'
+          );
+        }
         if (typeof msg.collisionRadius === 'number') this.collisionRadius = msg.collisionRadius;
         if (this.onWorldLayout) this.onWorldLayout(msg);
         break;
