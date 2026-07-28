@@ -52,6 +52,19 @@ const {
   ROBBERY_MIN_VAULT,
   ROBBERY_WANTED_ON_ATTEMPT,
   ROBBERY_WANTED_ON_SUCCESS_BONUS,
+  JAIL_EXTRA_PER_RECORD_MS,
+  JAIL_MAX_DURATION_MS,
+  CRIMINAL_RECORD_LIMIT,
+  BAIL_BASE_COST,
+  BAIL_COST_PER_SECOND,
+  BAIL_COST_PER_RECORD,
+  BRIBE_COST_PER_WANTED,
+  BRIBE_SUCCESS_CHANCE,
+  BRIBE_WANTED_REDUCTION,
+  BRIBE_WANTED_ON_FAILURE,
+  BRIBE_COOLDOWN_MS,
+  LAWYER_BASE_COST,
+  LAWYER_COST_PER_RECORD,
   POLICE_COUNT,
   POLICE_CHASE_SPEED,
   POLICE_PATROL_SPEED,
@@ -839,6 +852,10 @@ class GameWorld {
         // Absicherung waere lastGymAt hier undefined, was die Abklingzeit-
         // Rechnung (Date.now() - lastGymAt) zu NaN macht.
         lastGymAt: saved.lastGymAt || 0,
+        lastBribeAt: saved.lastBribeAt || 0,
+        // Aeltere Spielstaende hatten das Feld zwar, aber nie gefuellt - eine
+        // fehlende Liste wuerde .push() und .length zum Absturz bringen.
+        criminalRecord: Array.isArray(saved.criminalRecord) ? saved.criminalRecord : [],
       };
 
       // Aeltere Spielstaende wurden gespeichert, BEVOR es Gebaeude gab - eine
@@ -1633,6 +1650,137 @@ class GameWorld {
   }
 
   /**
+   * Steckt einen Spieler ins Gefaengnis und traegt die Tat in die Vorstrafen ein.
+   *
+   * Vorher stand dieser Ablauf an zwei Stellen doppelt (Verhaftung durch die
+   * Polizei, gescheiterter Bankueberfall) - und an keiner davon wurde
+   * criminalRecord gefuellt. Hier zentral, damit jede Inhaftierung dieselbe
+   * Wirkung hat und keine Stelle vergessen wird.
+   *
+   * Die Haftdauer steigt mit der Zahl der Vorstrafen: Wiederholungstaeter sitzen
+   * laenger. Der Deckel verhindert, dass jemand irgendwann minutenlang weg ist.
+   */
+  jailPlayer(player, offence) {
+    const now = Date.now();
+    player.criminalRecord.push({ offence, at: now });
+    // Nur die juengsten Eintraege behalten - sonst waechst das Feld unbegrenzt
+    // und landet in voller Laenge in jedem Spielstand.
+    if (player.criminalRecord.length > CRIMINAL_RECORD_LIMIT) {
+      player.criminalRecord = player.criminalRecord.slice(-CRIMINAL_RECORD_LIMIT);
+    }
+
+    // -1: die gerade eingetragene Tat soll die eigene Strafe nicht schon verlaengern
+    const priors = Math.max(0, player.criminalRecord.length - 1);
+    const duration = Math.min(
+      JAIL_MAX_DURATION_MS,
+      JAIL_DURATION_MS + priors * JAIL_EXTRA_PER_RECORD_MS,
+    );
+
+    this.forceExitVehicle(player); // nicht "im Auto sitzend" im Gefaengnis landen
+    player.jailedUntil = now + duration;
+    player.wanted = 0;
+    player.position = { x: JAIL_POSITION.x, y: JAIL_POSITION.y };
+    player.velocity = { x: 0, y: 0 };
+    return duration;
+  }
+
+  /** Was kostet es gerade, sich freizukaufen? Steigt mit Restzeit und Vorstrafen. */
+  bailCost(player) {
+    const remainingMs = Math.max(0, (player.jailedUntil || 0) - Date.now());
+    return Math.round(
+      BAIL_BASE_COST
+      + (remainingMs / 1000) * BAIL_COST_PER_SECOND
+      + player.criminalRecord.length * BAIL_COST_PER_RECORD,
+    );
+  }
+
+  /** Kaution stellen: sofort raus. Die Vorstrafe bleibt - man kauft Zeit, keine Unschuld. */
+  postBail(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (!this.isJailed(player)) return { ok: false, reason: 'not_jailed' };
+
+    const cost = this.bailCost(player);
+    if (player.cash < cost) return { ok: false, reason: 'insufficient_funds' };
+
+    player.cash -= cost;
+    player.jailedUntil = null;
+    player.position = { x: SPAWN_POSITION.x, y: SPAWN_POSITION.y };
+    player.velocity = { x: 0, y: 0 };
+    return { ok: true, cost, player };
+  }
+
+  /** Was kostet die Bestechung gerade? */
+  bribeCost(player) {
+    return Math.round(Math.max(1, player.wanted) * BRIBE_COST_PER_WANTED);
+  }
+
+  /**
+   * Bestechung: schnell und ueberall moeglich, aber illegal. Geht sie schief,
+   * steht man schlechter da als vorher - der Preis dafuer, sich den Weg zur
+   * Kanzlei zu sparen.
+   */
+  bribePolice(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.wanted <= 0) return { ok: false, reason: 'not_wanted' };
+
+    const now = Date.now();
+    if (now - (player.lastBribeAt || 0) < BRIBE_COOLDOWN_MS) return { ok: false, reason: 'cooldown' };
+
+    const cost = this.bribeCost(player);
+    if (player.cash < cost) return { ok: false, reason: 'insufficient_funds' };
+
+    player.lastBribeAt = now;
+    player.cash -= cost;
+
+    if (Math.random() >= BRIBE_SUCCESS_CHANCE) {
+      // Fehlschlag: Geld weg UND hoehere Fahndung. Kein Gefaengnis - sonst waere
+      // die Bestechung schlechter als gar nichts zu tun.
+      player.wanted += BRIBE_WANTED_ON_FAILURE;
+      player.lastCrimeAt = now;
+      return { ok: true, success: false, cost, player };
+    }
+
+    player.wanted = Math.max(0, player.wanted - BRIBE_WANTED_REDUCTION);
+    return { ok: true, success: true, cost, player };
+  }
+
+  /** Was kostet der Anwalt gerade? Steigt mit der Zahl der Vorstrafen. */
+  lawyerCost(player) {
+    return Math.round(LAWYER_BASE_COST + player.criminalRecord.length * LAWYER_COST_PER_RECORD);
+  }
+
+  /**
+   * Anwalt beauftragen: setzt die Fahndung auf 0 UND raeumt die Vorstrafen ab -
+   * damit sinkt auch die kuenftige Haftdauer wieder auf das Grundmass.
+   * Teuer und ortsgebunden, dafuer ohne Risiko.
+   */
+  hireLawyer(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.wanted <= 0 && player.criminalRecord.length === 0) {
+      return { ok: false, reason: 'nothing_to_clear' };
+    }
+
+    const cost = this.lawyerCost(player);
+    if (player.cash < cost) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'hireLawyer');
+    if (away) return away;
+
+    const cleared = player.criminalRecord.length;
+    player.cash -= cost;
+    player.wanted = 0;
+    player.criminalRecord = [];
+    return { ok: true, cost, cleared, player };
+  }
+
+  /**
    * Einbruch in eine fremde Immobilie. Greift den ERTRAGSSTROM an, nicht das
    * gespeicherte Geld: die Immobilie wirft fuer BURGLARY_DISABLE_MS nichts mehr
    * ab, und genau dieser entgangene Ertrag ist die Beute.
@@ -1719,12 +1867,8 @@ class GameWorld {
     player.wanted += ROBBERY_WANTED_ON_ATTEMPT;
 
     if (Math.random() >= ROBBERY_SUCCESS_CHANCE) {
-      // Fehlschlag: direkt ins Gefaengnis. forceExitVehicle, sonst saesse man
-      // "im Auto" in der Zelle - dasselbe Problem wie bei einer Verhaftung.
-      this.forceExitVehicle(player);
-      player.jailedUntil = now + JAIL_DURATION_MS;
-      player.position = { x: JAIL_POSITION.x, y: JAIL_POSITION.y };
-      player.velocity = { x: 0, y: 0 };
+      // Fehlschlag: direkt ins Gefaengnis, ueber denselben Weg wie eine Verhaftung.
+      this.jailPlayer(player, 'bank_robbery');
       return { ok: true, success: false, jailed: true, player };
     }
 
@@ -1771,13 +1915,9 @@ class GameWorld {
         cop.velocity.y = (dy / len) * POLICE_CHASE_SPEED;
 
         if (bestDist <= POLICE_CATCH_RANGE) {
-          this.forceExitVehicle(target); // nicht "im Auto sitzend" im Gefaengnis landen
-          target.jailedUntil = now + JAIL_DURATION_MS;
-          target.wanted = 0;
-          target.position.x = JAIL_POSITION.x;
-          target.position.y = JAIL_POSITION.y;
-          target.velocity.x = 0;
-          target.velocity.y = 0;
+          // Erledigt Aussteigen, Haftdauer (steigt mit Vorstrafen), Position
+          // und den Eintrag ins Vorstrafenregister an einer Stelle.
+          this.jailPlayer(target, 'arrest');
           cop.targetPlayerId = null;
           cop.velocity.x = 0;
           cop.velocity.y = 0;
