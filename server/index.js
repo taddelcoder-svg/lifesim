@@ -241,6 +241,19 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // --- Gesundheit & Freizeit: Krankenhaus, Fitnessstudio ---
+
+    if (['treatHealth', 'relax'].includes(msg.type) && ws.playerId != null) {
+      const result = world[msg.type](ws.playerId);
+      if (result.ok) {
+        send(ws, { type: 'wellbeingAction', action: msg.type, ...result });
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
+      }
+      return;
+    }
+
     // --- Bank: Sparkonto und Kredite ---
 
     if (msg.type === 'requestBank' && ws.playerId != null) {
@@ -723,6 +736,7 @@ setInterval(() => {
   lastSlowTick = now;
 
   world.ageConnectedPlayers(dt);
+  world.applyHealthAndHappinessDecay();
   world.removeStalePlayers();
 
   // Gehaelter BEWUSST vor der Vermoegenssteuer, damit das frische Gehalt
