@@ -268,10 +268,19 @@ class Renderer {
       ];
       const model = this.cloneModel(modelName, footprint);
 
+      // Wie bei den Immobilien: die Beschriftungshoehe aus der TATSAECHLICHEN
+      // Modellhoehe messen statt aus der Grundflaeche zu schaetzen. Vorher stand
+      // hier footprint * 1.7 (~12.7 Einheiten) - das hat mit der echten Hoehe des
+      // Gebaeudes (ca. 3-4 Einheiten) nichts zu tun und liess die Schrift weit
+      // ueber dem Dach schweben.
+      let labelHeight;
+
       if (model) {
         model.position.set(px, 0, pz);
         this.scene.add(model);
         this.cityMeshes.push(model);
+        const box = new THREE.Box3().setFromObject(model);
+        labelHeight = box.max.y + 0.5;
       } else {
         // Ohne geladene Modelle: einfacher Quader, damit der Ort trotzdem steht
         // und nicht bloss eine bemalte Flaeche ist.
@@ -284,10 +293,14 @@ class Renderer {
         mesh.receiveShadow = true;
         this.scene.add(mesh);
         this.cityMeshes.push(mesh);
+        labelHeight = h + 0.5;
       }
 
-      const label = this.createLabelSprite(`${place.icon} ${place.name}`);
-      label.position.set(px, footprint * 1.7, pz);
+      // Groesser als die Standardbeschriftung (2.2 x 0.55): die Namen sind laenger
+      // ("🏛️ Gewerbeamt") und sollen aus der Entfernung noch lesbar sein, aus der
+      // man einen Ort ueberhaupt erst als Ziel anlaeuft.
+      const label = this.createLabelSprite(`${place.icon} ${place.name}`, [3.4, 0.85]);
+      label.position.set(px, labelHeight, pz);
       this.scene.add(label);
       this.cityMeshes.push(label);
     }
@@ -621,7 +634,7 @@ class Renderer {
     };
   }
 
-  createLabelSprite(text) {
+  createLabelSprite(text, scale) {
     const canvasEl = document.createElement('canvas');
     canvasEl.width = 256;
     canvasEl.height = 64;
@@ -634,7 +647,8 @@ class Renderer {
     const texture = new THREE.CanvasTexture(canvasEl);
     const material = new THREE.SpriteMaterial({ map: texture, depthTest: false });
     const sprite = new THREE.Sprite(material);
-    sprite.scale.set(2.2, 0.55, 1);
+    const [sx, sy] = scale || [2.2, 0.55];
+    sprite.scale.set(sx, sy, 1);
     sprite.userData.canvasEl = canvasEl;
     sprite.userData.texture = texture;
     return sprite;
