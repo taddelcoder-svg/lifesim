@@ -935,9 +935,14 @@
         const burgledText = burgled
           ? ` · <span style="color:#e08080">🔓 ausgeraubt, kein Ertrag (${Math.ceil((prop.disabledUntil - Date.now()) / 1000)}s)</span>`
           : '';
+        // Schutzstatus ist fuer ALLE sichtbar - das ist der Punkt: eine
+        // Alarmanlage schreckt nur ab, wenn potenzielle Einbrecher sie sehen.
+        const protectText =
+          (prop.hasAlarm ? ' · <span style="color:#8fd8a0">🔔 gesichert</span>' : '') +
+          (prop.insured ? ' · <span style="color:#8fb0d8">🛡️ versichert</span>' : '');
         info.innerHTML =
           `<div class="market-item-name">${prop.name}</div>` +
-          `<div class="market-item-detail">$${prop.price} · +${prop.incomePerTick}/-${prop.maintenancePerTick} pro Tick · ${ownerText}${burgledText}</div>`;
+          `<div class="market-item-detail">$${prop.price} · +${prop.incomePerTick}/-${prop.maintenancePerTick} pro Tick · ${ownerText}${burgledText}${protectText}</div>`;
         row.appendChild(info);
 
         const btn = document.createElement('button');
@@ -962,6 +967,25 @@
           });
         }
         row.appendChild(btn);
+
+        // Schutz: nur beim eigenen Besitz. Preise stehen im Knopf, damit man
+        // vor dem Weg zum Maklerbuero weiss, was es kostet.
+        if (isMine) {
+          if (!prop.hasAlarm) {
+            const alarmBtn = document.createElement('button');
+            alarmBtn.className = 'market-btn-small';
+            alarmBtn.textContent = `🔔 Alarm $${Math.max(1, Math.round(prop.incomePerTick * 4))}`;
+            alarmBtn.addEventListener('click', () => net.buyAlarm(prop.id));
+            row.appendChild(alarmBtn);
+          }
+          const insBtn = document.createElement('button');
+          insBtn.className = 'market-btn-small' + (prop.insured ? ' ghost' : '');
+          insBtn.textContent = prop.insured
+            ? '🛡️ kündigen'
+            : `🛡️ Police $${Math.max(1, Math.round(prop.incomePerTick * 0.12))}/Tick`;
+          insBtn.addEventListener('click', () => net.setInsurance(prop.id, !prop.insured));
+          row.appendChild(insBtn);
+        }
 
         // Einbruch: nur bei fremden, bereits verkauften Objekten sinnvoll.
         // Die Reichweitenpruefung macht der Server - hier steht der Knopf immer,
@@ -1128,6 +1152,8 @@
           own_property: 'In dein eigenes Objekt einbrechen bringt nichts.',
           not_owned: 'Das Objekt gehört niemandem — da gibt es nichts zu holen.',
           already_burgled: 'Da wurde gerade schon eingebrochen.',
+          already_protected: 'Das ist bereits geschützt.',
+          not_insured: 'Dafür besteht keine Versicherung.',
           vault_empty: 'Im Tresor liegt zu wenig — der Überfall lohnt sich nicht.',
           jailed: 'Aus dem Gefängnis geht das nicht.',
           too_many_vehicles: 'Du besitzt schon genug Fahrzeuge.',
@@ -1890,11 +1916,27 @@
       net.onBurglaryResult = (msg) => {
         showToast(msg.success
           ? `🔓 Einbruch in "${msg.propertyName}" geglückt: +$${msg.loot}`
-          : `🔓 Einbruch in "${msg.propertyName}" fehlgeschlagen — du wirst gesucht!`);
+          : msg.alarmTriggered
+            ? `🔔 Alarmanlage in "${msg.propertyName}" ausgelöst — die Polizei ist alarmiert!`
+            : `🔓 Einbruch in "${msg.propertyName}" fehlgeschlagen — du wirst gesucht!`);
         if (marketPanel.style.display !== 'none') renderMarketPanel();
       };
       net.onBurgledFrom = (msg) => {
-        showToast(`🚨 Bei dir wurde eingebrochen: "${msg.propertyName}" wirft vorerst nichts ab (-$${msg.loot}).`);
+        const comp = msg.payout > 0 ? ` Die Versicherung zahlt $${msg.payout}.` : '';
+        showToast(`🚨 Bei dir wurde eingebrochen: "${msg.propertyName}" wirft vorerst nichts ab (-$${msg.loot}).${comp}`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onAlarmTriggered = (msg) => {
+        showToast(`🔔 Alarm bei "${msg.propertyName}" — ein Einbruch wurde verhindert.`);
+      };
+      net.onProtectionChanged = (msg) => {
+        if (msg.action === 'buyAlarm') {
+          showToast(`🔔 Alarmanlage in "${msg.propertyName}" eingebaut für $${msg.cost}.`);
+        } else {
+          showToast(msg.insured
+            ? `🛡️ "${msg.propertyName}" versichert — $${msg.premium} pro Tick.`
+            : `🛡️ Versicherung für "${msg.propertyName}" gekündigt.`);
+        }
         if (marketPanel.style.display !== 'none') renderMarketPanel();
       };
       net.onRobberyResult = (msg) => {
