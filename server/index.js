@@ -478,6 +478,52 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'burgle' && ws.playerId != null) {
+      const result = world.attemptBurglary(ws.playerId, msg.propertyId);
+      if (result.ok) {
+        sendToPlayer(result.burglar.id, {
+          type: 'burglaryResult',
+          success: result.success,
+          loot: result.loot || 0,
+          propertyName: result.property.name,
+        });
+        if (result.success && result.owner) {
+          sendToPlayer(result.owner.id, {
+            type: 'burgledFrom',
+            propertyName: result.property.name,
+            loot: result.loot,
+          });
+        }
+        // Der Ertragsausfall gehoert in den Wirtschaftszustand, damit ALLE
+        // sehen, dass das Objekt gerade nichts abwirft - auch die, die es
+        // gerade kaufen wollten.
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.burglar)] });
+      } else {
+        send(ws, { type: 'actionError', action: 'burgle', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'robBank' && ws.playerId != null) {
+      const result = world.attemptBankRobbery(ws.playerId);
+      if (result.ok) {
+        sendToPlayer(result.player.id, {
+          type: 'robberyResult',
+          success: result.success,
+          loot: result.loot || 0,
+          jailed: !!result.jailed,
+        });
+        if (result.jailed) {
+          sendToPlayer(result.player.id, { type: 'jailed', until: result.player.jailedUntil });
+        }
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
+      } else {
+        send(ws, { type: 'actionError', action: 'robBank', reason: result.reason });
+      }
+      return;
+    }
+
     // --- Soziales: Chat, Freundschaften, Rangliste ---
 
     if (msg.type === 'chatMessage' && ws.playerId != null) {
