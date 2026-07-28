@@ -64,6 +64,7 @@ function createPlayer(name, token) {
     lastStealAttemptAt: 0, // Cooldown gegen Diebstahl-Spam
     lastBurglaryAt: 0,     // Cooldown fuer Einbrueche (siehe crime.js)
     lastRobberyAt: 0,      // Cooldown fuer Bankueberfaelle (siehe crime.js)
+    lastBribeAt: 0,        // Cooldown fuer Bestechungsversuche
     lastGymAt: 0,          // Cooldown gegen Fitnessstudio-Spam (siehe wellbeing.js)
     friends: [],           // IDs befreundeter Spieler (nie Teil von serializePublic - privat)
     spouseId: null,        // Ehepartner-ID, oder null
@@ -96,6 +97,10 @@ function serializePublic(player) {
     enrolledCourse: player.enrolledCourse,
     courseProgress: player.courseProgress,
     wanted: player.wanted,
+    // Nur die ANZAHL, nicht die Eintraege selbst: die Oberflaeche braucht sie
+    // fuer die Preisanzeige von Kaution und Anwalt, und die Haftdauer haengt
+    // sichtbar daran. Die Tatenliste bleibt privat.
+    criminalRecordCount: (player.criminalRecord || []).length,
     x: player.position.x,
     y: player.position.y,
     connected: player.connected,
