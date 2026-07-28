@@ -403,6 +403,9 @@
     <h4>🏥 Gesundheit &amp; Freizeit</h4>
     <div id="wellbeingActions"></div>
 
+    <h4>⚖️ Rechtliches</h4>
+    <div id="legalActions"></div>
+
     <h4>🚗 Autohaus</h4>
     <div id="dealershipList"></div>
 
@@ -441,6 +444,7 @@
   <div id="jailOverlay">
     <h2>🚔 Im Gefängnis</h2>
     <p id="jailHint">Warte, bis die Haftzeit abgelaufen ist...</p>
+    <button class="market-btn-small danger" id="bailBtn">Kaution stellen</button>
   </div>
 
   <canvas id="gameCanvas"></canvas>
@@ -898,6 +902,7 @@
       if (!net) return;
 
       renderWellbeingSection();
+      renderLegalSection();
       renderDealershipSection();
       renderBankSection();
       renderJobSection();
@@ -1117,6 +1122,9 @@
           vault_empty: 'Im Tresor liegt zu wenig — der Überfall lohnt sich nicht.',
           jailed: 'Aus dem Gefängnis geht das nicht.',
           too_many_vehicles: 'Du besitzt schon genug Fahrzeuge.',
+          not_jailed: 'Du sitzt gar nicht.',
+          not_wanted: 'Es wird gar nicht nach dir gefahndet.',
+          nothing_to_clear: 'Da gibt es nichts zu löschen — deine Weste ist sauber.',
           fleet_full: 'Das Autohaus ist ausverkauft — es fahren zu viele Autos herum.',
           owned_by_other: 'Das Fahrzeug gehört jemand anderem.',
           dead: 'Das geht gerade nicht.',
@@ -1168,16 +1176,59 @@
       net.onStolenFrom = (msg) => {
         showToast(`${msg.thiefName} hat dir $${msg.amount} gestohlen!`);
       };
-      net.onJailed = () => {
+      net.onJailed = (msg) => {
         jailOverlay.style.display = 'flex';
+        jailedUntil = msg && msg.until ? msg.until : 0;
       };
       net.onReleased = () => {
         jailOverlay.style.display = 'none';
+        jailedUntil = 0;
         showToast('Aus dem Gefängnis entlassen.');
+      };
+      net.onLegalAction = (msg) => {
+        if (msg.action === 'postBail') {
+          jailOverlay.style.display = 'none';
+          jailedUntil = 0;
+          showToast(`Kaution gestellt: $${msg.cost}. Die Vorstrafe bleibt.`);
+        } else if (msg.action === 'bribePolice') {
+          showToast(msg.success
+            ? `💵 Bestechung geglückt für $${msg.cost} — die Fahndung sinkt.`
+            : `💵 Bestechung fehlgeschlagen: $${msg.cost} weg, und sie suchen dich jetzt stärker.`);
+        } else {
+          showToast(`⚖️ Anwalt bezahlt ($${msg.cost}) — Fahndung und ${msg.cleared} Vorstrafen gelöscht.`);
+        }
+        if (marketPanel.style.display !== 'none') renderLegalSection();
       };
     }
 
     const jailOverlay = document.getElementById('jailOverlay');
+    const jailHintEl = document.getElementById('jailHint');
+    const bailBtn = document.getElementById('bailBtn');
+
+    // Wann endet die Haft? Kommt mit der 'jailed'-Nachricht; daraus berechnet
+    // sich die Restzeit und damit der Kautionspreis.
+    let jailedUntil = 0;
+
+    // MUESSEN mit server/crime.js uebereinstimmen - nur fuer die Anzeige.
+    const BAIL_BASE_COST_HINT = 150;
+    const BAIL_COST_PER_SECOND_HINT = 25;
+    const BAIL_COST_PER_RECORD_HINT = 80;
+
+    bailBtn.addEventListener('click', () => net.postBail());
+
+    // Der Preis faellt mit jeder Sekunde, die man schon abgesessen hat - deshalb
+    // laufend nachrechnen, sonst steht dort ein Betrag, der nicht mehr stimmt.
+    setInterval(() => {
+      if (jailOverlay.style.display === 'none' || !net || !net.localPlayer) return;
+      const remainingS = Math.max(0, (jailedUntil - Date.now()) / 1000);
+      const record = net.localPlayer.criminalRecordCount ?? 0;
+      const cost = Math.round(
+        BAIL_BASE_COST_HINT + remainingS * BAIL_COST_PER_SECOND_HINT + record * BAIL_COST_PER_RECORD_HINT
+      );
+      jailHintEl.textContent = `Noch ${Math.ceil(remainingS)}s. Vorstrafen: ${record}`;
+      bailBtn.textContent = `Kaution stellen ($${cost})`;
+      bailBtn.disabled = (net.localPlayer.cash ?? 0) < cost;
+    }, 500);
     const stealBtn = document.getElementById('stealBtn');
     const STEAL_RANGE_HINT = 100; // rein visuelle Naeherung - MUSS mit server/crime.js (STEAL_RANGE) uebereinstimmen
 
@@ -1620,6 +1671,64 @@
         row.appendChild(btn);
 
         wellbeingActionsEl.appendChild(row);
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Rechtliches: Bestechung und Anwalt
+    // ---------------------------------------------------------------------
+    const legalActionsEl = document.getElementById('legalActions');
+
+    // MUESSEN mit server/crime.js uebereinstimmen. Dienen NUR der Preisanzeige -
+    // gerechnet und abgelehnt wird ausschliesslich serverseitig.
+    const BRIBE_COST_PER_WANTED_HINT = 200;
+    const LAWYER_BASE_COST_HINT = 400;
+    const LAWYER_COST_PER_RECORD_HINT = 250;
+
+    function renderLegalSection() {
+      if (!net || !net.localPlayer) return;
+      const me = net.localPlayer;
+      const wanted = me.wanted ?? 0;
+      const record = me.criminalRecordCount ?? 0;
+
+      legalActionsEl.innerHTML = '';
+
+      const head = document.createElement('div');
+      head.className = 'market-item-detail';
+      head.innerHTML = `Fahndung: ${wanted} · Vorstrafen: ${record}` +
+        (record > 0 ? ` <span style="color:#e08080">(längere Haft)</span>` : '');
+      legalActionsEl.appendChild(head);
+
+      const bribeCost = Math.max(1, wanted) * BRIBE_COST_PER_WANTED_HINT;
+      const lawyerCost = LAWYER_BASE_COST_HINT + record * LAWYER_COST_PER_RECORD_HINT;
+
+      const rows = [
+        {
+          name: `💵 Bestechen ($${bribeCost})`,
+          detail: 'Sofort und überall — aber nur gut jede zweite gelingt, sonst wird es schlimmer',
+          disabled: wanted <= 0,
+          fn: () => net.bribePolice(),
+        },
+        {
+          name: `⚖️ Anwalt ($${lawyerCost})`,
+          detail: 'Löscht Fahndung und Vorstrafen, ohne Risiko — nur in der Kanzlei',
+          disabled: wanted <= 0 && record === 0,
+          fn: () => net.hireLawyer(),
+        },
+      ];
+
+      for (const r of rows) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = `<div><div class="market-item-name">${r.name}</div>` +
+          `<div class="market-item-detail">${r.detail}</div></div>`;
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small';
+        btn.textContent = r.disabled ? '—' : 'Los';
+        btn.disabled = r.disabled;
+        if (!r.disabled) btn.addEventListener('click', r.fn);
+        row.appendChild(btn);
+        legalActionsEl.appendChild(row);
       }
     }
 
