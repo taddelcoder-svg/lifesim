@@ -349,6 +349,12 @@ class NetClient {
         break;
       }
 
+      case 'friendList': {
+        this.myFriends = msg.friends || [];
+        if (this.onFriendResolved) this.onFriendResolved(msg);
+        break;
+      }
+
       case 'friendResolved': {
         this.incomingFriendRequests.delete(msg.requestId);
         if (msg.accepted && msg.otherPlayerId != null && !this.myFriends.includes(msg.otherPlayerId)) {
