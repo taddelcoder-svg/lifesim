@@ -104,6 +104,17 @@ const PLACES = [
     actions: ['relax'],
   },
   {
+    id: 'lawoffice',
+    name: 'Anwaltskanzlei',
+    dative: 'zur Anwaltskanzlei',
+    icon: '⚖️',
+    // Absichtlich weit vom Startpunkt (~1170): der legale Weg aus der Fahndung
+    // verlangt eine Fahrt quer durch die Stadt, mit der Polizei im Nacken. Genau
+    // das ist der Gegenwert zur schnellen, aber riskanten Bestechung.
+    position: { x: 1400, y: 1800 },
+    actions: ['hireLawyer'],
+  },
+  {
     id: 'dealership',
     name: 'Autohaus',
     dative: 'zum Autohaus',
