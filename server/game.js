@@ -51,6 +51,13 @@ const {
 } = require('./crime');
 const { MAX_CHAT_LENGTH, CHAT_HISTORY_LIMIT, LEADERBOARD_LIMIT } = require('./social');
 const {
+  PLACES,
+  findPlaceForAction,
+  isPlayerAtPlace,
+  buildPlaceCollisionRects,
+  buildPlacesCatalog,
+} = require('./places');
+const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
   CHILD_COST,
@@ -260,11 +267,18 @@ class GameWorld {
     // Stadtaufbau: Strassen + Deko-Gebaeude. Die kaufbaren Immobilien werden dabei
     // ausgespart und danach als eigene Kollisionsflaechen ergaenzt - so laeuft man
     // durch KEIN Gebaeude hindurch, egal welcher Art.
-    this.cityLayout = buildCityLayout(PROPERTIES.map((p) => p.position));
+    // Die Ortsgebaeude (Bank, Uni, ...) werden genauso behandelt wie die
+    // Immobilien: ihr Block bleibt von Deko frei, damit nicht zwei Gebaeude
+    // ineinander stehen, und danach kommen sie als eigene Kollisionsflaeche dazu.
+    this.cityLayout = buildCityLayout([
+      ...PROPERTIES.map((p) => p.position),
+      ...PLACES.map((p) => p.position),
+    ]);
 
     this.collisionRects = [
       ...this.cityLayout.buildings.map((b) => ({ x: b.x, y: b.y, w: b.w, d: b.d })),
       ...PROPERTIES.map((p) => ({ x: p.position.x, y: p.position.y, w: 120, d: 120 })),
+      ...buildPlaceCollisionRects(),
     ];
 
     const vehicleInit = createInitialVehicles();
@@ -279,7 +293,25 @@ class GameWorld {
       buildings: this.cityLayout.buildings,
       collisionRects: this.collisionRects,
       collisionRadius: PLAYER_COLLISION_RADIUS,
+      places: buildPlacesCatalog(),
     };
+  }
+
+  /**
+   * Prueft die Ortsbindung einer Aktion. Rueckgabe null = erlaubt (entweder ist
+   * die Aktion ortsungebunden oder der Spieler steht nah genug), sonst das
+   * fertige Fehlerobjekt zum Zurueckgeben.
+   *
+   * Es wird bewusst NUR 'too_far' gemeldet, ohne Ortsnamen: der Client kennt den
+   * Ortskatalog aus dem worldLayout und schlaegt den Namen selbst nach. So muss
+   * kein einziges der rund 15 actionError-Sende-Statements in index.js angefasst
+   * werden - die Fehlermeldung bleibt trotzdem konkret.
+   */
+  checkPlaceRequirement(player, action) {
+    const place = findPlaceForAction(action);
+    if (!place) return null;
+    if (isPlayerAtPlace(player, place)) return null;
+    return { ok: false, reason: 'too_far', placeId: place.id };
   }
 
   /** Liegt diese Position in einem Gebaeude? Genutzt beim Laden alter Spielstaende. */
@@ -841,6 +873,10 @@ class GameWorld {
     if (!next) return { ok: false, reason: 'max_level' };
     if (player.cash < next.upgradeCost) return { ok: false, reason: 'insufficient_funds' };
 
+    const away = this.checkPlaceRequirement(player, 'upgradeCompany');
+    if (away) return away;
+
+
     player.cash -= next.upgradeCost;
     company.level = next.level;
     return { ok: true, company, newLevel: next.level, cost: next.upgradeCost };
@@ -964,6 +1000,9 @@ class GameWorld {
     if (property.ownerId) return { ok: false, reason: 'already_owned' };
     if (player.cash < property.price) return { ok: false, reason: 'insufficient_funds' };
 
+    const away = this.checkPlaceRequirement(player, 'buyProperty');
+    if (away) return away;
+
     player.cash -= property.price;
     property.ownerId = playerId;
     return { ok: true, property };
@@ -976,6 +1015,9 @@ class GameWorld {
     if (!player || !property) return { ok: false, reason: 'not_found' };
     if (property.ownerId !== playerId) return { ok: false, reason: 'not_owner' };
 
+    const away = this.checkPlaceRequirement(player, 'sellProperty');
+    if (away) return away;
+
     const refund = Math.round(property.price * PROPERTY_SELL_BACK_RATIO);
     player.cash += refund;
     property.ownerId = null;
@@ -987,6 +1029,9 @@ class GameWorld {
     const player = this.players.get(playerId);
     if (!player) return { ok: false, reason: 'not_found' };
     if (player.cash < COMPANY_FOUNDING_COST) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'foundCompany');
+    if (away) return away;
 
     player.cash -= COMPANY_FOUNDING_COST;
     const company = {
@@ -1129,6 +1174,9 @@ class GameWorld {
     if (!Number.isFinite(amt) || amt <= 0) return { ok: false, reason: 'invalid_amount' };
     if (player.cash < amt) return { ok: false, reason: 'insufficient_funds' };
 
+    const away = this.checkPlaceRequirement(player, 'deposit');
+    if (away) return away;
+
     player.cash -= amt;
     player.bank += amt;
     return { ok: true, amount: amt };
@@ -1141,6 +1189,9 @@ class GameWorld {
     const amt = Math.floor(Number(amount));
     if (!Number.isFinite(amt) || amt <= 0) return { ok: false, reason: 'invalid_amount' };
     if (player.bank < amt) return { ok: false, reason: 'insufficient_savings' };
+
+    const away = this.checkPlaceRequirement(player, 'withdraw');
+    if (away) return away;
 
     player.bank -= amt;
     player.cash += amt;
@@ -1156,6 +1207,9 @@ class GameWorld {
 
     const limit = this.creditLimit(player);
     if (player.debt + amt > limit) return { ok: false, reason: 'over_credit_limit', limit };
+
+    const away = this.checkPlaceRequirement(player, 'takeLoan');
+    if (away) return away;
 
     player.debt += amt;
     player.cash += amt;
@@ -1761,6 +1815,9 @@ class GameWorld {
     if (player.smarts < def.minSmarts) return { ok: false, reason: 'not_smart_enough' };
     if (player.wanted > def.maxWanted) return { ok: false, reason: 'criminal_record' };
 
+    const away = this.checkPlaceRequirement(player, 'applyForJob');
+    if (away) return away;
+
     player.job = def.id;
     player.jobLevel = 0;
     player.jobXp = 0;
@@ -1853,6 +1910,9 @@ class GameWorld {
     }
 
     if (player.cash < course.cost) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'enrollInCourse');
+    if (away) return away;
 
     player.cash -= course.cost;
     player.enrolledCourse = course.id;
