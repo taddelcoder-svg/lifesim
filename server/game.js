@@ -126,6 +126,10 @@ const {
   VEHICLE_ENTER_RANGE,
   VEHICLE_THEFT_WANTED,
   VEHICLE_SPAWNS,
+  MAX_OWNED_VEHICLES,
+  MAX_VEHICLES,
+  newVehiclePrice,
+  dealershipSlot,
 } = require('./vehicles');
 
 const MAX_PLAYERS = 20;
@@ -361,7 +365,9 @@ class GameWorld {
 
   buildVehiclesState() {
     return {
-      catalog: buildVehicleCatalog(),
+      // Katalog enthaelt den Gebrauchtpreis; der Neuwagenaufschlag wird hier
+      // ergaenzt, damit die Oberflaeche beide Preise zeigen kann.
+      catalog: buildVehicleCatalog().map((t) => ({ ...t, newPrice: newVehiclePrice(t) })),
       vehicles: [...this.vehicles.values()].map((v) => ({
         id: v.id, typeId: v.typeId, x: v.x, y: v.y,
         ownerId: v.ownerId, driverId: v.driverId,
@@ -432,6 +438,11 @@ class GameWorld {
     const type = findVehicleType(vehicle.typeId);
     if (!type) return { ok: false, reason: 'not_found' };
     if (player.cash < type.price) return { ok: false, reason: 'insufficient_funds' };
+    // Gleiche Obergrenze wie beim Neuwagen: sonst koennte ein einzelner Spieler
+    // den kompletten Strassenbestand aufkaufen und alle anderen aussperren.
+    if (this.ownedVehicleCount(playerId) >= MAX_OWNED_VEHICLES) {
+      return { ok: false, reason: 'too_many_vehicles' };
+    }
 
     const dist = Math.hypot(player.position.x - vehicle.x, player.position.y - vehicle.y);
     if (player.vehicleId !== vehicle.id && dist > VEHICLE_ENTER_RANGE) {
@@ -541,12 +552,78 @@ class GameWorld {
    * strukturell gegen null.
    */
   releaseVehiclesOwnedBy(playerId) {
-    for (const vehicle of this.vehicles.values()) {
-      if (vehicle.ownerId === playerId) vehicle.ownerId = null;
+    for (const vehicle of [...this.vehicles.values()]) {
       // Auch den Fahrersitz raeumen: sonst gilt das Fahrzeug als besetzt und
       // niemand kann mehr einsteigen.
       if (vehicle.driverId === playerId) vehicle.driverId = null;
+      if (vehicle.ownerId !== playerId) continue;
+
+      if (vehicle.spawned) {
+        // Neuwagen aus dem Autohaus verschwinden mit ihrem Besitzer. Wuerden
+        // sie stattdessen frei im Bestand bleiben, wuechse die Flotte mit jeder
+        // Reinkarnation weiter, bis MAX_VEHICLES erreicht ist und niemand mehr
+        // einen Neuwagen kaufen koennte.
+        if (vehicle.driverId != null) {
+          // Faehrt gerade jemand anderes darin (geklaut), muss er erst raus -
+          // sonst zeigt dessen vehicleId auf ein geloeschtes Fahrzeug.
+          const driver = this.players.get(vehicle.driverId);
+          if (driver) this.forceExitVehicle(driver);
+        }
+        this.vehicles.delete(vehicle.id);
+      } else {
+        vehicle.ownerId = null; // feste Weltausstattung: zurueck in den Bestand
+      }
     }
+  }
+
+  /** Wie viele Fahrzeuge besitzt dieser Spieler gerade? */
+  ownedVehicleCount(playerId) {
+    let n = 0;
+    for (const v of this.vehicles.values()) if (v.ownerId === playerId) n++;
+    return n;
+  }
+
+  /**
+   * Kauft einen NEUWAGEN im Autohaus. Anders als buyVehicle (das ein bereits
+   * vorhandenes, herrenloses Fahrzeug uebernimmt) entsteht hier ein neues -
+   * das ist der einzige Weg, den Bestand ueberhaupt zu vergroessern.
+   */
+  buyNewVehicle(playerId, typeId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+
+    const type = findVehicleType(typeId);
+    if (!type) return { ok: false, reason: 'not_found' };
+
+    if (this.ownedVehicleCount(playerId) >= MAX_OWNED_VEHICLES) {
+      return { ok: false, reason: 'too_many_vehicles' };
+    }
+    if (this.vehicles.size >= MAX_VEHICLES) return { ok: false, reason: 'fleet_full' };
+
+    const price = newVehiclePrice(type);
+    if (player.cash < price) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'buyNewVehicle');
+    if (away) return away;
+
+    const place = PLACES.find((pl) => pl.id === 'dealership');
+    const slot = dealershipSlot(place.position, this.nextVehicleId);
+    const id = this.nextVehicleId++;
+    const vehicle = {
+      id,
+      typeId: type.id,
+      x: slot.x,
+      y: slot.y,
+      ownerId: playerId,
+      driverId: null,
+      spawned: true,
+    };
+    this.vehicles.set(id, vehicle);
+
+    player.cash -= price;
+    return { ok: true, vehicle, typeName: type.name, price };
   }
 
   /**
@@ -728,7 +805,9 @@ class GameWorld {
         x: v.x,
         y: v.y,
         ownerId: v.ownerId,
+        spawned: !!v.spawned,
       })),
+      nextVehicleId: this.nextVehicleId,
       companies: [...this.companies.values()],
       children: [...this.children.values()],
       chatLog: this.chatLog,
@@ -777,8 +856,16 @@ class GameWorld {
     if (typeof snapshot.nextPlayerId === 'number') setNextPlayerId(snapshot.nextPlayerId);
     if (Array.isArray(snapshot.vehicles)) {
       for (const saved of snapshot.vehicles) {
-        const vehicle = this.vehicles.get(saved.id);
-        if (!vehicle) continue; // Fahrzeugliste hat sich geaendert - stillschweigend ueberspringen
+        let vehicle = this.vehicles.get(saved.id);
+        if (!vehicle) {
+          // Neuwagen aus dem Autohaus existieren in einer frischen Welt nicht -
+          // createInitialVehicles legt nur die 8 festen an. Sie muessen beim
+          // Laden neu erzeugt werden, sonst waeren gekaufte Autos nach jedem
+          // Deploy verschwunden (genau der Fehler, den die Persistenz behebt).
+          if (!saved.spawned || !findVehicleType(saved.typeId)) continue;
+          vehicle = { id: saved.id, typeId: saved.typeId, x: 0, y: 0, ownerId: null, driverId: null, spawned: true };
+          this.vehicles.set(saved.id, vehicle);
+        }
         vehicle.ownerId = saved.ownerId ?? null;
         if (typeof saved.x === 'number') vehicle.x = saved.x;
         if (typeof saved.y === 'number') vehicle.y = saved.y;
@@ -795,6 +882,12 @@ class GameWorld {
         }
         vehicle.driverId = null; // s. o.: nach dem Neustart faehrt niemand
       }
+    }
+
+    // Muss NACH dem Wiederherstellen der Fahrzeuge kommen und hoch genug sein,
+    // sonst vergibt der Server eine bereits belegte Fahrzeug-ID neu.
+    if (typeof snapshot.nextVehicleId === 'number') {
+      this.nextVehicleId = Math.max(this.nextVehicleId, snapshot.nextVehicleId);
     }
 
     if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
