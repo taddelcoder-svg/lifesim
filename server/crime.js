@@ -59,6 +59,43 @@ const ROBBERY_WANTED_ON_ATTEMPT = 3;
 const ROBBERY_WANTED_ON_SUCCESS_BONUS = 2;
 const ROBBERY_JAIL_ON_FAILURE = true;  // Fehlschlag heisst SOFORT Gefaengnis, nicht nur Fahndung
 
+// --- Vorstrafen, Kaution, Bestechung, Anwalt ---
+//
+// Bisher war Kriminalitaet einseitig: der Taeter hatte drei Aktionen, konnte sein
+// Risiko aber in keiner Weise steuern. `wanted` liess sich nur durch Zeit,
+// Verhaftung oder Reinkarnation senken, und Gefaengnis waren 20 Sekunden reines
+// Zusehen.
+//
+// Ausserdem war `criminalRecord` ein totes Feld: angelegt, bei Reinkarnation
+// geleert, sonst nie beschrieben. Der Kommentar bei `maxWanted: 0` in jobs.js
+// ("Vorstrafen sind hier ein Ausschlusskriterium") zeigt, dass da mal etwas
+// geplant war. Jetzt sammelt das Feld tatsaechlich Eintraege - und je laenger
+// die Liste, desto haerter die Strafe.
+const JAIL_EXTRA_PER_RECORD_MS = 5000; // je Vorstrafe 5s laenger sitzen
+const JAIL_MAX_DURATION_MS = 60000;    // Deckel: sonst waeren Wiederholungstaeter irgendwann minutenlang weg
+const CRIMINAL_RECORD_LIMIT = 20;      // aeltere Eintraege fallen raus, damit die Liste nicht endlos waechst
+
+// Kaution: sofort raus, Preis steigt mit der RESTZEIT - frueh rauskaufen ist
+// teuer, kurz vor Ablauf fast umsonst. Dazu ein Aufschlag je Vorstrafe.
+const BAIL_BASE_COST = 150;
+const BAIL_COST_PER_SECOND = 25;
+const BAIL_COST_PER_RECORD = 80;
+
+// Bestechung: schnell, ueberall, aber illegal. Schlaegt sie fehl, wird es
+// deutlich schlimmer als vorher - das ist der Preis fuer die Bequemlichkeit
+// gegenueber dem Anwalt.
+const BRIBE_COST_PER_WANTED = 200;
+const BRIBE_SUCCESS_CHANCE = 0.55;
+const BRIBE_WANTED_REDUCTION = 2;
+const BRIBE_WANTED_ON_FAILURE = 2;
+const BRIBE_COOLDOWN_MS = 30000;
+
+// Anwalt: der legale Weg. Teuer, aber sicher und raeumt zusaetzlich die
+// Vorstrafen ab. Der Haken ist die Ortsbindung an die Kanzlei - man muss mit
+// laufender Fahndung quer durch die Stadt, vorbei an der Polizei.
+const LAWYER_BASE_COST = 400;
+const LAWYER_COST_PER_RECORD = 250;
+
 module.exports = {
   STEAL_RANGE,
   STEAL_COOLDOWN_MS,
@@ -82,6 +119,19 @@ module.exports = {
   ROBBERY_WANTED_ON_ATTEMPT,
   ROBBERY_WANTED_ON_SUCCESS_BONUS,
   ROBBERY_JAIL_ON_FAILURE,
+  JAIL_EXTRA_PER_RECORD_MS,
+  JAIL_MAX_DURATION_MS,
+  CRIMINAL_RECORD_LIMIT,
+  BAIL_BASE_COST,
+  BAIL_COST_PER_SECOND,
+  BAIL_COST_PER_RECORD,
+  BRIBE_COST_PER_WANTED,
+  BRIBE_SUCCESS_CHANCE,
+  BRIBE_WANTED_REDUCTION,
+  BRIBE_WANTED_ON_FAILURE,
+  BRIBE_COOLDOWN_MS,
+  LAWYER_BASE_COST,
+  LAWYER_COST_PER_RECORD,
   POLICE_COUNT,
   POLICE_CHASE_SPEED,
   POLICE_PATROL_SPEED,
