@@ -410,6 +410,9 @@
     <h4>🏥 Gesundheit &amp; Freizeit</h4>
     <div id="wellbeingActions"></div>
 
+    <h4>🗳️ Rathaus</h4>
+    <div id="politicsBox"></div>
+
     <h4>⚖️ Rechtliches</h4>
     <div id="legalActions"></div>
 
@@ -911,6 +914,7 @@
       if (!net) return;
 
       renderWellbeingSection();
+      renderPoliticsSection();
       renderLegalSection();
       renderDealershipSection();
       renderBankSection();
@@ -1153,6 +1157,11 @@
           not_owned: 'Das Objekt gehört niemandem — da gibt es nichts zu holen.',
           already_burgled: 'Da wurde gerade schon eingebrochen.',
           already_protected: 'Das ist bereits geschützt.',
+          no_election: 'Gerade findet keine Wahl statt.',
+          already_candidate: 'Du kandidierst bereits.',
+          not_a_candidate: 'Diese Person kandidiert nicht.',
+          not_mayor: 'Nur der Bürgermeister darf das.',
+          rate_out_of_range: 'Der Steuersatz liegt außerhalb des erlaubten Bereichs.',
           not_insured: 'Dafür besteht keine Versicherung.',
           vault_empty: 'Im Tresor liegt zu wenig — der Überfall lohnt sich nicht.',
           jailed: 'Aus dem Gefängnis geht das nicht.',
@@ -1736,6 +1745,86 @@
     }
 
     // ---------------------------------------------------------------------
+    // Politik: Wahl, Kandidatur, Steuersatz
+    // ---------------------------------------------------------------------
+    const politicsBoxEl = document.getElementById('politicsBox');
+
+    function renderPoliticsSection() {
+      if (!net || !net.localPlayer) return;
+      const pol = net.politics || {};
+      politicsBoxEl.innerHTML = '';
+
+      const secsLeft = Math.max(0, Math.round(((pol.phaseEndsAt || 0) - Date.now()) / 1000));
+      const head = document.createElement('div');
+      head.className = 'market-item-detail';
+      head.innerHTML = pol.phase === 'campaign'
+        ? `<b>Wahlkampf</b> — noch ${secsLeft}s · Steuer aktuell ${((pol.taxRate ?? 0.01) * 100).toFixed(2)}%`
+        : `<b>${escapeHtml(pol.mayorName || 'Niemand')}</b> regiert — noch ${secsLeft}s · ` +
+          `Steuer ${((pol.taxRate ?? 0.01) * 100).toFixed(2)}%`;
+      politicsBoxEl.appendChild(head);
+
+      if (pol.phase === 'campaign') {
+        const iAmCandidate = (pol.candidates || []).some((c) => c.playerId === net.myId);
+
+        if (!iAmCandidate) {
+          const row = document.createElement('div');
+          row.className = 'market-item';
+          row.innerHTML = '<div class="market-item-detail">Als Bürgermeister bestimmst du den Steuersatz — und bekommst einen Anteil davon.</div>';
+          const btn = document.createElement('button');
+          btn.className = 'market-btn-small';
+          btn.textContent = `Kandidieren $${pol.candidacyFee ?? 300}`;
+          btn.addEventListener('click', () => net.runForMayor());
+          row.appendChild(btn);
+          politicsBoxEl.appendChild(row);
+        }
+
+        if ((pol.candidates || []).length === 0) {
+          politicsBoxEl.innerHTML += '<div class="market-empty">Noch keine Kandidaten.</div>';
+        }
+        for (const cand of pol.candidates || []) {
+          const row = document.createElement('div');
+          row.className = 'market-item';
+          row.innerHTML = `<div><div class="market-item-name">${escapeHtml(cand.name)}</div>` +
+            `<div class="market-item-detail">${cand.votes} Stimme${cand.votes === 1 ? '' : 'n'}</div></div>`;
+          const btn = document.createElement('button');
+          btn.className = 'market-btn-small';
+          btn.textContent = 'Wählen';
+          btn.addEventListener('click', () => net.castVote(cand.playerId));
+          row.appendChild(btn);
+          politicsBoxEl.appendChild(row);
+        }
+      } else if (pol.mayorId === net.myId) {
+        // Nur der Amtsinhaber sieht den Regler. Die Grenzen kommen vom Server -
+        // hier bewusst NICHT hart eingetragen, damit sie nicht auseinanderlaufen.
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = '<div class="market-item-detail">Steuersatz festlegen (im Rathaus):</div>';
+        politicsBoxEl.appendChild(row);
+
+        const ctl = document.createElement('div');
+        ctl.className = 'market-item';
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = String((pol.taxRateMin ?? 0.004) * 1000);
+        slider.max = String((pol.taxRateMax ?? 0.025) * 1000);
+        slider.step = '1';
+        slider.value = String((pol.taxRate ?? 0.01) * 1000);
+        const label = document.createElement('span');
+        const show = () => { label.textContent = `${(Number(slider.value) / 10).toFixed(1)}%`; };
+        show();
+        slider.addEventListener('input', show);
+        const apply = document.createElement('button');
+        apply.className = 'market-btn-small';
+        apply.textContent = 'Festlegen';
+        apply.addEventListener('click', () => net.setTaxRate(Number(slider.value) / 1000));
+        ctl.appendChild(slider);
+        ctl.appendChild(label);
+        ctl.appendChild(apply);
+        politicsBoxEl.appendChild(ctl);
+      }
+    }
+
+    // ---------------------------------------------------------------------
     // Rechtliches: Bestechung und Anwalt
     // ---------------------------------------------------------------------
     const legalActionsEl = document.getElementById('legalActions');
@@ -1928,6 +2017,20 @@
       };
       net.onAlarmTriggered = (msg) => {
         showToast(`🔔 Alarm bei "${msg.propertyName}" — ein Einbruch wurde verhindert.`);
+      };
+      net.onPoliticsState = () => {
+        if (marketPanel.style.display !== 'none') renderPoliticsSection();
+      };
+      net.onPoliticsEvent = (msg) => {
+        if (msg.type === 'elected') showToast(`🗳️ ${msg.mayorName} ist neue/r Bürgermeister/in (${msg.votes} Stimmen).`);
+        else if (msg.type === 'no_mayor') showToast('🗳️ Keine Mehrheit — das Amt bleibt unbesetzt.');
+        else showToast('🗳️ Neuer Wahlkampf hat begonnen — Kandidaturen im Rathaus.');
+      };
+      net.onPoliticsAction = (msg) => {
+        if (msg.action === 'runForMayor') showToast(`🗳️ Kandidatur eingereicht ($${msg.fee}).`);
+        else if (msg.action === 'castVote') showToast('🗳️ Stimme abgegeben.');
+        else showToast(`🗳️ Steuersatz auf ${(msg.taxRate * 100).toFixed(2)}% gesetzt.`);
+        if (marketPanel.style.display !== 'none') renderPoliticsSection();
       };
       net.onProtectionChanged = (msg) => {
         if (msg.action === 'buyAlarm') {
