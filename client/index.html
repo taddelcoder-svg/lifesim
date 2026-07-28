@@ -1061,6 +1061,19 @@
         if (marketPanel.style.display !== 'none') renderMarketPanel();
       };
       net.onActionError = (msg) => {
+        // Ortsbindung: der Server meldet nur 'too_far'. Welcher Ort gemeint ist,
+        // steht im Ortskatalog aus dem worldLayout - so bleibt die Meldung
+        // konkret, ohne dass der Server sie mitschicken muss.
+        if (msg.reason === 'too_far') {
+          const target = net.placeForAction(msg.action);
+          if (target) {
+            const dist = target.distance != null ? ` (noch ${Math.round(target.distance)} m)` : '';
+            showToast(`Dafür musst du ${target.place.icon} ${target.place.dative}${dist}.`);
+            return;
+          }
+          showToast('Du bist zu weit weg.');
+          return;
+        }
         const reasons = {
           insufficient_funds: 'Nicht genug Geld.',
           already_owned: 'Bereits im Besitz von jemand anderem.',
