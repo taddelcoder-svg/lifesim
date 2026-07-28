@@ -478,6 +478,27 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // --- Rechtliches: Kaution, Bestechung, Anwalt ---
+
+    if (['postBail', 'bribePolice', 'hireLawyer'].includes(msg.type) && ws.playerId != null) {
+      const result = world[msg.type](ws.playerId);
+      if (result.ok) {
+        send(ws, {
+          type: 'legalAction',
+          action: msg.type,
+          cost: result.cost,
+          success: result.success !== false,
+          cleared: result.cleared,
+        });
+        // Fahndungslevel und Haftstatus sehen auch die anderen - die Rangliste
+        // sortiert danach, und die Polizei-Anzeige haengt daran.
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
+      } else {
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
+      }
+      return;
+    }
+
     if (msg.type === 'buyNewVehicle' && ws.playerId != null) {
       const result = world.buyNewVehicle(ws.playerId, msg.typeId);
       if (result.ok) {
