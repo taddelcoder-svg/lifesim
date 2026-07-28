@@ -125,6 +125,7 @@ const {
   buildVehicleCatalog,
   VEHICLE_ENTER_RANGE,
   VEHICLE_THEFT_WANTED,
+  VEHICLE_SPAWNS,
 } = require('./vehicles');
 
 const MAX_PLAYERS = 20;
@@ -519,10 +520,32 @@ class GameWorld {
     const now = Date.now();
     for (const [id, player] of this.players) {
       if (!player.connected && now - player.lastSeen > RECONNECT_GRACE_MS) {
+        // Fahrzeuge VOR dem Loeschen freigeben, sonst zeigt vehicle.ownerId
+        // danach auf eine Spieler-ID, die es nicht mehr gibt: das Fahrzeug
+        // waere fuer alle Zeit weder kaufbar noch auffindbar.
+        this.releaseVehiclesOwnedBy(id);
         this.players.delete(id);
         this.tokenIndex.delete(player.token);
         this.lastBroadcastMovement.delete(id);
       }
+    }
+  }
+
+  /**
+   * Gibt alle Fahrzeuge eines Spielers zurueck in den freien Bestand.
+   *
+   * Es gibt nur 8 Fahrzeuge in der ganzen Welt, und sie werden nie nachgebildet.
+   * Jedes Fahrzeug, dessen Besitzer verschwindet, ohne dass der Besitz geloest
+   * wird, ist dauerhaft aus dem Spiel - bei 20 moeglichen Mitspielern und
+   * Reinkarnation als zentralem Wiederholungsmechanismus lief der Bestand so
+   * strukturell gegen null.
+   */
+  releaseVehiclesOwnedBy(playerId) {
+    for (const vehicle of this.vehicles.values()) {
+      if (vehicle.ownerId === playerId) vehicle.ownerId = null;
+      // Auch den Fahrersitz raeumen: sonst gilt das Fahrzeug als besetzt und
+      // niemand kann mehr einsteigen.
+      if (vehicle.driverId === playerId) vehicle.driverId = null;
     }
   }
 
@@ -694,6 +717,18 @@ class GameWorld {
         disabledUntil: p.disabledUntil || null,
       })),
       bankVault: this.bankVault,
+      // Fahrzeuge fehlten hier bisher komplett: Besitz und Standort gingen bei
+      // JEDEM Neustart verloren, also bei jedem Render-Deploy. Ein gekaufter
+      // Sportwagen ($6000) war damit nach dem naechsten Commit weg.
+      // driverId wird bewusst NICHT gespeichert - nach einem Neustart ist
+      // niemand verbunden, also sitzt auch niemand am Steuer.
+      vehicles: [...this.vehicles.values()].map((v) => ({
+        id: v.id,
+        typeId: v.typeId,
+        x: v.x,
+        y: v.y,
+        ownerId: v.ownerId,
+      })),
       companies: [...this.companies.values()],
       children: [...this.children.values()],
       chatLog: this.chatLog,
@@ -740,6 +775,28 @@ class GameWorld {
     }
 
     if (typeof snapshot.nextPlayerId === 'number') setNextPlayerId(snapshot.nextPlayerId);
+    if (Array.isArray(snapshot.vehicles)) {
+      for (const saved of snapshot.vehicles) {
+        const vehicle = this.vehicles.get(saved.id);
+        if (!vehicle) continue; // Fahrzeugliste hat sich geaendert - stillschweigend ueberspringen
+        vehicle.ownerId = saved.ownerId ?? null;
+        if (typeof saved.x === 'number') vehicle.x = saved.x;
+        if (typeof saved.y === 'number') vehicle.y = saved.y;
+        // Dieselbe Absicherung wie bei Spielerpositionen: hat ein Update die
+        // Stadt veraendert (neue Gebaeude), kann ein gespeicherter Standort
+        // jetzt IN einem Gebaeude liegen. Dann zurueck auf den urspruenglichen
+        // Parkplatz, statt das Fahrzeug unerreichbar in einer Wand zu lassen.
+        if (this.isPositionBlocked({ x: vehicle.x, y: vehicle.y })) {
+          const spawn = VEHICLE_SPAWNS.find((sp) => sp.typeId === vehicle.typeId);
+          if (spawn) {
+            vehicle.x = spawn.x;
+            vehicle.y = spawn.y;
+          }
+        }
+        vehicle.driverId = null; // s. o.: nach dem Neustart faehrt niemand
+      }
+    }
+
     if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
     if (typeof snapshot.nextCompanyId === 'number') this.nextCompanyId = snapshot.nextCompanyId;
     if (typeof snapshot.nextChildId === 'number') this.nextChildId = snapshot.nextChildId;
@@ -1947,6 +2004,11 @@ class GameWorld {
     player.jobLevel = 0;
     player.jobXp = 0;
     player.vehicleId = null;      // neues Leben startet zu Fuss
+    // ...und das alte Auto gehoert der alten Identitaet, nicht der neuen. Ohne
+    // diese Freigabe bliebe vehicle.ownerId auf dem Verstorbenen stehen und das
+    // Fahrzeug waere dauerhaft verloren - bei Reinkarnation als zentralem
+    // Mechanismus des Spiels waeren nach wenigen Sitzungen alle 8 Fahrzeuge weg.
+    this.releaseVehiclesOwnedBy(player.id);
     player.education = null;      // Abschluesse werden nicht vererbt
     player.enrolledCourse = null;
     player.courseProgress = 0;
