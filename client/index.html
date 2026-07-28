@@ -911,9 +911,15 @@
         const info = document.createElement('div');
         const isMine = prop.ownerId === net.myId;
         const ownerText = !prop.ownerId ? 'frei' : (isMine ? 'dir gehörend' : playerName(prop.ownerId) + ' gehörend');
+        // Nach einem Einbruch faellt der Ertrag zeitweise aus - das muss man
+        // sehen koennen, sonst wundert man sich nur ueber fehlende Einnahmen.
+        const burgled = prop.disabledUntil && prop.disabledUntil > Date.now();
+        const burgledText = burgled
+          ? ` · <span style="color:#e08080">🔓 ausgeraubt, kein Ertrag (${Math.ceil((prop.disabledUntil - Date.now()) / 1000)}s)</span>`
+          : '';
         info.innerHTML =
           `<div class="market-item-name">${prop.name}</div>` +
-          `<div class="market-item-detail">$${prop.price} · +${prop.incomePerTick}/-${prop.maintenancePerTick} pro Tick · ${ownerText}</div>`;
+          `<div class="market-item-detail">$${prop.price} · +${prop.incomePerTick}/-${prop.maintenancePerTick} pro Tick · ${ownerText}${burgledText}</div>`;
         row.appendChild(info);
 
         const btn = document.createElement('button');
@@ -938,6 +944,19 @@
           });
         }
         row.appendChild(btn);
+
+        // Einbruch: nur bei fremden, bereits verkauften Objekten sinnvoll.
+        // Die Reichweitenpruefung macht der Server - hier steht der Knopf immer,
+        // sonst muesste die Liste bei jedem Schritt neu gezeichnet werden.
+        if (prop.ownerId && !isMine) {
+          const burgleBtn = document.createElement('button');
+          burgleBtn.className = 'market-btn-small danger';
+          burgleBtn.textContent = '🔓 Einbrechen';
+          burgleBtn.disabled = !!burgled;
+          if (!burgled) burgleBtn.addEventListener('click', () => net.burgle(prop.id));
+          row.appendChild(burgleBtn);
+        }
+
         propertyListEl.appendChild(row);
       }
 
@@ -1087,6 +1106,13 @@
           already_full: 'Du bist schon bei voller Gesundheit.',
           already_happy: 'Zufriedener geht es nicht.',
           too_soon: 'Zu früh — du warst gerade erst trainieren.',
+          cooldown: 'Noch zu früh für den nächsten Versuch.',
+          own_property: 'In dein eigenes Objekt einbrechen bringt nichts.',
+          not_owned: 'Das Objekt gehört niemandem — da gibt es nichts zu holen.',
+          already_burgled: 'Da wurde gerade schon eingebrochen.',
+          vault_empty: 'Im Tresor liegt zu wenig — der Überfall lohnt sich nicht.',
+          jailed: 'Aus dem Gefängnis geht das nicht.',
+          dead: 'Das geht gerade nicht.',
         };
         showToast(reasons[msg.reason] || ('Aktion fehlgeschlagen: ' + msg.reason));
       };
@@ -1601,7 +1627,8 @@
         (b.debt > 0
           ? `<div class="bank-row debt"><span class="bank-label">Schulden (-${pct(b.loanRate)})</span><span class="bank-value">$${b.debt}</span></div>`
           : '') +
-        `<div class="bank-row"><span class="bank-label">Kreditrahmen</span><span class="bank-value">$${b.debt} / $${b.creditLimit}</span></div>`;
+        `<div class="bank-row"><span class="bank-label">Kreditrahmen</span><span class="bank-value">$${b.debt} / $${b.creditLimit}</span></div>` +
+        `<div class="bank-row"><span class="bank-label">🔐 Tresor der Filiale</span><span class="bank-value">$${b.vault ?? 0}</span></div>`;
 
       // Bedienzeilen nur einmal bauen, sonst verliert man beim Tippen den Fokus
       if (bankActionsEl.dataset.built) return;
@@ -1636,6 +1663,17 @@
         row.appendChild(btn);
         bankActionsEl.appendChild(row);
       }
+
+      // Bankueberfall: bewusst optisch abgesetzt vom normalen Bankgeschaeft.
+      const robRow = document.createElement('div');
+      robRow.className = 'market-item';
+      robRow.innerHTML = '<div class="market-item-detail">Tresor überfallen — hohes Risiko, sofort Gefängnis bei Fehlschlag</div>';
+      const robBtn = document.createElement('button');
+      robBtn.className = 'market-btn-small danger';
+      robBtn.textContent = '🔫 Überfall';
+      robBtn.addEventListener('click', () => net.robBank());
+      robRow.appendChild(robBtn);
+      bankActionsEl.appendChild(robRow);
     }
 
     if (net) {
@@ -1649,6 +1687,21 @@
       net.onForeclosure = (msg) => {
         showToast(`Die Bank hat "${msg.propertyName}" verwertet - die Schulden waren zu hoch.`);
       };
+      net.onBurglaryResult = (msg) => {
+        showToast(msg.success
+          ? `🔓 Einbruch in "${msg.propertyName}" geglückt: +$${msg.loot}`
+          : `🔓 Einbruch in "${msg.propertyName}" fehlgeschlagen — du wirst gesucht!`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onBurgledFrom = (msg) => {
+        showToast(`🚨 Bei dir wurde eingebrochen: "${msg.propertyName}" wirft vorerst nichts ab (-$${msg.loot}).`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
+      net.onRobberyResult = (msg) => {
+        if (msg.success) showToast(`🔫 Überfall geglückt: +$${msg.loot} aus dem Tresor!`);
+        else showToast('🔫 Überfall gescheitert — du sitzt im Gefängnis.');
+        if (marketPanel.style.display !== 'none') renderBankSection();
+      };
       net.onWellbeingAction = (msg) => {
         if (msg.action === 'treatHealth') {
           showToast(`🏥 Behandelt für $${msg.cost} — Gesundheit wieder bei ${Math.round(msg.newHealth)}.`);
@@ -1660,7 +1713,13 @@
       // Werte sinken durch den Verfall auch ohne Zutun - der Bereich muss also
       // mitwandern, sonst zeigt er bei offenem Panel veraltete Kosten an.
       net.onStatUpdate = () => {
-        if (marketPanel.style.display !== 'none') renderWellbeingSection();
+        if (marketPanel.style.display !== 'none') {
+          renderWellbeingSection();
+          // Der Tresor waechst mit jedem Steuerzyklus, kommt aber nur mit
+          // bankState mit - ohne diese Nachfrage stuende bei offenem Panel
+          // dauerhaft ein veralteter Betrag.
+          net.requestBank();
+        }
       };
     }
     // ---------------------------------------------------------------------
