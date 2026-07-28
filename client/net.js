@@ -971,4 +971,8 @@ class NetClient {
   robBank() {
     this.send({ type: 'robBank' });
   }
+
+  buyNewVehicle(typeId) {
+    this.send({ type: 'buyNewVehicle', typeId });
+  }
 }
