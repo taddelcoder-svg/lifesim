@@ -44,6 +44,11 @@ class NetClient {
     this.collisionRadius = 18;
     this.onWorldLayout = null;
 
+    // Feste Orte (Bank, Uni, Arbeitsamt, ...) samt der dort moeglichen Aktionen.
+    // Kommt mit dem worldLayout; daraus baut render.js die Beschriftung in der
+    // Stadt und index.html die Meldung "dafuer musst du zum ...".
+    this.places = [];
+
     // Fahrzeuge
     this.vehicleCatalog = []; // [{ id, name, price, speed, acceleration, friction }]
     this.vehicles = new Map(); // vehicleId -> { id, typeId, x, y, ownerId, driverId }
@@ -508,6 +513,7 @@ class NetClient {
         this.worldRoads = msg.roads || [];
         this.worldBuildings = msg.buildings || [];
         this.collisionRects = msg.collisionRects || [];
+        this.places = msg.places || [];
         if (typeof msg.collisionRadius === 'number') this.collisionRadius = msg.collisionRadius;
         if (this.onWorldLayout) this.onWorldLayout(msg);
         break;
@@ -861,6 +867,33 @@ class NetClient {
       if (d < best) { best = d; nearest = v; }
     }
     return nearest ? { vehicle: nearest, distance: best } : null;
+  }
+
+  /**
+   * Der Ort, an dem der Spieler gerade steht - oder null. Ausschliesslich fuer
+   * die Anzeige (HUD-Hinweis); massgeblich ist immer die Pruefung im Server.
+   */
+  currentPlace() {
+    if (!this.localPlayer) return null;
+    for (const place of this.places) {
+      const d = Math.hypot(place.position.x - this.localPlayer.x, place.position.y - this.localPlayer.y);
+      if (d <= place.range) return place;
+    }
+    return null;
+  }
+
+  /**
+   * Welcher Ort wird fuer diese Aktion gebraucht, und wie weit ist er weg?
+   * Der Server meldet bei Ablehnung nur 'too_far' - den Namen holt sich der
+   * Client hier aus dem Katalog.
+   */
+  placeForAction(action) {
+    const place = this.places.find((p) => Array.isArray(p.actions) && p.actions.includes(action));
+    if (!place) return null;
+    const distance = this.localPlayer
+      ? Math.hypot(place.position.x - this.localPlayer.x, place.position.y - this.localPlayer.y)
+      : null;
+    return { place, distance };
   }
 
   /**
