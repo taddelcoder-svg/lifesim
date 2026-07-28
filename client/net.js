@@ -58,10 +58,15 @@ class NetClient {
     this.onVehicleBought = null;
 
     // Bank
-    this.bank = { cash: 0, savings: 0, debt: 0, creditLimit: 0, savingsRate: 0, loanRate: 0 };
+    this.bank = { cash: 0, savings: 0, debt: 0, creditLimit: 0, savingsRate: 0, loanRate: 0, vault: 0 };
     this.onBankState = null;
     this.onBankAction = null;
     this.onForeclosure = null;
+
+    // Kriminalitaet: Einbruch und Bankueberfall
+    this.onBurglaryResult = null;
+    this.onBurgledFrom = null;
+    this.onRobberyResult = null;
 
     // Gesundheit & Freizeit
     this.onWellbeingAction = null;
@@ -471,6 +476,7 @@ class NetClient {
         this.bank = {
           cash: msg.cash, savings: msg.savings, debt: msg.debt,
           creditLimit: msg.creditLimit, savingsRate: msg.savingsRate, loanRate: msg.loanRate,
+          vault: msg.vault ?? 0,
         };
         if (this.onBankState) this.onBankState(this.bank);
         break;
@@ -478,6 +484,21 @@ class NetClient {
 
       case 'bankAction': {
         if (this.onBankAction) this.onBankAction(msg);
+        break;
+      }
+
+      case 'burglaryResult': {
+        if (this.onBurglaryResult) this.onBurglaryResult(msg);
+        break;
+      }
+
+      case 'burgledFrom': {
+        if (this.onBurgledFrom) this.onBurgledFrom(msg);
+        break;
+      }
+
+      case 'robberyResult': {
+        if (this.onRobberyResult) this.onRobberyResult(msg);
         break;
       }
 
@@ -941,5 +962,13 @@ class NetClient {
 
   relax() {
     this.send({ type: 'relax' });
+  }
+
+  burgle(propertyId) {
+    this.send({ type: 'burgle', propertyId });
+  }
+
+  robBank() {
+    this.send({ type: 'robBank' });
   }
 }
