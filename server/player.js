@@ -45,7 +45,6 @@ function createPlayer(name, token) {
     enrolledCourse: null,  // ID des aktuell laufenden Kurses, oder null
     courseProgress: 0,     // gesammelte Lern-Ticks im laufenden Kurs
     criminalRecord: [],
-    relationships: [],
     assets: [],
     position: { x: SPAWN_POSITION.x, y: SPAWN_POSITION.y },
     velocity: { x: 0, y: 0 },
