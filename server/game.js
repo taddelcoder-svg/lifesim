@@ -100,6 +100,14 @@ const {
   MAX_FRIENDS_COUNTED,
 } = require('./wellbeing');
 const {
+  ALARM_BURGLARY_SUCCESS_CHANCE,
+  ALARM_WANTED_BONUS_ON_FAILURE,
+  alarmInstallCost,
+  alarmUpkeep,
+  insurancePremium,
+  insurancePayout,
+} = require('./insurance');
+const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
   CHILD_COST,
@@ -288,6 +296,13 @@ class GameWorld {
     // Bankueberfaellen. Siehe VAULT_TAX_SHARE in crime.js - das Geld ist bereits
     // aus dem Umlauf gezogen, ein Ueberfall bringt es zurueck statt neues zu schaffen.
     this.bankVault = 0;
+
+    // Versicherungstopf: wird ausschliesslich aus den Praemien gespeist, und
+    // Entschaedigungen kommen ausschliesslich daraus. Gleiches Prinzip wie beim
+    // Banktresor - ohne diesen Deckel waere die Versicherung eine
+    // Gelddruckmaschine (man liesse sich absichtlich bestehlen und kassierte
+    // beide Seiten).
+    this.insurancePool = 0;
 
     // Polizei-NPCs: keine echten Spieler, einfache Verfolgungs-KI serverseitig.
     this.cops = [];
@@ -826,7 +841,10 @@ class GameWorld {
         id: p.id,
         ownerId: p.ownerId,
         disabledUntil: p.disabledUntil || null,
+        hasAlarm: !!p.hasAlarm,
+        insured: !!p.insured,
       })),
+      insurancePool: this.insurancePool,
       bankVault: this.bankVault,
       // Fahrzeuge fehlten hier bisher komplett: Besitz und Standort gingen bei
       // JEDEM Neustart verloren, also bei jedem Render-Deploy. Ein gekaufter
@@ -929,6 +947,7 @@ class GameWorld {
     }
 
     if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
+    if (typeof snapshot.insurancePool === 'number') this.insurancePool = snapshot.insurancePool;
     if (typeof snapshot.nextCompanyId === 'number') this.nextCompanyId = snapshot.nextCompanyId;
     if (typeof snapshot.nextChildId === 'number') this.nextChildId = snapshot.nextChildId;
 
@@ -938,6 +957,8 @@ class GameWorld {
         if (property) {
           property.ownerId = saved.ownerId;
           property.disabledUntil = saved.disabledUntil || null;
+          property.hasAlarm = !!saved.hasAlarm;
+          property.insured = !!saved.insured;
         }
       }
     }
@@ -1337,7 +1358,17 @@ class GameWorld {
       // Nach einem Einbruch faellt der Ertrag zeitweise aus - die Instandhaltung
       // laeuft aber weiter. Genau dieser Ausfall ist die Beute des Einbrechers.
       const disabled = property.disabledUntil && property.disabledUntil > Date.now();
-      const net = (disabled ? 0 : property.incomePerTick) - property.maintenancePerTick;
+
+      // Schutzkosten laufen weiter, auch waehrend der Ertrag ausfaellt - sonst
+      // waere ein Einbruch fuer den Besitzer teilweise ein Vorteil.
+      const alarmCost = property.hasAlarm ? alarmUpkeep(property) : 0;
+      const premium = property.insured ? insurancePremium(property) : 0;
+      // Die Praemie verschwindet nicht, sie wandert in den Topf, aus dem
+      // Entschaedigungen gezahlt werden.
+      this.insurancePool += premium;
+
+      const net = (disabled ? 0 : property.incomePerTick)
+        - property.maintenancePerTick - alarmCost - premium;
       if (owner.cash + net < 0) {
         property.ownerId = null;
         repossessed.push({ type: 'property', asset: property, player: owner });
@@ -1811,6 +1842,60 @@ class GameWorld {
     return { ok: true, cost, cleared, player };
   }
 
+  // ---------------------------------------------------------------------
+  // SCHUTZ: Alarmanlage und Versicherung (Gegenseite zum Einbruch)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Baut eine Alarmanlage in eine eigene Immobilie ein. Einmalige Anschaffung,
+   * danach laufende Kosten bei jedem Ertragszyklus (siehe collectEconomyIncome).
+   */
+  buyAlarm(playerId, propertyId) {
+    const player = this.players.get(playerId);
+    const property = this.properties.get(propertyId);
+    if (!player || !property) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (property.ownerId !== playerId) return { ok: false, reason: 'not_owner' };
+    if (property.hasAlarm) return { ok: false, reason: 'already_protected' };
+
+    const cost = alarmInstallCost(property);
+    if (player.cash < cost) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'buyAlarm');
+    if (away) return away;
+
+    player.cash -= cost;
+    property.hasAlarm = true;
+    return { ok: true, cost, property };
+  }
+
+  /**
+   * Schliesst eine Versicherung ab oder kuendigt sie. Kuendigen ist bewusst
+   * ortsungebunden erlaubt (wie alle Ausstiege, siehe places.js) - abschliessen
+   * dagegen nur im Maklerbuero.
+   */
+  setInsurance(playerId, propertyId, on) {
+    const player = this.players.get(playerId);
+    const property = this.properties.get(propertyId);
+    if (!player || !property) return { ok: false, reason: 'not_found' };
+    if (property.ownerId !== playerId) return { ok: false, reason: 'not_owner' };
+
+    if (!on) {
+      if (!property.insured) return { ok: false, reason: 'not_insured' };
+      property.insured = false;
+      return { ok: true, insured: false, property };
+    }
+
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (property.insured) return { ok: false, reason: 'already_protected' };
+
+    const away = this.checkPlaceRequirement(player, 'setInsurance');
+    if (away) return away;
+
+    property.insured = true;
+    return { ok: true, insured: true, premium: insurancePremium(property), property };
+  }
+
   /**
    * Einbruch in eine fremde Immobilie. Greift den ERTRAGSSTROM an, nicht das
    * gespeicherte Geld: die Immobilie wirft fuer BURGLARY_DISABLE_MS nichts mehr
@@ -1852,8 +1937,15 @@ class GameWorld {
     burglar.lastCrimeAt = now;
     burglar.wanted += BURGLARY_WANTED_ON_ATTEMPT;
 
-    if (Math.random() >= BURGLARY_SUCCESS_CHANCE) {
-      return { ok: true, success: false, burglar, owner, property };
+    // Die Alarmanlage senkt die Erfolgschance deutlich (0,45 -> 0,2).
+    const chance = property.hasAlarm ? ALARM_BURGLARY_SUCCESS_CHANCE : BURGLARY_SUCCESS_CHANCE;
+
+    if (Math.random() >= chance) {
+      // Scheitert der Versuch an einer Anlage, geht zusaetzlich die Meldung an
+      // die Polizei raus. Damit ist die Anlage nicht nur passiver Schutz,
+      // sondern macht das Ziel aktiv unattraktiv.
+      if (property.hasAlarm) burglar.wanted += ALARM_WANTED_BONUS_ON_FAILURE;
+      return { ok: true, success: false, alarmTriggered: !!property.hasAlarm, burglar, owner, property };
     }
 
     // Beute = entgangener Ertrag ueber die Ausfallzeit, in slowTicks gerechnet.
@@ -1864,7 +1956,20 @@ class GameWorld {
     burglar.cash += loot;
     burglar.wanted += BURGLARY_WANTED_ON_SUCCESS_BONUS;
 
-    return { ok: true, success: true, loot, burglar, owner, property };
+    // Entschaedigung, falls versichert - begrenzt auf den Topfinhalt. Ist der
+    // Topf leer, gibt es weniger oder nichts: das Geld muss vorher von jemandem
+    // eingezahlt worden sein.
+    let payout = 0;
+    if (property.insured && owner) {
+      const claim = insurancePayout(property, ticks);
+      payout = Math.min(claim, Math.floor(this.insurancePool));
+      if (payout > 0) {
+        this.insurancePool -= payout;
+        owner.cash += payout;
+      }
+    }
+
+    return { ok: true, success: true, loot, payout, burglar, owner, property };
   }
 
   /**
