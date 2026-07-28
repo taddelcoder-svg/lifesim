@@ -81,6 +81,26 @@ const PLACES = [
     position: { x: 1800, y: 200 },
     actions: ['foundCompany', 'upgradeCompany'],
   },
+  {
+    id: 'hospital',
+    name: 'Krankenhaus',
+    dative: 'zum Krankenhaus',
+    icon: '🏥',
+    // Aehnliche Entfernung wie Bank/Maklerbuero (~850): kein spontaner
+    // Zwischenstopp, aber ein bewusster, regelmaessig noetiger Weg.
+    position: { x: 1400, y: 200 },
+    actions: ['treatHealth'],
+  },
+  {
+    id: 'gym',
+    name: 'Fitnessstudio',
+    dative: 'zum Fitnessstudio',
+    icon: '💪',
+    // Etwas weiter draussen als das Krankenhaus - Zufriedenheit ist dringlich,
+    // aber nie lebensbedrohlich, ein laengerer Weg dorthin passt dazu.
+    position: { x: 1800, y: 1000 },
+    actions: ['relax'],
+  },
 ];
 
 // Umkehrtabelle Aktion -> Ort, einmal beim Laden aufgebaut. Wird bei jeder
