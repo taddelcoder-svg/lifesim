@@ -119,6 +119,18 @@ const PLACES = [
     actions: ['hireLawyer'],
   },
   {
+    id: 'townhall',
+    name: 'Rathaus',
+    dative: 'zum Rathaus',
+    icon: '🗳️',
+    // Erste Nutzung des neuen Bezirks (x > 2000). Bewusst am Rand des alten
+    // Gebiets, nicht tief im neuen: waehlen soll ein Weg sein, aber kein
+    // Ausflug - sonst sinkt die Beteiligung, und eine Wahl ohne Waehler ist
+    // keine.
+    position: { x: 2200, y: 1000 },
+    actions: ['runForMayor', 'castVote', 'setTaxRate'],
+  },
+  {
     id: 'dealership',
     name: 'Autohaus',
     dative: 'zum Autohaus',
