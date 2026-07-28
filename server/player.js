@@ -10,10 +10,14 @@ const STARTING_HAPPINESS = 70;
 const STARTING_SMARTS = 50;
 const STARTING_LOOKS = 50;
 const STARTING_AGE = 18;
-const { SPAWN_POSITION } = require('./world');
+const { SPAWN_POSITION, WORLD_SIZE } = require('./world');
 
-const WORLD_WIDTH = 2000;
-const WORLD_HEIGHT = 2000;
+// Abgeleitet statt erneut hingeschrieben: die Weltgroesse steht ausschliesslich
+// in world.js. Vorher war die 2000 hier ein zweites Mal notiert, verbunden nur
+// durch einen Kommentar - eine Aenderung an einer Stelle waere unbemerkt
+// auseinandergelaufen.
+const WORLD_WIDTH = WORLD_SIZE;
+const WORLD_HEIGHT = WORLD_SIZE;
 
 let nextPlayerId = 1;
 
