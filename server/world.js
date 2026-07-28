@@ -8,7 +8,22 @@
 // bzw. kollidiert genau damit. So gibt es nur EINE Quelle der Wahrheit - der
 // Aufbau kann nicht zwischen Server und Client auseinanderlaufen.
 
-const WORLD_SIZE = 2000; // muss mit WORLD_WIDTH/HEIGHT in player.js uebereinstimmen
+// EINZIGE Definition der Weltgroesse auf dem Server. player.js leitet
+// WORLD_WIDTH/HEIGHT daraus ab - vorher stand die Zahl dort ein zweites Mal,
+// mit einem Kommentar "muss uebereinstimmen" statt einer echten Verbindung.
+// Die dritte Kopie in client/net.js bleibt unvermeidbar (kein Build-Schritt),
+// sie faellt damit unter Grundprinzip 2: aendert man hier, muss man dort mit.
+//
+// 2800 statt der urspruenglichen 2000: bei Raster 400 ergibt das 7x7 = 49
+// Blockmitten statt 25. Von den 25 waren 23 belegt (14 Immobilien + 9 Orte) -
+// die Stadt erzeugte deshalb nur noch DREI Dekogebaeude, und fuer neue Inhalte
+// war kein Platz mehr. Nicht Platzmangel fuer Spieler war der Grund (die Welt
+// ist zu 80% begehbar), sondern die Erschoepfung des Rasters.
+//
+// Alle bestehenden Positionen (Immobilien, Orte, Startpunkt, Parkplaetze,
+// Gefaengnis) liegen unveraendert im alten Bereich - Wege und Balancing bleiben
+// damit exakt so, wie sie abgestimmt wurden.
+const WORLD_SIZE = 2800;
 
 const ROAD_SPACING = 400;  // Abstand der Strassen im Raster
 const ROAD_WIDTH = 90;     // Breite der Strassen (begehbarer Korridor)
