@@ -67,6 +67,12 @@ class NetClient {
     this.onBankAction = null;
     this.onForeclosure = null;
 
+    // Politik: Wahl, Amtszeit, Steuersatz
+    this.politics = { phase: 'campaign', candidates: [], taxRate: 0.01, mayorId: null };
+    this.onPoliticsState = null;
+    this.onPoliticsEvent = null;
+    this.onPoliticsAction = null;
+
     // Schutz: Alarmanlage und Versicherung
     this.onProtectionChanged = null;
     this.onAlarmTriggered = null;
@@ -501,6 +507,22 @@ class NetClient {
 
       case 'bankAction': {
         if (this.onBankAction) this.onBankAction(msg);
+        break;
+      }
+
+      case 'politicsState': {
+        this.politics = msg;
+        if (this.onPoliticsState) this.onPoliticsState(msg);
+        break;
+      }
+
+      case 'politicsEvent': {
+        if (this.onPoliticsEvent) this.onPoliticsEvent(msg);
+        break;
+      }
+
+      case 'politicsAction': {
+        if (this.onPoliticsAction) this.onPoliticsAction(msg);
         break;
       }
 
@@ -1017,6 +1039,18 @@ class NetClient {
 
   buyNewVehicle(typeId) {
     this.send({ type: 'buyNewVehicle', typeId });
+  }
+
+  runForMayor() {
+    this.send({ type: 'runForMayor' });
+  }
+
+  castVote(candidateId) {
+    this.send({ type: 'castVote', candidateId });
+  }
+
+  setTaxRate(rate) {
+    this.send({ type: 'setTaxRate', rate });
   }
 
   buyAlarm(propertyId) {
