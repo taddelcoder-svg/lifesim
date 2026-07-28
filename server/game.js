@@ -58,6 +58,18 @@ const {
   buildPlacesCatalog,
 } = require('./places');
 const {
+  HEALTH_DECAY_PER_TICK,
+  HAPPINESS_DECAY_PER_TICK,
+  HEALTH_SICK_THRESHOLD,
+  HEALTH_SICK_SALARY_MULT,
+  HAPPINESS_LOW_THRESHOLD,
+  HAPPINESS_LOW_XP_MULT,
+  HOSPITAL_COST_PER_HEALTH,
+  GYM_COST,
+  GYM_HAPPINESS_GAIN,
+  GYM_COOLDOWN_MS,
+} = require('./wellbeing');
+const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
   CHILD_COST,
@@ -595,6 +607,22 @@ class GameWorld {
   }
 
   /**
+   * slowTick: Gesundheit und Zufriedenheit verfallen langsam mit der Zeit -
+   * nur fuer verbundene Spieler, genau wie die Alterung. Ohne eigenes Zutun
+   * (Krankenhaus, Fitnessstudio) sinken beide Werte irgendwann auf 0; bei
+   * Gesundheit ist das der Tod (siehe checkDeaths/DEATH_HEALTH_THRESHOLD).
+   */
+  applyHealthAndHappinessDecay() {
+    for (const player of this.players.values()) {
+      if (!player.connected) continue;
+      // Auf zwei Nachkommastellen runden: sonst sammeln sich Gleitkomma-Reste an
+      // (99.26000000000015), die so auch in den Spielstand geschrieben wuerden.
+      player.health = Math.max(0, Math.round((player.health - HEALTH_DECAY_PER_TICK) * 100) / 100);
+      player.happiness = Math.max(0, Math.round((player.happiness - HAPPINESS_DECAY_PER_TICK) * 100) / 100);
+    }
+  }
+
+  /**
    * Baut die Liste der Bewegungs-Deltas für den fastTick-Broadcast.
    * Enthält NUR Spieler, deren Position/Geschwindigkeit sich seit dem
    * letzten Broadcast verändert hat - kein Full-State über die schnelle Loop.
@@ -670,6 +698,10 @@ class GameWorld {
         inputDir: saved.inputDir || { x: 0, y: 0 },
         velocity: saved.velocity || { x: 0, y: 0 },
         position: saved.position || { x: SPAWN_POSITION.x, y: SPAWN_POSITION.y },
+        // Aeltere Spielstaende kannten das Fitnessstudio noch nicht - ohne
+        // Absicherung waere lastGymAt hier undefined, was die Abklingzeit-
+        // Rechnung (Date.now() - lastGymAt) zu NaN macht.
+        lastGymAt: saved.lastGymAt || 0,
       };
 
       // Aeltere Spielstaende wurden gespeichert, BEVOR es Gebaeude gab - eine
@@ -1782,6 +1814,58 @@ class GameWorld {
   }
 
   // ---------------------------------------------------------------------
+  // GESUNDHEIT & FREIZEIT: Krankenhaus (Gesundheit kaufen), Fitnessstudio
+  // (Zufriedenheit kaufen)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Heilt vollstaendig auf. Kosten proportional zum Fehlbetrag - siehe
+   * HOSPITAL_COST_PER_HEALTH in wellbeing.js fuer die Begruendung.
+   */
+  treatHealth(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.health >= 100) return { ok: false, reason: 'already_full' };
+
+    const missing = 100 - player.health;
+    const cost = Math.max(1, Math.round(missing * HOSPITAL_COST_PER_HEALTH));
+    if (player.cash < cost) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'treatHealth');
+    if (away) return away;
+
+    player.cash -= cost;
+    player.health = 100;
+    return { ok: true, cost, newHealth: player.health };
+  }
+
+  /**
+   * Fester Preis, fester Zufriedenheits-Gewinn, dazu eine Abklingzeit gegen
+   * Spam-Kaeufe (siehe GYM_COOLDOWN_MS in wellbeing.js).
+   */
+  relax(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.happiness >= 100) return { ok: false, reason: 'already_happy' };
+    if (player.cash < GYM_COST) return { ok: false, reason: 'insufficient_funds' };
+
+    const now = Date.now();
+    if (now - (player.lastGymAt || 0) < GYM_COOLDOWN_MS) return { ok: false, reason: 'too_soon' };
+
+    const away = this.checkPlaceRequirement(player, 'relax');
+    if (away) return away;
+
+    player.cash -= GYM_COST;
+    player.happiness = Math.min(100, player.happiness + GYM_HAPPINESS_GAIN);
+    player.lastGymAt = now;
+    return { ok: true, cost: GYM_COST, newHappiness: player.happiness };
+  }
+
+  // ---------------------------------------------------------------------
   // BERUF: Bewerben, Gehalt, Befoerderung
   // ---------------------------------------------------------------------
 
@@ -1862,8 +1946,19 @@ class GameWorld {
         continue;
       }
 
-      player.cash += level.salary;
-      player.jobXp += XP_PER_TICK;
+      // Krank draengt aufs Gehalt, unmotiviert auf den Aufstieg - zwei
+      // unterschiedliche Wirkungen, damit man am Ergebnis erkennt, wohin man
+      // laufen muss (Krankenhaus vs. Fitnessstudio). Ohne diese Kopplung waeren
+      // Gesundheit und Zufriedenheit nur kosmetische HUD-Zahlen.
+      const salary = player.health < HEALTH_SICK_THRESHOLD
+        ? Math.round(level.salary * HEALTH_SICK_SALARY_MULT)
+        : level.salary;
+      const xpGain = player.happiness < HAPPINESS_LOW_THRESHOLD
+        ? XP_PER_TICK * HAPPINESS_LOW_XP_MULT
+        : XP_PER_TICK;
+
+      player.cash += salary;
+      player.jobXp += xpGain;
 
       if (level.xpToPromote != null && player.jobXp >= level.xpToPromote) {
         player.jobLevel += 1;
