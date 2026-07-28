@@ -108,6 +108,17 @@ const {
   insurancePayout,
 } = require('./insurance');
 const {
+  CAMPAIGN_DURATION_MS,
+  TERM_DURATION_MS,
+  CANDIDACY_FEE,
+  TAX_RATE_MIN,
+  TAX_RATE_MAX,
+  DEFAULT_TAX_RATE,
+  MAYOR_TAX_SHARE,
+  isValidTaxRate,
+  createInitialPolitics,
+} = require('./politics');
+const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
   CHILD_COST,
@@ -303,6 +314,9 @@ class GameWorld {
     // Gelddruckmaschine (man liesse sich absichtlich bestehlen und kassierte
     // beide Seiten).
     this.insurancePool = 0;
+
+    // Politik: gewaehlter Buergermeister, aktueller Steuersatz, laufende Wahl.
+    this.politics = createInitialPolitics(Date.now());
 
     // Polizei-NPCs: keine echten Spieler, einfache Verfolgungs-KI serverseitig.
     this.cops = [];
@@ -850,6 +864,7 @@ class GameWorld {
         insured: !!p.insured,
       })),
       insurancePool: this.insurancePool,
+      politics: this.politics,
       bankVault: this.bankVault,
       // Fahrzeuge fehlten hier bisher komplett: Besitz und Standort gingen bei
       // JEDEM Neustart verloren, also bei jedem Render-Deploy. Ein gekaufter
@@ -953,6 +968,22 @@ class GameWorld {
 
     if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
     if (typeof snapshot.insurancePool === 'number') this.insurancePool = snapshot.insurancePool;
+    if (snapshot.politics && typeof snapshot.politics === 'object') {
+      // Felder einzeln uebernehmen statt das Objekt zu ersetzen: ein aelterer
+      // Spielstand kennt neuere Felder nicht, und ein fehlendes phaseEndsAt
+      // wuerde die Wahl fuer immer haengen lassen.
+      const saved = snapshot.politics;
+      const pol = this.politics;
+      pol.phase = saved.phase === 'term' ? 'term' : 'campaign';
+      pol.phaseEndsAt = typeof saved.phaseEndsAt === 'number'
+        ? saved.phaseEndsAt
+        : Date.now() + CAMPAIGN_DURATION_MS;
+      pol.mayorId = saved.mayorId ?? null;
+      pol.mayorName = saved.mayorName ?? null;
+      pol.taxRate = isValidTaxRate(saved.taxRate) ? saved.taxRate : DEFAULT_TAX_RATE;
+      pol.candidates = Array.isArray(saved.candidates) ? saved.candidates : [];
+      pol.votes = saved.votes && typeof saved.votes === 'object' ? saved.votes : {};
+    }
     if (typeof snapshot.nextCompanyId === 'number') this.nextCompanyId = snapshot.nextCompanyId;
     if (typeof snapshot.nextChildId === 'number') this.nextChildId = snapshot.nextChildId;
 
@@ -1430,21 +1461,187 @@ class GameWorld {
       if (!player.connected) continue;
       // BEIDES besteuern - waere nur Bargeld betroffen, wuerden alle ihr Geld
       // einfach auf die Bank schieben und die Steuer liefe ins Leere.
+      // Der Satz ist nicht mehr fest, sondern das, was der gewaehlte
+      // Buergermeister eingestellt hat (ohne Amtsinhaber: der alte Festwert).
+      const rate = this.currentTaxRate();
+
       let collected = 0;
       if (player.cash > 0) {
-        const after = Math.max(0, Math.round(player.cash * (1 - WEALTH_TAX_RATE)));
+        const after = Math.max(0, Math.round(player.cash * (1 - rate)));
         collected += player.cash - after;
         player.cash = after;
       }
       if (player.bank > 0) {
-        const after = Math.max(0, Math.round(player.bank * (1 - WEALTH_TAX_RATE)));
+        const after = Math.max(0, Math.round(player.bank * (1 - rate)));
         collected += player.bank - after;
         player.bank = after;
       }
-      // Ein Teil der Steuer verschwindet weiterhin (Geld-Senke), der Rest
-      // wandert sichtbar in den Banktresor und wird dort zur Beute.
-      this.bankVault += Math.round(collected * VAULT_TAX_SHARE);
+      if (collected <= 0) continue;
+
+      // Amtsbezuege zuerst - daher der Interessenkonflikt: der Buergermeister
+      // verdient an einem hohen Satz, den alle anderen zahlen. Er selbst zahlt
+      // ihn allerdings auch, sonst waere das Amt eine reine Gelddruckmaschine.
+      let remaining = collected;
+      const mayor = this.politics.mayorId != null ? this.players.get(this.politics.mayorId) : null;
+      if (mayor) {
+        const salary = Math.round(collected * MAYOR_TAX_SHARE);
+        mayor.cash += salary;
+        remaining -= salary;
+      }
+
+      // Vom Rest wandert ein Teil in den Banktresor (Beute fuer Ueberfaelle),
+      // der Rest verschwindet als Geld-Senke.
+      this.bankVault += Math.round(remaining * VAULT_TAX_SHARE);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // POLITIK: Wahl, Amtszeit, Steuerhoheit
+  // ---------------------------------------------------------------------
+
+  /** Der gerade gueltige Steuersatz. Ohne Buergermeister gilt der Standardwert. */
+  currentTaxRate() {
+    const { mayorId, taxRate } = this.politics;
+    if (mayorId == null) return DEFAULT_TAX_RATE;
+    return isValidTaxRate(taxRate) ? taxRate : DEFAULT_TAX_RATE;
+  }
+
+  /** Zustand fuer den Client - ohne die interne Stimmzuordnung. */
+  buildPoliticsState() {
+    const pol = this.politics;
+    // Stimmen werden nur als ZAHL je Kandidat gemeldet, nie mit Waehlernamen:
+    // eine geheime Wahl ist wenig wert, wenn jeder nachsehen kann, wer wen
+    // gewaehlt hat.
+    const tally = {};
+    for (const candidateId of Object.values(pol.votes)) {
+      tally[candidateId] = (tally[candidateId] || 0) + 1;
+    }
+    return {
+      phase: pol.phase,
+      phaseEndsAt: pol.phaseEndsAt,
+      mayorId: pol.mayorId,
+      mayorName: pol.mayorName,
+      taxRate: this.currentTaxRate(),
+      taxRateMin: TAX_RATE_MIN,
+      taxRateMax: TAX_RATE_MAX,
+      candidacyFee: CANDIDACY_FEE,
+      candidates: pol.candidates.map((c) => ({
+        playerId: c.playerId,
+        name: c.name,
+        votes: tally[c.playerId] || 0,
+      })),
+    };
+  }
+
+  /** Stellt sich zur Wahl. Nur waehrend der Wahlphase und gegen Gebuehr. */
+  runForMayor(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (this.politics.phase !== 'campaign') return { ok: false, reason: 'no_election' };
+    if (this.politics.candidates.some((c) => c.playerId === playerId)) {
+      return { ok: false, reason: 'already_candidate' };
+    }
+    if (player.cash < CANDIDACY_FEE) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'runForMayor');
+    if (away) return away;
+
+    player.cash -= CANDIDACY_FEE;
+    this.politics.candidates.push({ playerId, name: player.name });
+    return { ok: true, fee: CANDIDACY_FEE, player };
+  }
+
+  /** Gibt eine Stimme ab. Eine pro Spieler, aenderbar bis zum Ende der Wahlphase. */
+  castVote(playerId, candidateId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (this.politics.phase !== 'campaign') return { ok: false, reason: 'no_election' };
+    if (!this.politics.candidates.some((c) => c.playerId === candidateId)) {
+      return { ok: false, reason: 'not_a_candidate' };
+    }
+
+    const away = this.checkPlaceRequirement(player, 'castVote');
+    if (away) return away;
+
+    // Ueberschreiben ist erlaubt: umentscheiden bis zum Schluss gehoert dazu,
+    // und es verhindert, dass ein Fehlklick die Stimme verbrennt.
+    this.politics.votes[playerId] = candidateId;
+    return { ok: true, candidateId, player };
+  }
+
+  /** Der Buergermeister aendert den Steuersatz. Nur er, nur im Band, nur im Rathaus. */
+  setTaxRate(playerId, rate) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.politics.mayorId !== playerId) return { ok: false, reason: 'not_mayor' };
+    if (!isValidTaxRate(rate)) return { ok: false, reason: 'rate_out_of_range' };
+
+    const away = this.checkPlaceRequirement(player, 'setTaxRate');
+    if (away) return away;
+
+    this.politics.taxRate = rate;
+    return { ok: true, taxRate: rate, player };
+  }
+
+  /**
+   * Treibt Wahlphase und Amtszeit voran. Wird bei jedem slowTick aufgerufen und
+   * gibt zurueck, ob sich etwas geaendert hat - nur dann muss der Zustand an
+   * alle geschickt werden.
+   */
+  advancePolitics() {
+    const now = Date.now();
+    const pol = this.politics;
+    if (now < pol.phaseEndsAt) return null;
+
+    if (pol.phase === 'campaign') {
+      // Auszaehlen. Bei Gleichstand gewinnt, wer zuerst kandidiert hat - eine
+      // Stichwahl waere hier mehr Mechanik als Nutzen.
+      const tally = new Map();
+      for (const candidateId of Object.values(pol.votes)) {
+        tally.set(candidateId, (tally.get(candidateId) || 0) + 1);
+      }
+      let winner = null;
+      let best = 0;
+      for (const cand of pol.candidates) {
+        const v = tally.get(cand.playerId) || 0;
+        if (v > best) { best = v; winner = cand; }
+      }
+
+      pol.phase = 'term';
+      pol.phaseEndsAt = now + TERM_DURATION_MS;
+      pol.votes = {};
+      pol.candidates = [];
+
+      if (winner && best > 0) {
+        pol.mayorId = winner.playerId;
+        pol.mayorName = winner.name;
+        // Der neue Amtsinhaber startet beim Standardsatz und muss selbst
+        // taetig werden - sonst erbte er stillschweigend die Politik seines
+        // Vorgaengers.
+        pol.taxRate = DEFAULT_TAX_RATE;
+        return { type: 'elected', mayorName: winner.name, votes: best };
+      }
+
+      // Keine Kandidaten oder keine Stimmen: Amt bleibt unbesetzt.
+      pol.mayorId = null;
+      pol.mayorName = null;
+      pol.taxRate = DEFAULT_TAX_RATE;
+      return { type: 'no_mayor' };
+    }
+
+    // Amtszeit vorbei -> neue Wahlphase
+    pol.phase = 'campaign';
+    pol.phaseEndsAt = now + CAMPAIGN_DURATION_MS;
+    pol.mayorId = null;
+    pol.mayorName = null;
+    pol.taxRate = DEFAULT_TAX_RATE;
+    pol.candidates = [];
+    pol.votes = {};
+    return { type: 'campaign_started' };
   }
 
   // ---------------------------------------------------------------------
