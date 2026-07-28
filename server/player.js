@@ -62,6 +62,8 @@ function createPlayer(name, token) {
     jailedUntil: null,     // Zeitstempel, bis wann der Spieler im Gefaengnis sitzt (oder null)
     lastCrimeAt: 0,        // Zeitstempel der letzten Straftat, fuer das Abklingen des Fahndungslevels
     lastStealAttemptAt: 0, // Cooldown gegen Diebstahl-Spam
+    lastBurglaryAt: 0,     // Cooldown fuer Einbrueche (siehe crime.js)
+    lastRobberyAt: 0,      // Cooldown fuer Bankueberfaelle (siehe crime.js)
     lastGymAt: 0,          // Cooldown gegen Fitnessstudio-Spam (siehe wellbeing.js)
     friends: [],           // IDs befreundeter Spieler (nie Teil von serializePublic - privat)
     spouseId: null,        // Ehepartner-ID, oder null
