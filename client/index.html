@@ -362,6 +362,7 @@
     </div>
 
     <div id="friendsSection" class="social-section">
+      <div id="friendBonus" class="market-item-detail" style="margin-bottom:8px;"></div>
       <h4>Anfragen</h4>
       <div id="friendRequestList"></div>
       <h4>Online-Spieler</h4>
@@ -386,8 +387,14 @@
     </div>
 
     <div id="leaderboardSection" class="social-section">
-      <h4>💰 Reichste Spieler</h4>
+      <h4>💰 Größtes Vermögen</h4>
       <div id="richestList"></div>
+      <h4>🏠 Meiste Immobilien</h4>
+      <div id="landlordsList"></div>
+      <h4>🧠 Klügste Köpfe</h4>
+      <div id="smartestList"></div>
+      <h4>👴 Ältester Spieler</h4>
+      <div id="oldestList"></div>
       <h4>🚔 Meistgesucht</h4>
       <div id="mostWantedList"></div>
     </div>
@@ -788,14 +795,16 @@
 
       for (const job of net.jobCatalog) {
         const smartsOk = (me.smarts ?? 0) >= job.minSmarts;
+        const looksOk = (me.looks ?? 0) >= (job.minLooks || 0);
         const recordOk = (me.wanted ?? 0) <= job.maxWanted;
-        const qualified = smartsOk && recordOk;
+        const qualified = smartsOk && looksOk && recordOk;
 
         const row = document.createElement('div');
         row.className = 'market-item';
 
         let requirementText = `Start: $${job.levels[0].salary} · bis $${job.levels[job.levels.length - 1].salary}`;
         if (!smartsOk) requirementText += ` · braucht 🧠 ${job.minSmarts}`;
+        if (!looksOk) requirementText += ` · braucht ✨ ${job.minLooks} (Fitnessstudio)`;
         if (!recordOk) requirementText += ' · Vorstrafen zu hoch';
 
         row.innerHTML =
@@ -1122,6 +1131,8 @@
           vault_empty: 'Im Tresor liegt zu wenig — der Überfall lohnt sich nicht.',
           jailed: 'Aus dem Gefängnis geht das nicht.',
           too_many_vehicles: 'Du besitzt schon genug Fahrzeuge.',
+          too_many_companies: 'Du führst schon genug Firmen.',
+          not_pretty_enough: 'Dafür reicht dein Aussehen noch nicht — trainier im Fitnessstudio.',
           not_jailed: 'Du sitzt gar nicht.',
           not_wanted: 'Es wird gar nicht nach dir gefahndet.',
           nothing_to_clear: 'Da gibt es nichts zu löschen — deine Weste ist sauber.',
@@ -1269,9 +1280,13 @@
     const chatInput = document.getElementById('chatInput');
     const chatSendBtn = document.getElementById('chatSendBtn');
     const friendRequestListEl = document.getElementById('friendRequestList');
+    const friendBonusEl = document.getElementById('friendBonus');
     const onlinePlayerListEl = document.getElementById('onlinePlayerList');
     const richestListEl = document.getElementById('richestList');
     const mostWantedListEl = document.getElementById('mostWantedList');
+    const landlordsListEl = document.getElementById('landlordsList');
+    const smartestListEl = document.getElementById('smartestList');
+    const oldestListEl = document.getElementById('oldestList');
 
     socialBtn.addEventListener('click', () => {
       const opening = socialPanel.style.display === 'none';
@@ -1322,7 +1337,22 @@
     chatSendBtn.addEventListener('click', sendChat);
     chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
 
+    // MUSS mit MAX_FRIENDS_COUNTED in server/wellbeing.js uebereinstimmen -
+    // dient nur der Anzeige.
+    const MAX_FRIENDS_COUNTED_HINT = 3;
+
     function renderFriendsSection() {
+      // Den Nutzen sichtbar machen: eine Freundesliste, deren Wirkung niemand
+      // bemerkt, ist genauso gut wie gar keine Wirkung.
+      const online = (net.myFriends || []).filter((id) => {
+        const p = net.players.get(id);
+        return p && p.connected;
+      }).length;
+      const counted = Math.min(online, MAX_FRIENDS_COUNTED_HINT);
+      friendBonusEl.innerHTML = counted > 0
+        ? `<span style="color:#8fd8a0">${counted} Freund${counted === 1 ? '' : 'e'} online — deine Zufriedenheit sinkt langsamer.</span>`
+        : 'Freunde bremsen deinen Zufriedenheitsverfall — aber nur, solange sie online sind.';
+
       friendRequestListEl.innerHTML = '';
       if (net.incomingFriendRequests.size === 0) {
         friendRequestListEl.innerHTML = '<div class="market-empty">Keine offenen Anfragen.</div>';
@@ -1369,24 +1399,29 @@
       }
     }
 
-    function renderLeaderboard(data) {
-      richestListEl.innerHTML = '';
-      data.richest.forEach((entry, i) => {
-        const row = document.createElement('div');
-        row.className = 'leaderboard-row';
-        row.innerHTML = `<span><span class="leaderboard-rank">#${i + 1}</span>${escapeHtml(entry.name)}</span><span>$${entry.value}</span>`;
-        richestListEl.appendChild(row);
-      });
-      if (data.richest.length === 0) richestListEl.innerHTML = '<div class="market-empty">Noch keine Daten.</div>';
+    // Eine Schleife statt fuenf fast gleicher Bloecke - bei zwei Kategorien war
+    // Kopieren noch vertretbar, bei fuenf waere jede Aenderung fuenffach faellig.
+    const LEADERBOARD_VIEWS = [
+      { key: 'richest',   el: richestListEl,    format: (v) => `$${v}`,                            empty: 'Noch keine Daten.' },
+      { key: 'landlords', el: landlordsListEl,  format: (v) => `${v} Objekt${v === 1 ? '' : 'e'}`, empty: 'Noch niemand besitzt etwas.' },
+      { key: 'smartest',  el: smartestListEl,   format: (v) => `${v} 🧠`,                          empty: 'Noch keine Daten.' },
+      { key: 'oldest',    el: oldestListEl,     format: (v) => `${v} Jahre`,                       empty: 'Noch keine Daten.' },
+      { key: 'mostWanted',el: mostWantedListEl, format: (v) => '⭐'.repeat(Math.min(v, 5)),        empty: 'Niemand gerade gesucht.' },
+    ];
 
-      mostWantedListEl.innerHTML = '';
-      data.mostWanted.forEach((entry, i) => {
-        const row = document.createElement('div');
-        row.className = 'leaderboard-row';
-        row.innerHTML = `<span><span class="leaderboard-rank">#${i + 1}</span>${escapeHtml(entry.name)}</span><span>${'⭐'.repeat(Math.min(entry.value, 5))}</span>`;
-        mostWantedListEl.appendChild(row);
-      });
-      if (data.mostWanted.length === 0) mostWantedListEl.innerHTML = '<div class="market-empty">Niemand gerade gesucht.</div>';
+    function renderLeaderboard(data) {
+      for (const view of LEADERBOARD_VIEWS) {
+        const entries = data[view.key] || [];
+        view.el.innerHTML = '';
+        entries.forEach((entry, i) => {
+          const row = document.createElement('div');
+          row.className = 'leaderboard-row';
+          row.innerHTML = `<span><span class="leaderboard-rank">#${i + 1}</span>${escapeHtml(entry.name)}</span>` +
+            `<span>${view.format(entry.value)}</span>`;
+          view.el.appendChild(row);
+        });
+        if (entries.length === 0) view.el.innerHTML = `<div class="market-empty">${view.empty}</div>`;
+      }
     }
 
     if (net) {
@@ -1871,7 +1906,7 @@
         if (msg.action === 'treatHealth') {
           showToast(`🏥 Behandelt für $${msg.cost} — Gesundheit wieder bei ${Math.round(msg.newHealth)}.`);
         } else {
-          showToast(`💪 Trainiert für $${msg.cost} — Zufriedenheit jetzt ${Math.round(msg.newHappiness)}.`);
+          showToast(`💪 Trainiert für $${msg.cost} — Zufriedenheit ${Math.round(msg.newHappiness)}, Aussehen ${Math.round(msg.newLooks)}.`);
         }
         if (marketPanel.style.display !== 'none') renderWellbeingSection();
       };
