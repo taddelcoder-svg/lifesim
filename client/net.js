@@ -63,6 +63,10 @@ class NetClient {
     this.onBankAction = null;
     this.onForeclosure = null;
 
+    // Gesundheit & Freizeit
+    this.onWellbeingAction = null;
+    this.onStatUpdate = null;
+
     // Firmen: Anstellungen
     this.incomingEmploymentOffers = new Map(); // offerId -> Angebot
     this.onEmploymentOffer = null;
@@ -254,6 +258,10 @@ class NetClient {
           if (p) Object.assign(p, s);
           else this.players.set(s.id, { ...s, vx: 0, vy: 0 });
         }
+        // Hook, damit offene Bedienbereiche auf sich aendernde Werte reagieren
+        // koennen - Gesundheit und Zufriedenheit sinken durch den Verfall auch
+        // ohne jedes Zutun des Spielers.
+        if (this.onStatUpdate) this.onStatUpdate(msg);
         break;
       }
 
@@ -470,6 +478,11 @@ class NetClient {
 
       case 'bankAction': {
         if (this.onBankAction) this.onBankAction(msg);
+        break;
+      }
+
+      case 'wellbeingAction': {
+        if (this.onWellbeingAction) this.onWellbeingAction(msg);
         break;
       }
 
@@ -920,5 +933,13 @@ class NetClient {
 
   dropCourse() {
     this.send({ type: 'dropCourse' });
+  }
+
+  treatHealth() {
+    this.send({ type: 'treatHealth' });
+  }
+
+  relax() {
+    this.send({ type: 'relax' });
   }
 }
