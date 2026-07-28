@@ -52,6 +52,24 @@ const GYM_COST = 30;
 const GYM_HAPPINESS_GAIN = 20;
 const GYM_COOLDOWN_MS = 20000; // 20 Realsekunden
 
+// Training hebt auch das Aussehen - der Grund, warum `looks` kein eigener Ort
+// wurde: von den 25 Blockmitten sind 14 durch Immobilien und 9 durch Orte
+// belegt, es waere genau eine frei geblieben. Thematisch passt es ohnehin
+// besser, als ein zehntes Gebaeude dafuer aufzumachen. Deutlich kleiner als der
+// Zufriedenheits-Gewinn: der Zugang zum Medienberuf (minLooks 55) soll eine
+// Reihe von Besuchen kosten, kein einzelner.
+const GYM_LOOKS_GAIN = 4;
+
+// --- Freundschaft ---
+//
+// `friends` war reine Verwaltung: anfragen, bestaetigen, Liste anzeigen - ohne
+// jede Wirkung. Jetzt bremsen Freunde den Zufriedenheitsverfall, aber NUR
+// solange sie verbunden sind. Das belohnt gemeinsames Spielen statt blossem
+// Namensammeln: eine Freundesliste von zwanzig Leuten, die nie online sind,
+// bringt genau nichts.
+const HAPPINESS_DECAY_RELIEF_PER_FRIEND = 0.008;
+const MAX_FRIENDS_COUNTED = 3; // Deckel: sonst waere der Verfall komplett abschaltbar
+
 module.exports = {
   HEALTH_DECAY_PER_TICK,
   HAPPINESS_DECAY_PER_TICK,
@@ -63,4 +81,7 @@ module.exports = {
   GYM_COST,
   GYM_HAPPINESS_GAIN,
   GYM_COOLDOWN_MS,
+  GYM_LOOKS_GAIN,
+  HAPPINESS_DECAY_RELIEF_PER_FRIEND,
+  MAX_FRIENDS_COUNTED,
 };
