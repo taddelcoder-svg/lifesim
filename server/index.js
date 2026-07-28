@@ -605,6 +605,17 @@ wss.on('connection', (ws) => {
           ...resolvedMsg,
           otherPlayerId: result.accepted ? result.request.fromPlayerId : null,
         });
+
+        // Die Freundesliste ging bisher NUR beim Beitritt raus (im 'welcome')
+        // und wurde nie aktualisiert - nach einer neuen Freundschaft war sie im
+        // Client bis zum naechsten Verbindungsaufbau veraltet. Jetzt bekommen
+        // beide Seiten ihren aktuellen Stand.
+        if (result.accepted) {
+          for (const id of [result.request.fromPlayerId, result.request.toPlayerId]) {
+            const p = world.players.get(id);
+            if (p) sendToPlayer(id, { type: 'friendList', friends: p.friends.slice() });
+          }
+        }
       } else {
         send(ws, { type: 'actionError', action: 'respondFriendRequest', reason: result.reason });
       }
