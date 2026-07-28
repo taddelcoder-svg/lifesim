@@ -245,6 +245,7 @@ class Renderer {
       gym: 0x3a7a6a,
       dealership: 0x5a5a2e,
       lawoffice: 0x4a4a5c,
+      townhall: 0x6a5a3a,
     };
 
     for (const place of this.net.places) {
