@@ -68,6 +68,9 @@ class NetClient {
     this.onBurgledFrom = null;
     this.onRobberyResult = null;
 
+    // Rechtliches: Kaution, Bestechung, Anwalt
+    this.onLegalAction = null;
+
     // Gesundheit & Freizeit
     this.onWellbeingAction = null;
     this.onStatUpdate = null;
@@ -499,6 +502,11 @@ class NetClient {
 
       case 'robberyResult': {
         if (this.onRobberyResult) this.onRobberyResult(msg);
+        break;
+      }
+
+      case 'legalAction': {
+        if (this.onLegalAction) this.onLegalAction(msg);
         break;
       }
 
@@ -974,5 +982,17 @@ class NetClient {
 
   buyNewVehicle(typeId) {
     this.send({ type: 'buyNewVehicle', typeId });
+  }
+
+  postBail() {
+    this.send({ type: 'postBail' });
+  }
+
+  bribePolice() {
+    this.send({ type: 'bribePolice' });
+  }
+
+  hireLawyer() {
+    this.send({ type: 'hireLawyer' });
   }
 }
