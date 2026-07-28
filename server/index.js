@@ -519,6 +519,30 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (['buyAlarm', 'setInsurance'].includes(msg.type) && ws.playerId != null) {
+      const result = msg.type === 'buyAlarm'
+        ? world.buyAlarm(ws.playerId, msg.propertyId)
+        : world.setInsurance(ws.playerId, msg.propertyId, !!msg.on);
+      if (result.ok) {
+        send(ws, {
+          type: 'protectionChanged',
+          action: msg.type,
+          propertyName: result.property.name,
+          cost: result.cost,
+          premium: result.premium,
+          insured: result.insured,
+        });
+        // Schutzstatus gehoert in den Wirtschaftszustand: potenzielle Einbrecher
+        // sollen SEHEN, dass ein Objekt gesichert ist - sonst waere die
+        // Abschreckung wirkungslos und die Anlage reine Gluecksache.
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+      } else {
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
+      }
+      return;
+    }
+
     if (msg.type === 'burgle' && ws.playerId != null) {
       const result = world.attemptBurglary(ws.playerId, msg.propertyId);
       if (result.ok) {
@@ -527,12 +551,21 @@ wss.on('connection', (ws) => {
           success: result.success,
           loot: result.loot || 0,
           propertyName: result.property.name,
+          alarmTriggered: !!result.alarmTriggered,
         });
         if (result.success && result.owner) {
           sendToPlayer(result.owner.id, {
             type: 'burgledFrom',
             propertyName: result.property.name,
             loot: result.loot,
+            payout: result.payout || 0,
+          });
+        } else if (!result.success && result.alarmTriggered && result.owner) {
+          // Auch der VERSUCH wird gemeldet, wenn eine Anlage anschlaegt - sonst
+          // merkt der Besitzer nie, dass sich das Geld gelohnt hat.
+          sendToPlayer(result.owner.id, {
+            type: 'alarmTriggered',
+            propertyName: result.property.name,
           });
         }
         // Der Ertragsausfall gehoert in den Wirtschaftszustand, damit ALLE
