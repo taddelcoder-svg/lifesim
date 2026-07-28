@@ -403,6 +403,9 @@
     <h4>🏥 Gesundheit &amp; Freizeit</h4>
     <div id="wellbeingActions"></div>
 
+    <h4>🚗 Autohaus</h4>
+    <div id="dealershipList"></div>
+
     <h4>🏦 Bank</h4>
     <div id="bankOverview"></div>
     <div id="bankActions"></div>
@@ -895,6 +898,7 @@
       if (!net) return;
 
       renderWellbeingSection();
+      renderDealershipSection();
       renderBankSection();
       renderJobSection();
       renderCourseSection();
@@ -1112,6 +1116,9 @@
           already_burgled: 'Da wurde gerade schon eingebrochen.',
           vault_empty: 'Im Tresor liegt zu wenig — der Überfall lohnt sich nicht.',
           jailed: 'Aus dem Gefängnis geht das nicht.',
+          too_many_vehicles: 'Du besitzt schon genug Fahrzeuge.',
+          fleet_full: 'Das Autohaus ist ausverkauft — es fahren zu viele Autos herum.',
+          owned_by_other: 'Das Fahrzeug gehört jemand anderem.',
           dead: 'Das geht gerade nicht.',
         };
         showToast(reasons[msg.reason] || ('Aktion fehlgeschlagen: ' + msg.reason));
@@ -1548,6 +1555,12 @@
       };
       net.onVehicleExited = () => showToast('Ausgestiegen.');
       net.onVehicleBought = (msg) => showToast(`${msg.typeName} gekauft für $${msg.price}.`);
+      // Ein Neuwagen aendert die Zahl der eigenen Fahrzeuge und damit, ob die
+      // Knoepfe im Autohaus noch anwaehlbar sind. Der Hook war in net.js schon
+      // vorhanden, wurde hier aber bisher nicht belegt.
+      net.onVehiclesState = () => {
+        if (marketPanel.style.display !== 'none') renderDealershipSection();
+      };
     }
     // ---------------------------------------------------------------------
     // Gesundheit & Freizeit: Krankenhaus und Fitnessstudio
@@ -1607,6 +1620,49 @@
         row.appendChild(btn);
 
         wellbeingActionsEl.appendChild(row);
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Autohaus: Neuwagen
+    // ---------------------------------------------------------------------
+    const dealershipListEl = document.getElementById('dealershipList');
+
+    // MUSS mit MAX_OWNED_VEHICLES in server/vehicles.js uebereinstimmen -
+    // dient nur der Anzeige, abgelehnt wird serverseitig.
+    const MAX_OWNED_VEHICLES_HINT = 2;
+
+    function renderDealershipSection() {
+      if (!net || !net.localPlayer) return;
+      dealershipListEl.innerHTML = '';
+
+      const owned = [...net.vehicles.values()].filter((v) => v.ownerId === net.myId).length;
+      const head = document.createElement('div');
+      head.className = 'market-item-detail';
+      head.textContent = `Eigene Fahrzeuge: ${owned}/${MAX_OWNED_VEHICLES_HINT}` +
+        (owned >= MAX_OWNED_VEHICLES_HINT ? ' — Grenze erreicht' : '');
+      dealershipListEl.appendChild(head);
+
+      if (net.vehicleCatalog.length === 0) {
+        dealershipListEl.innerHTML += '<div class="market-empty">Katalog wird geladen…</div>';
+        return;
+      }
+
+      for (const type of net.vehicleCatalog) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        // Beide Preise zeigen: der Neuwagen kostet Aufschlag, das geparkte
+        // Fahrzeug am Strassenrand ist die guenstigere Alternative.
+        row.innerHTML =
+          `<div><div class="market-item-name">${type.name}</div>` +
+          `<div class="market-item-detail">Neu $${type.newPrice ?? type.price} · gebraucht $${type.price} · Tempo ${type.speed}</div></div>`;
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small';
+        btn.textContent = 'Neu kaufen';
+        btn.disabled = owned >= MAX_OWNED_VEHICLES_HINT;
+        if (!btn.disabled) btn.addEventListener('click', () => net.buyNewVehicle(type.id));
+        row.appendChild(btn);
+        dealershipListEl.appendChild(row);
       }
     }
 
