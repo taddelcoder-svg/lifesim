@@ -22,6 +22,7 @@ const {
   PROPERTIES,
   COMPANY_FOUNDING_COST,
   COMPANY_LEVELS,
+  MAX_OWNED_COMPANIES,
   EMPLOYEE_INCOME_PER_TICK,
   EMPLOYEE_WAGE_PER_TICK,
   EMPLOYMENT_OFFER_DURATION_MS,
@@ -94,6 +95,9 @@ const {
   GYM_COST,
   GYM_HAPPINESS_GAIN,
   GYM_COOLDOWN_MS,
+  GYM_LOOKS_GAIN,
+  HAPPINESS_DECAY_RELIEF_PER_FRIEND,
+  MAX_FRIENDS_COUNTED,
 } = require('./wellbeing');
 const {
   MARRIAGE_HAPPINESS_BONUS,
@@ -746,10 +750,27 @@ class GameWorld {
   applyHealthAndHappinessDecay() {
     for (const player of this.players.values()) {
       if (!player.connected) continue;
-      // Auf zwei Nachkommastellen runden: sonst sammeln sich Gleitkomma-Reste an
-      // (99.26000000000015), die so auch in den Spielstand geschrieben wuerden.
-      player.health = Math.max(0, Math.round((player.health - HEALTH_DECAY_PER_TICK) * 100) / 100);
-      player.happiness = Math.max(0, Math.round((player.happiness - HAPPINESS_DECAY_PER_TICK) * 100) / 100);
+
+      // Freunde bremsen den Zufriedenheitsverfall - aber nur die gerade
+      // VERBUNDENEN. Das war der Punkt: `friends` liess sich bisher fuellen,
+      // ohne dass es irgendetwas bewirkte. So belohnt die Liste gemeinsames
+      // Spielen statt blossem Sammeln von Namen.
+      const friendsOnline = (player.friends || []).reduce((n, id) => {
+        const f = this.players.get(id);
+        return n + (f && f.connected ? 1 : 0);
+      }, 0);
+      const relief = Math.min(friendsOnline, MAX_FRIENDS_COUNTED) * HAPPINESS_DECAY_RELIEF_PER_FRIEND;
+      // Nie unter 0: der Verfall soll sich bremsen lassen, aber nie umkehren.
+      const happinessDecay = Math.max(0, HAPPINESS_DECAY_PER_TICK - relief);
+
+      // Auf DREI Nachkommastellen runden, nicht zwei. Zwei genuegten, solange
+      // der kleinste Abzug 0,02 war. Der Freundschaftsbonus erzeugt aber Werte
+      // wie 0,006 - bei zwei Stellen wuerde 100 - 0,006 auf 99,99 gerundet, der
+      // Spieler verloere also 0,01 statt 0,006 und der Bonus verpuffte
+      // groesstenteils. Drei Stellen halten die Gleitkomma-Reste weiterhin
+      // draussen und bilden alle vorkommenden Abzuege exakt ab.
+      player.health = Math.max(0, Math.round((player.health - HEALTH_DECAY_PER_TICK) * 1000) / 1000);
+      player.happiness = Math.max(0, Math.round((player.happiness - happinessDecay) * 1000) / 1000);
     }
   }
 
@@ -1251,10 +1272,20 @@ class GameWorld {
   }
 
   /** Gründet eine neue Firma fuer den Spieler. Kein Limit an der Gesamtzahl - anders als Immobilien. */
+  /** Wie viele Firmen besitzt dieser Spieler gerade? */
+  ownedCompanyCount(playerId) {
+    let n = 0;
+    for (const c of this.companies.values()) if (c.ownerId === playerId) n++;
+    return n;
+  }
+
   foundCompany(playerId, name) {
     const player = this.players.get(playerId);
     if (!player) return { ok: false, reason: 'not_found' };
     if (player.cash < COMPANY_FOUNDING_COST) return { ok: false, reason: 'insufficient_funds' };
+    if (this.ownedCompanyCount(playerId) >= MAX_OWNED_COMPANIES) {
+      return { ok: false, reason: 'too_many_companies' };
+    }
 
     const away = this.checkPlaceRequirement(player, 'foundCompany');
     if (away) return away;
@@ -2036,18 +2067,35 @@ class GameWorld {
   buildLeaderboards() {
     const all = [...this.players.values()].filter((p) => p.connected);
 
-    const richest = [...all]
-      .sort((a, b) => b.cash - a.cash)
-      .slice(0, LEADERBOARD_LIMIT)
-      .map((p) => ({ id: p.id, name: p.name, value: p.cash }));
+    // Bewusst nach GESAMTVERMOEGEN, nicht nach Bargeld: sonst fuehrt an, wer
+    // sein Geld herumtraegt, statt wer wirklich am meisten hat - und ausgerechnet
+    // die diebstahlsichere Bank waere fuer die Rangliste unsichtbar.
+    const netWorth = (p) => p.cash + p.bank - p.debt
+      + [...this.properties.values()].reduce((sum, prop) => sum + (prop.ownerId === p.id ? prop.price : 0), 0);
 
-    const mostWanted = [...all]
-      .filter((p) => p.wanted > 0)
-      .sort((a, b) => b.wanted - a.wanted)
+    const top = (list, value) => list
+      .slice()
+      .sort((a, b) => value(b) - value(a))
       .slice(0, LEADERBOARD_LIMIT)
-      .map((p) => ({ id: p.id, name: p.name, value: p.wanted }));
+      .map((p) => ({ id: p.id, name: p.name, value: Math.round(value(p)) }));
 
-    return { richest, mostWanted };
+    const richest = top(all, netWorth);
+
+    const mostWanted = top(all.filter((p) => p.wanted > 0), (p) => p.wanted);
+
+    // Die folgenden drei Kategorien lenken Ehrgeiz auf etwas anderes als Geld.
+    // Alle drei nutzen Werte, die es laengst gibt - es war nur nie etwas
+    // sichtbar, wofuer sich Bildung oder ein langes Leben "lohnt".
+    const smartest = top(all.filter((p) => p.smarts > 0), (p) => p.smarts);
+
+    const oldest = top(all, (p) => p.age);
+
+    const landlords = top(
+      all.filter((p) => [...this.properties.values()].some((prop) => prop.ownerId === p.id)),
+      (p) => [...this.properties.values()].filter((prop) => prop.ownerId === p.id).length,
+    );
+
+    return { richest, mostWanted, smartest, oldest, landlords };
   }
 
   // ---------------------------------------------------------------------
@@ -2295,7 +2343,11 @@ class GameWorld {
     if (!player) return { ok: false, reason: 'not_found' };
     if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
     if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
-    if (player.happiness >= 100) return { ok: false, reason: 'already_happy' };
+    // Seit das Training auch das Aussehen hebt, darf volle Zufriedenheit den
+    // Besuch NICHT mehr blockieren - sonst kaeme niemand mit 100 Zufriedenheit
+    // noch ins Studio, um looks fuer den Medienberuf aufzubauen. Abgelehnt wird
+    // nur, wenn BEIDES bereits am Anschlag ist.
+    if (player.happiness >= 100 && player.looks >= 100) return { ok: false, reason: 'already_happy' };
     if (player.cash < GYM_COST) return { ok: false, reason: 'insufficient_funds' };
 
     const now = Date.now();
@@ -2306,8 +2358,9 @@ class GameWorld {
 
     player.cash -= GYM_COST;
     player.happiness = Math.min(100, player.happiness + GYM_HAPPINESS_GAIN);
+    player.looks = Math.min(100, player.looks + GYM_LOOKS_GAIN);
     player.lastGymAt = now;
-    return { ok: true, cost: GYM_COST, newHappiness: player.happiness };
+    return { ok: true, cost: GYM_COST, newHappiness: player.happiness, newLooks: player.looks };
   }
 
   // ---------------------------------------------------------------------
@@ -2342,6 +2395,7 @@ class GameWorld {
     const def = findJobDefinition(jobId);
     if (!def) return { ok: false, reason: 'unknown_job' };
     if (player.smarts < def.minSmarts) return { ok: false, reason: 'not_smart_enough' };
+    if (player.looks < (def.minLooks || 0)) return { ok: false, reason: 'not_pretty_enough' };
     if (player.wanted > def.maxWanted) return { ok: false, reason: 'criminal_record' };
 
     const away = this.checkPlaceRequirement(player, 'applyForJob');
