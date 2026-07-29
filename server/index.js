@@ -65,6 +65,15 @@ function buildEventOfferMessage(instance) {
   };
 }
 
+/**
+ * Traegt eine Stadtmeldung ein und schickt sie an alle. Eine Stelle, damit
+ * kein Aufrufer das Verschicken vergisst - genau der Fehler, der beim
+ * Vorstrafenregister an zwei Stellen passiert waere.
+ */
+function announce(kind, text) {
+  broadcast({ type: 'newsItem', item: world.pushNews(kind, text) });
+}
+
 function buildEconomyStateMessage() {
   return {
     type: 'economyState',
@@ -164,6 +173,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'politicsState', ...world.buildPoliticsState() });
       send(ws, { type: 'marketState', ...world.buildMarketState(result.player.id) });
       send(ws, { type: 'environmentState', ...world.buildEnvironmentState() });
+      send(ws, { type: 'newsState', ...world.buildNewsState() });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -379,6 +389,8 @@ wss.on('connection', (ws) => {
     if (msg.type === 'buyProperty' && ws.playerId != null) {
       const result = world.buyProperty(ws.playerId, msg.propertyId);
       if (result.ok) {
+        const buyer = world.players.get(ws.playerId);
+        announce('economy', `${buyer.name} hat "${result.property.name}" erworben.`);
         broadcast(buildEconomyStateMessage());
         broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
       } else {
@@ -601,6 +613,11 @@ wss.on('connection', (ws) => {
     if (msg.type === 'burgle' && ws.playerId != null) {
       const result = world.attemptBurglary(ws.playerId, msg.propertyId);
       if (result.ok) {
+        if (result.success) {
+          announce('crime', `Einbruch in "${result.property.name}".`);
+        } else if (result.alarmTriggered) {
+          announce('police', `Alarmanlage in "${result.property.name}" hat einen Einbruch verhindert.`);
+        }
         sendToPlayer(result.burglar.id, {
           type: 'burglaryResult',
           success: result.success,
@@ -637,6 +654,11 @@ wss.on('connection', (ws) => {
     if (msg.type === 'robBank' && ws.playerId != null) {
       const result = world.attemptBankRobbery(ws.playerId);
       if (result.ok) {
+        if (result.success) {
+          announce('crime', `Überfall auf den Banktresor — $${result.loot} erbeutet.`);
+        } else {
+          announce('police', 'Ein Überfall auf die Bankfiliale ist gescheitert.');
+        }
         sendToPlayer(result.player.id, {
           type: 'robberyResult',
           success: result.success,
@@ -731,6 +753,11 @@ wss.on('connection', (ws) => {
     if (msg.type === 'respondMarriageRequest' && ws.playerId != null) {
       const result = world.respondMarriageRequest(ws.playerId, msg.requestId, !!msg.accept);
       if (result.ok) {
+        if (result.accepted) {
+          const one = world.players.get(result.request.fromPlayerId);
+          const two = world.players.get(result.request.toPlayerId);
+          if (one && two) announce('life', `${one.name} und ${two.name} haben geheiratet.`);
+        }
         const resolvedBase = { type: 'marriageResolved', requestId: result.request.id, accepted: result.accepted };
         sendToPlayer(result.request.fromPlayerId, { ...resolvedBase, otherPlayerId: result.accepted ? result.request.toPlayerId : null });
         sendToPlayer(result.request.toPlayerId, { ...resolvedBase, otherPlayerId: result.accepted ? result.request.fromPlayerId : null });
@@ -764,6 +791,7 @@ wss.on('connection', (ws) => {
       if (result.ok) {
         const player = world.players.get(ws.playerId);
         const spouse = player.spouseId != null ? world.players.get(player.spouseId) : null;
+        announce('life', `Nachwuchs in der Stadt: ${result.child.name} wurde geboren.`);
         const bornMsg = { type: 'childBorn', child: result.child };
         sendToPlayer(ws.playerId, bornMsg);
         if (spouse) sendToPlayer(spouse.id, bornMsg);
@@ -941,6 +969,13 @@ setInterval(() => {
   if (politicsEvent) {
     broadcast({ type: 'politicsState', ...world.buildPoliticsState() });
     broadcast({ type: 'politicsEvent', ...politicsEvent });
+    if (politicsEvent.type === 'elected') {
+      announce('politics', `${politicsEvent.mayorName} wurde mit ${politicsEvent.votes} Stimmen zum Bürgermeister gewählt.`);
+    } else if (politicsEvent.type === 'no_mayor') {
+      announce('politics', 'Die Wahl brachte keine Mehrheit — das Amt bleibt unbesetzt.');
+    } else {
+      announce('politics', 'Ein neuer Wahlkampf hat begonnen.');
+    }
   }
 
   world.ageConnectedPlayers(dt);
@@ -1059,6 +1094,7 @@ setInterval(() => {
   if (deaths.length > 0) {
     broadcast({ type: 'statUpdate', players: deaths.map((d) => serializePublic(d.player)) });
     for (const { player, spouse, heirChild } of deaths) {
+      announce('life', `${player.name} ist im Alter von ${player.age} Jahren gestorben.`);
       sendToPlayer(player.id, {
         type: 'died',
         hasHeir: !!heirChild,
@@ -1079,6 +1115,7 @@ setInterval(() => {
   broadcast({ type: 'copsState', cops: world.buildCopsState() });
   if (arrests.length > 0) {
     broadcast({ type: 'statUpdate', players: arrests.map(serializePublic) });
+    for (const p of arrests) announce('police', `${p.name} wurde von der Polizei verhaftet.`);
     for (const player of arrests) {
       sendToPlayer(player.id, { type: 'jailed', until: player.jailedUntil });
     }
