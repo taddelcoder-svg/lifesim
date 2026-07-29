@@ -2094,6 +2094,9 @@
       net.onAlarmTriggered = (msg) => {
         showToast(`🔔 Alarm bei "${msg.propertyName}" — ein Einbruch wurde verhindert.`);
       };
+      net.onEnvironmentState = (env) => {
+        if (renderer && renderer.applyEnvironment) renderer.applyEnvironment(env);
+      };
       net.onMarketState = () => {
         if (marketPanel.style.display !== 'none') renderMarketSection();
       };
