@@ -161,10 +161,14 @@ class Renderer {
   }
 
   buildStaticScene() {
+    // Als Feld merken: Tageszeit und Wetter aendern Helligkeit und Farbe,
+    // dafuer muss man die Lichtquellen spaeter noch erreichen koennen.
     const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    this.ambientLight = ambient;
     this.scene.add(ambient);
 
     const sun = new THREE.DirectionalLight(0xffffff, 0.75);
+    this.sunLight = sun;
     sun.position.set(WORLD_SIZE_3D * 0.3, 40, WORLD_SIZE_3D * 0.2);
     sun.castShadow = true;
     sun.shadow.mapSize.width = 1024;
@@ -309,6 +313,49 @@ class Renderer {
       label.position.set(px, labelHeight, pz);
       this.scene.add(label);
       this.cityMeshes.push(label);
+    }
+  }
+
+  /**
+   * Setzt Beleuchtung und Sichtweite nach Tageszeit und Wetter.
+   *
+   * `progress` (0..1) kommt vom Server und laeuft innerhalb der Phase durch -
+   * daraus wird ein weicher Uebergang statt eines harten Umschaltens. An den
+   * Phasengrenzen wird nur ueber die ersten und letzten 15% geblendet, sonst
+   * waere es dauerhaft daemmrig statt hell oder dunkel.
+   */
+  applyEnvironment(env) {
+    if (!env || !this.ambientLight || !this.sunLight) return;
+
+    const edge = 0.15;
+    const p = Math.min(1, Math.max(0, env.progress || 0));
+    // 0 = voller Tag, 1 = volle Nacht
+    let night;
+    if (env.phase === 'night') {
+      night = p < edge ? p / edge : (p > 1 - edge ? (1 - p) / edge : 1);
+    } else {
+      night = p < edge ? 1 - p / edge : (p > 1 - edge ? 1 - (1 - p) / edge : 0);
+    }
+
+    const fog = env.weather === 'fog';
+    const rain = env.weather === 'rain';
+
+    // Nebel und Regen daempfen zusaetzlich - sichtbar, aber nie so dunkel wie Nacht.
+    const damp = fog ? 0.75 : rain ? 0.85 : 1;
+
+    this.ambientLight.intensity = (0.6 - night * 0.35) * damp;
+    this.sunLight.intensity = (0.75 - night * 0.6) * damp;
+    // Nachts kuehler, bei Regen grauer.
+    this.sunLight.color.setHex(night > 0.5 ? 0x8899cc : rain ? 0xc8ccd0 : 0xffffff);
+
+    if (this.scene.fog) {
+      // Nebel zieht die Sichtweite deutlich zusammen, Nacht etwas.
+      const near = fog ? 15 : 45 - night * 15;
+      const far = fog ? 55 : 130 - night * 40;
+      this.scene.fog.near = near;
+      this.scene.fog.far = far;
+      this.scene.fog.color.setHex(night > 0.5 ? 0x0d1016 : fog ? 0x2a2e33 : 0x1a1d23);
+      if (this.renderer) this.renderer.setClearColor(this.scene.fog.color);
     }
   }
 
@@ -1092,6 +1139,15 @@ class Renderer {
 
     // Steht der Spieler auf der Platte eines Ortes? Dann sagen, dass hier etwas
     // geht - sonst muesste man es durch Ausprobieren im Menue herausfinden.
+    // Tageszeit und Wetter im HUD: die Polizei verhaelt sich dadurch anders,
+    // das muss ablesbar sein und nicht nur zu erraten.
+    const env = this.net.environment || {};
+    const envIcon = env.phase === 'night' ? '🌙' : '☀️';
+    const weatherIcon = env.weather === 'rain' ? '🌧️' : env.weather === 'fog' ? '🌫️' : '';
+    const envText = `${envIcon}${weatherIcon ? ' ' + weatherIcon : ''}` +
+      (env.policeRangeMult != null && env.policeRangeMult < 1
+        ? ` <span style="color:#8fd8a0">Polizei sieht schlechter</span>` : '');
+
     const place = this.net.currentPlace();
     const placeText = place
       ? `<br><span style="color:#8fd8a0">${place.icon} ${place.name} — hier verfügbar</span>`
@@ -1103,7 +1159,7 @@ class Renderer {
       ((me.debt ?? 0) > 0 ? ` &nbsp;|&nbsp; <span style="color:#e08080">Schulden $${me.debt}</span>` : '') +
       `${wantedText}<br>` +
       `❤️ ${Math.round(me.health ?? 100)} &nbsp; 😊 ${Math.round(me.happiness ?? 70)} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}${studyText}<br>` +
-      `Spieler online: ${online} &nbsp;|&nbsp; ${travelText}` +
+      `Spieler online: ${online} &nbsp;|&nbsp; ${travelText} &nbsp;|&nbsp; ${envText}` +
       placeText;
   }
 }
