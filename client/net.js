@@ -67,6 +67,10 @@ class NetClient {
     this.onBankAction = null;
     this.onForeclosure = null;
 
+    // Umwelt: Tageszeit und Wetter
+    this.environment = { phase: 'day', progress: 0, weather: 'clear', weatherName: 'klar' };
+    this.onEnvironmentState = null;
+
     // Boerse
     this.market = { reserve: 0, stocks: [] };
     this.onMarketState = null;
@@ -512,6 +516,12 @@ class NetClient {
 
       case 'bankAction': {
         if (this.onBankAction) this.onBankAction(msg);
+        break;
+      }
+
+      case 'environmentState': {
+        this.environment = msg;
+        if (this.onEnvironmentState) this.onEnvironmentState(msg);
         break;
       }
 
