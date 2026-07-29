@@ -1779,7 +1779,14 @@
         }
 
         if ((pol.candidates || []).length === 0) {
-          politicsBoxEl.innerHTML += '<div class="market-empty">Noch keine Kandidaten.</div>';
+          // NICHT innerHTML += verwenden: eine Zuweisung an innerHTML baut den
+          // gesamten Teilbaum neu auf und ersetzt dabei den gerade erzeugten
+          // Kandidieren-Knopf durch einen gleich aussehenden Knoten OHNE seinen
+          // Klick-Listener. Genau daran ist der Knopf wirkungslos geworden.
+          const empty = document.createElement('div');
+          empty.className = 'market-empty';
+          empty.textContent = 'Noch keine Kandidaten.';
+          politicsBoxEl.appendChild(empty);
         }
         for (const cand of pol.candidates || []) {
           const row = document.createElement('div');
@@ -1903,7 +1910,13 @@
       dealershipListEl.appendChild(head);
 
       if (net.vehicleCatalog.length === 0) {
-        dealershipListEl.innerHTML += '<div class="market-empty">Katalog wird geladen…</div>';
+        // Gleiche Falle wie im Politik-Bereich - hier bisher folgenlos, weil
+        // direkt danach abgebrochen wird und vorher kein Listener haengt. Der
+        // Einheitlichkeit halber trotzdem sauber angehaengt.
+        const empty = document.createElement('div');
+        empty.className = 'market-empty';
+        empty.textContent = 'Katalog wird geladen…';
+        dealershipListEl.appendChild(empty);
         return;
       }
 
