@@ -67,6 +67,10 @@ class NetClient {
     this.onBankAction = null;
     this.onForeclosure = null;
 
+    // Stadtnachrichten
+    this.news = [];
+    this.onNews = null;
+
     // Umwelt: Tageszeit und Wetter
     this.environment = { phase: 'day', progress: 0, weather: 'clear', weatherName: 'klar' };
     this.onEnvironmentState = null;
@@ -516,6 +520,21 @@ class NetClient {
 
       case 'bankAction': {
         if (this.onBankAction) this.onBankAction(msg);
+        break;
+      }
+
+      case 'newsState': {
+        this.news = msg.items || [];
+        if (this.onNews) this.onNews();
+        break;
+      }
+
+      case 'newsItem': {
+        this.news.push(msg.item);
+        // Gleiche Obergrenze wie im Server, sonst waechst die Liste im lang
+        // laufenden Client unbegrenzt weiter.
+        if (this.news.length > 40) this.news = this.news.slice(-40);
+        if (this.onNews) this.onNews(msg.item);
         break;
       }
 
