@@ -1765,7 +1765,9 @@
       head.className = 'market-item-detail';
       // Der Kassenbestand begrenzt jede Auszahlung. Ohne diese Anzeige haelt man
       // eine gekappte Verkaufssumme für einen Fehler.
-      head.textContent = `Kasse der Börse: $${mk.reserve ?? 0} — mehr kann bei einem Verkauf nicht ausgezahlt werden.`;
+      head.innerHTML =
+        `Dein Depot: <b>$${mk.portfolioValue ?? 0}</b> — darauf läuft die gleiche Abgabe wie auf Bargeld und Guthaben.<br>` +
+        `Kasse der Börse: $${mk.reserve ?? 0} — mehr kann bei einem Verkauf nicht ausgezahlt werden.`;
       marketBoxEl.appendChild(head);
 
       if (!mk.stocks || mk.stocks.length === 0) {
