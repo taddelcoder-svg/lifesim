@@ -67,6 +67,11 @@ class NetClient {
     this.onBankAction = null;
     this.onForeclosure = null;
 
+    // Boerse
+    this.market = { reserve: 0, stocks: [] };
+    this.onMarketState = null;
+    this.onMarketAction = null;
+
     // Politik: Wahl, Amtszeit, Steuersatz
     this.politics = { phase: 'campaign', candidates: [], taxRate: 0.01, mayorId: null };
     this.onPoliticsState = null;
@@ -507,6 +512,17 @@ class NetClient {
 
       case 'bankAction': {
         if (this.onBankAction) this.onBankAction(msg);
+        break;
+      }
+
+      case 'marketState': {
+        this.market = msg;
+        if (this.onMarketState) this.onMarketState(msg);
+        break;
+      }
+
+      case 'marketAction': {
+        if (this.onMarketAction) this.onMarketAction(msg);
         break;
       }
 
@@ -1039,6 +1055,14 @@ class NetClient {
 
   buyNewVehicle(typeId) {
     this.send({ type: 'buyNewVehicle', typeId });
+  }
+
+  buyShares(symbol, shares) {
+    this.send({ type: 'buyShares', symbol, shares });
+  }
+
+  sellShares(symbol, shares) {
+    this.send({ type: 'sellShares', symbol, shares });
   }
 
   runForMayor() {
