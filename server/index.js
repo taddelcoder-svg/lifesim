@@ -163,6 +163,7 @@ wss.on('connection', (ws) => {
       // ob gerade Wahl ist und wer regiert.
       send(ws, { type: 'politicsState', ...world.buildPoliticsState() });
       send(ws, { type: 'marketState', ...world.buildMarketState(result.player.id) });
+      send(ws, { type: 'environmentState', ...world.buildEnvironmentState() });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -922,6 +923,12 @@ setInterval(() => {
 
   // Wahlphase/Amtszeit voranbringen. Meldet nur etwas, wenn ein Wechsel
   // stattgefunden hat - sonst laege bei jedem Tick ein Broadcast an.
+  // Tageszeit/Wetter: der Zustand wird bei jedem slowTick geschickt. Der Client
+  // koennte die Tageszeit zwar selbst aus der Uhr ableiten, aber massgeblich ist
+  // der Server (Grundprinzip 1) - und das Wetter kennt er ohnehin nur von dort.
+  world.updateWeather();
+  broadcast({ type: 'environmentState', ...world.buildEnvironmentState() });
+
   // Kurse bewegen sich mit jedem Wirtschaftszyklus.
   world.stepMarket();
   for (const client of wss.clients) {
