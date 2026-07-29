@@ -131,6 +131,17 @@ const PLACES = [
     actions: ['runForMayor', 'castVote', 'setTaxRate'],
   },
   {
+    id: 'exchange',
+    name: 'Börse',
+    dative: 'zur Börse',
+    icon: '📈',
+    // Zweiter Bau im neuen Bezirk, gegenueber dem Rathaus. Dass Handeln einen
+    // Weg kostet, ist Absicht: sonst wuerde man bei jedem Kursausschlag
+    // nachjustieren, statt eine Entscheidung zu treffen.
+    position: { x: 2200, y: 1800 },
+    actions: ['buyShares', 'sellShares'],
+  },
+  {
     id: 'dealership',
     name: 'Autohaus',
     dative: 'zum Autohaus',
