@@ -133,6 +133,7 @@ const {
   getDayPhase,
   environmentEffects,
 } = require('./daynight');
+const { NEWS_LIMIT } = require('./news');
 const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
@@ -340,6 +341,10 @@ class GameWorld {
     // Umwelt: Tageszeit wird aus der Uhr abgeleitet (kein Zustand noetig), das
     // Wetter dagegen gewuerfelt und deshalb serverseitig gehalten.
     this.environment = { weather: pickWeather(), weatherUntil: Date.now() + WEATHER_DURATION_MS };
+
+    // Stadtnachrichten: Ringpuffer der juengsten oeffentlichen Ereignisse.
+    this.news = [];
+    this.nextNewsId = 1;
 
     // Polizei-NPCs: keine echten Spieler, einfache Verfolgungs-KI serverseitig.
     this.cops = [];
@@ -892,6 +897,8 @@ class GameWorld {
       // Nur das Wetter - die Tageszeit ergibt sich aus der Uhr und laeuft nach
       // einem Neustart nahtlos weiter.
       environment: this.environment,
+      news: this.news,
+      nextNewsId: this.nextNewsId,
       bankVault: this.bankVault,
       // Fahrzeuge fehlten hier bisher komplett: Besitz und Standort gingen bei
       // JEDEM Neustart verloren, also bei jedem Render-Deploy. Ein gekaufter
@@ -998,6 +1005,18 @@ class GameWorld {
 
     if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
     if (typeof snapshot.insurancePool === 'number') this.insurancePool = snapshot.insurancePool;
+    if (Array.isArray(snapshot.news)) {
+      // Nur wohlgeformte Eintraege uebernehmen: eine kaputte Meldung wuerde
+      // sonst bei jedem Beitritt mitgeschickt und die Anzeige stoeren.
+      this.news = snapshot.news
+        .filter((n) => n && typeof n.text === 'string')
+        .slice(-NEWS_LIMIT);
+      const nextId = Number(snapshot.nextNewsId);
+      this.nextNewsId = Number.isFinite(nextId) && nextId > 0
+        ? nextId
+        : this.news.length + 1;
+    }
+
     if (snapshot.environment && typeof snapshot.environment === 'object') {
       const savedWeather = snapshot.environment.weather;
       // findWeather faellt bei Unbekanntem auf 'klar' zurueck - ein aus einem
@@ -1569,6 +1588,28 @@ class GameWorld {
       // der Rest verschwindet als Geld-Senke.
       this.bankVault += Math.round(remaining * VAULT_TAX_SHARE);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // STADTNACHRICHTEN
+  // ---------------------------------------------------------------------
+
+  /**
+   * Traegt eine Meldung ein und gibt sie zurueck, damit der Aufrufer sie
+   * verschicken kann. Aeltere fallen hinten raus.
+   *
+   * Taeternamen gehoeren NICHT hier hinein - siehe Kopfkommentar in news.js.
+   */
+  pushNews(kind, text) {
+    const item = { id: this.nextNewsId++, at: Date.now(), kind, text };
+    this.news.push(item);
+    if (this.news.length > NEWS_LIMIT) this.news = this.news.slice(-NEWS_LIMIT);
+    return item;
+  }
+
+  /** Die vorgehaltenen Meldungen, juengste zuletzt. */
+  buildNewsState() {
+    return { items: this.news.slice() };
   }
 
   // ---------------------------------------------------------------------
