@@ -410,6 +410,9 @@
     <h4>🏥 Gesundheit &amp; Freizeit</h4>
     <div id="wellbeingActions"></div>
 
+    <h4>📈 Börse</h4>
+    <div id="marketBox"></div>
+
     <h4>🗳️ Rathaus</h4>
     <div id="politicsBox"></div>
 
@@ -914,6 +917,7 @@
       if (!net) return;
 
       renderWellbeingSection();
+      renderMarketSection();
       renderPoliticsSection();
       renderLegalSection();
       renderDealershipSection();
@@ -1158,6 +1162,9 @@
           already_burgled: 'Da wurde gerade schon eingebrochen.',
           already_protected: 'Das ist bereits geschützt.',
           no_election: 'Gerade findet keine Wahl statt.',
+          invalid_amount: 'Ungültige Stückzahl.',
+          position_limit: 'Mehr Anteile dieses Papiers darfst du nicht halten.',
+          not_enough_shares: 'So viele Anteile besitzt du nicht.',
           already_candidate: 'Du kandidierst bereits.',
           not_a_candidate: 'Diese Person kandidiert nicht.',
           not_mayor: 'Nur der Bürgermeister darf das.',
@@ -1745,6 +1752,62 @@
     }
 
     // ---------------------------------------------------------------------
+    // Börse: Kurse, Kauf, Verkauf
+    // ---------------------------------------------------------------------
+    const marketBoxEl = document.getElementById('marketBox');
+
+    function renderMarketSection() {
+      if (!net || !net.localPlayer) return;
+      const mk = net.market || { stocks: [] };
+      marketBoxEl.innerHTML = '';
+
+      const head = document.createElement('div');
+      head.className = 'market-item-detail';
+      // Der Kassenbestand begrenzt jede Auszahlung. Ohne diese Anzeige haelt man
+      // eine gekappte Verkaufssumme für einen Fehler.
+      head.textContent = `Kasse der Börse: $${mk.reserve ?? 0} — mehr kann bei einem Verkauf nicht ausgezahlt werden.`;
+      marketBoxEl.appendChild(head);
+
+      if (!mk.stocks || mk.stocks.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'market-empty';
+        empty.textContent = 'Kurse werden geladen…';
+        marketBoxEl.appendChild(empty);
+        return;
+      }
+
+      for (const st of mk.stocks) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        const diff = st.price - st.basePrice;
+        const arrow = diff > 0 ? '▲' : diff < 0 ? '▼' : '–';
+        const colour = diff > 0 ? '#8fd8a0' : diff < 0 ? '#e08080' : '#aaa';
+        const info = document.createElement('div');
+        info.innerHTML =
+          `<div class="market-item-name">${st.symbol} · ${escapeHtml(st.name)}</div>` +
+          `<div class="market-item-detail">$${st.price.toFixed(2)} ` +
+          `<span style="color:${colour}">${arrow} ${Math.abs(diff / st.basePrice * 100).toFixed(1)}%</span>` +
+          ` · dein Bestand: ${st.owned}/${st.maxShares}</div>`;
+        row.appendChild(info);
+
+        const buy = document.createElement('button');
+        buy.className = 'market-btn-small';
+        buy.textContent = 'Kauf 10';
+        buy.addEventListener('click', () => net.buyShares(st.symbol, 10));
+        row.appendChild(buy);
+
+        const sell = document.createElement('button');
+        sell.className = 'market-btn-small ghost';
+        sell.textContent = 'Verkauf 10';
+        sell.disabled = st.owned <= 0;
+        if (st.owned > 0) sell.addEventListener('click', () => net.sellShares(st.symbol, Math.min(10, st.owned)));
+        row.appendChild(sell);
+
+        marketBoxEl.appendChild(row);
+      }
+    }
+
+    // ---------------------------------------------------------------------
     // Politik: Wahl, Kandidatur, Steuersatz
     // ---------------------------------------------------------------------
     const politicsBoxEl = document.getElementById('politicsBox');
@@ -2030,6 +2093,19 @@
       };
       net.onAlarmTriggered = (msg) => {
         showToast(`🔔 Alarm bei "${msg.propertyName}" — ein Einbruch wurde verhindert.`);
+      };
+      net.onMarketState = () => {
+        if (marketPanel.style.display !== 'none') renderMarketSection();
+      };
+      net.onMarketAction = (msg) => {
+        if (msg.action === 'buyShares') {
+          showToast(`📈 ${msg.shares} ${msg.symbol} gekauft für $${msg.cost}.`);
+        } else {
+          showToast(msg.capped
+            ? `📈 ${msg.shares} ${msg.symbol} verkauft — nur $${msg.payout}, die Börsenkasse war leer.`
+            : `📈 ${msg.shares} ${msg.symbol} verkauft für $${msg.payout}.`);
+        }
+        if (marketPanel.style.display !== 'none') renderMarketSection();
       };
       net.onPoliticsState = () => {
         if (marketPanel.style.display !== 'none') renderPoliticsSection();
