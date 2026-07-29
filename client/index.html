@@ -350,7 +350,12 @@
       <div class="social-tab active" data-section="chatSection">Chat</div>
       <div class="social-tab" data-section="friendsSection">Freunde</div>
       <div class="social-tab" data-section="familySection">Familie</div>
+      <div class="social-tab" data-section="newsSection">Stadt</div>
       <div class="social-tab" data-section="leaderboardSection">Rangliste</div>
+    </div>
+
+    <div id="newsSection" class="social-section">
+      <div id="newsList"></div>
     </div>
 
     <div id="chatSection" class="social-section active">
@@ -1321,6 +1326,41 @@
     const chatMessagesEl = document.getElementById('chatMessages');
     const chatInput = document.getElementById('chatInput');
     const chatSendBtn = document.getElementById('chatSendBtn');
+    const newsListEl = document.getElementById('newsList');
+
+    // Farben je Meldungsart, damit sich die Liste ueberfliegen laesst.
+    const NEWS_COLOURS = {
+      crime: '#e08080',
+      police: '#8fb0d8',
+      life: '#d8c88f',
+      politics: '#c8a0d8',
+      economy: '#8fd8a0',
+    };
+
+    function renderNewsSection() {
+      if (!net) return;
+      newsListEl.innerHTML = '';
+      const items = (net.news || []).slice().reverse(); // juengste zuerst
+      if (items.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'market-empty';
+        empty.textContent = 'Noch nichts passiert.';
+        newsListEl.appendChild(empty);
+        return;
+      }
+      for (const item of items) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        const age = Math.max(0, Math.round((Date.now() - item.at) / 1000));
+        const when = age < 60 ? `vor ${age}s` : `vor ${Math.round(age / 60)} min`;
+        row.innerHTML =
+          `<div><div class="market-item-detail" style="color:${NEWS_COLOURS[item.kind] || '#ccc'}">` +
+          `${escapeHtml(item.text)}</div>` +
+          `<div class="market-item-detail" style="opacity:0.6">${when}</div></div>`;
+        newsListEl.appendChild(row);
+      }
+    }
+
     const friendRequestListEl = document.getElementById('friendRequestList');
     const friendBonusEl = document.getElementById('friendBonus');
     const onlinePlayerListEl = document.getElementById('onlinePlayerList');
@@ -1350,6 +1390,9 @@
         document.querySelectorAll('.social-section').forEach((s) => s.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById(tab.dataset.section).classList.add('active');
+        // Beim Oeffnen frisch zeichnen: die Altersangaben ("vor 3 min") waeren
+        // sonst der Stand vom letzten Eintreffen einer Meldung.
+        if (tab.dataset.section === 'newsSection') renderNewsSection();
       });
     });
 
@@ -2095,6 +2138,15 @@
       };
       net.onAlarmTriggered = (msg) => {
         showToast(`🔔 Alarm bei "${msg.propertyName}" — ein Einbruch wurde verhindert.`);
+      };
+      net.onNews = (item) => {
+        if (socialPanel.style.display !== 'none') renderNewsSection();
+        // Straftaten und Todesfaelle kurz einblenden, auch wenn das Panel zu
+        // ist - sonst bekommt man das Wichtigste nur mit, wenn man zufaellig
+        // hinsieht. Alltaegliches (Kaeufe) bleibt in der Liste.
+        if (item && (item.kind === 'crime' || item.kind === 'life' || item.kind === 'politics')) {
+          showToast(`📰 ${item.text}`);
+        }
       };
       net.onEnvironmentState = (env) => {
         if (renderer && renderer.applyEnvironment) renderer.applyEnvironment(env);
