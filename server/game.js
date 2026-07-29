@@ -127,6 +127,13 @@ const {
   applyTradeImpact,
 } = require('./market');
 const {
+  WEATHER_DURATION_MS,
+  findWeather,
+  pickWeather,
+  getDayPhase,
+  environmentEffects,
+} = require('./daynight');
+const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
   CHILD_COST,
@@ -329,6 +336,10 @@ class GameWorld {
     // Boerse: Kurse plus KASSENBESTAND. Der Bestand ist die Garantie gegen
     // Geldschoepfung - es wird nie mehr ausgezahlt als eingezahlt wurde.
     this.market = createInitialMarket();
+
+    // Umwelt: Tageszeit wird aus der Uhr abgeleitet (kein Zustand noetig), das
+    // Wetter dagegen gewuerfelt und deshalb serverseitig gehalten.
+    this.environment = { weather: pickWeather(), weatherUntil: Date.now() + WEATHER_DURATION_MS };
 
     // Polizei-NPCs: keine echten Spieler, einfache Verfolgungs-KI serverseitig.
     this.cops = [];
@@ -878,6 +889,9 @@ class GameWorld {
       insurancePool: this.insurancePool,
       politics: this.politics,
       market: this.market,
+      // Nur das Wetter - die Tageszeit ergibt sich aus der Uhr und laeuft nach
+      // einem Neustart nahtlos weiter.
+      environment: this.environment,
       bankVault: this.bankVault,
       // Fahrzeuge fehlten hier bisher komplett: Besitz und Standort gingen bei
       // JEDEM Neustart verloren, also bei jedem Render-Deploy. Ein gekaufter
@@ -984,6 +998,16 @@ class GameWorld {
 
     if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
     if (typeof snapshot.insurancePool === 'number') this.insurancePool = snapshot.insurancePool;
+    if (snapshot.environment && typeof snapshot.environment === 'object') {
+      const savedWeather = snapshot.environment.weather;
+      // findWeather faellt bei Unbekanntem auf 'klar' zurueck - ein aus einem
+      // alten Spielstand geladenes, inzwischen entferntes Wetter wuerde sonst
+      // dauerhaft ohne Wirkung haengenbleiben.
+      this.environment.weather = findWeather(savedWeather).id;
+      const until = Number(snapshot.environment.weatherUntil);
+      this.environment.weatherUntil = Number.isFinite(until) ? until : Date.now();
+    }
+
     if (snapshot.market && typeof snapshot.market === 'object') {
       // Kurse einzeln uebernehmen: ein aelterer Spielstand kennt neu
       // hinzugekommene Papiere nicht, und ein fehlender Kurs wuerde jede
@@ -1522,6 +1546,43 @@ class GameWorld {
       // der Rest verschwindet als Geld-Senke.
       this.bankVault += Math.round(remaining * VAULT_TAX_SHARE);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // UMWELT: Tageszeit und Wetter
+  // ---------------------------------------------------------------------
+
+  /**
+   * Wechselt bei Bedarf die Wetterlage. Gibt die neue Lage zurueck, wenn sich
+   * etwas geaendert hat - sonst null, damit nicht bei jedem Tick gesendet wird.
+   */
+  updateWeather() {
+    const now = Date.now();
+    if (now < this.environment.weatherUntil) return null;
+    const previous = this.environment.weather;
+    this.environment.weather = pickWeather();
+    this.environment.weatherUntil = now + WEATHER_DURATION_MS;
+    return this.environment.weather !== previous ? this.environment.weather : null;
+  }
+
+  /** Aktueller Umweltzustand samt wirksamer Faktoren. */
+  buildEnvironmentState() {
+    const now = Date.now();
+    const day = getDayPhase(now);
+    const weather = findWeather(this.environment.weather);
+    const effects = environmentEffects(day.phase, this.environment.weather);
+    return {
+      phase: day.phase,
+      progress: Math.round(day.progress * 1000) / 1000,
+      phaseEndsAt: day.endsAt,
+      weather: weather.id,
+      weatherName: weather.name,
+      weatherUntil: this.environment.weatherUntil,
+      // Mitschicken, damit die Oberflaeche erklaeren kann, WARUM die Polizei
+      // gerade schlechter sieht - sonst wirkt der Unterschied zufaellig.
+      policeRangeMult: effects.policeRangeMult,
+      policeSpeedMult: effects.policeSpeedMult,
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -2356,6 +2417,17 @@ class GameWorld {
     const now = Date.now();
     const arrests = [];
 
+    // Tageszeit und Wetter wirken NUR auf die Polizei - sie wird rein
+    // serverseitig bewegt. Die Spielerbewegung bleibt unberuehrt, weil sie im
+    // Client vorhergesagt wird (Grundprinzip 2); ein Faktor, der dort fehlt,
+    // wuerde sich als dauerhaftes Ruckeln zeigen.
+    const { policeRangeMult, policeSpeedMult } = environmentEffects(
+      getDayPhase(now).phase,
+      this.environment.weather,
+    );
+    const chaseRange = POLICE_CHASE_RANGE * policeRangeMult;
+    const chaseSpeed = POLICE_CHASE_SPEED * policeSpeedMult;
+
     const wantedPlayers = [...this.players.values()].filter(
       (p) => p.connected && p.wanted > 0 && !this.isJailed(p)
     );
@@ -2365,7 +2437,7 @@ class GameWorld {
       let bestDist = Infinity;
       for (const player of wantedPlayers) {
         const dist = Math.hypot(cop.position.x - player.position.x, cop.position.y - player.position.y);
-        if (dist <= POLICE_CHASE_RANGE && dist < bestDist) {
+        if (dist <= chaseRange && dist < bestDist) {
           bestDist = dist;
           target = player;
         }
@@ -2376,8 +2448,8 @@ class GameWorld {
         const dx = target.position.x - cop.position.x;
         const dy = target.position.y - cop.position.y;
         const len = Math.hypot(dx, dy) || 1;
-        cop.velocity.x = (dx / len) * POLICE_CHASE_SPEED;
-        cop.velocity.y = (dy / len) * POLICE_CHASE_SPEED;
+        cop.velocity.x = (dx / len) * chaseSpeed;
+        cop.velocity.y = (dy / len) * chaseSpeed;
 
         if (bestDist <= POLICE_CATCH_RANGE) {
           // Erledigt Aussteigen, Haftdauer (steigt mit Vorstrafen), Position
