@@ -119,6 +119,14 @@ const {
   createInitialPolitics,
 } = require('./politics');
 const {
+  STOCKS,
+  MAX_SHARES_PER_STOCK,
+  createInitialMarket,
+  findStock,
+  stepPrice,
+  applyTradeImpact,
+} = require('./market');
+const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
   CHILD_COST,
@@ -317,6 +325,10 @@ class GameWorld {
 
     // Politik: gewaehlter Buergermeister, aktueller Steuersatz, laufende Wahl.
     this.politics = createInitialPolitics(Date.now());
+
+    // Boerse: Kurse plus KASSENBESTAND. Der Bestand ist die Garantie gegen
+    // Geldschoepfung - es wird nie mehr ausgezahlt als eingezahlt wurde.
+    this.market = createInitialMarket();
 
     // Polizei-NPCs: keine echten Spieler, einfache Verfolgungs-KI serverseitig.
     this.cops = [];
@@ -865,6 +877,7 @@ class GameWorld {
       })),
       insurancePool: this.insurancePool,
       politics: this.politics,
+      market: this.market,
       bankVault: this.bankVault,
       // Fahrzeuge fehlten hier bisher komplett: Besitz und Standort gingen bei
       // JEDEM Neustart verloren, also bei jedem Render-Deploy. Ein gekaufter
@@ -915,6 +928,9 @@ class GameWorld {
         // Aeltere Spielstaende hatten das Feld zwar, aber nie gefuellt - eine
         // fehlende Liste wuerde .push() und .length zum Absturz bringen.
         criminalRecord: Array.isArray(saved.criminalRecord) ? saved.criminalRecord : [],
+        // Depot: ohne Absicherung waere es undefined und jeder Zugriff darauf
+        // ein Absturz statt nur eines falschen Werts.
+        portfolio: (saved.portfolio && typeof saved.portfolio === 'object') ? saved.portfolio : {},
       };
 
       // Aeltere Spielstaende wurden gespeichert, BEVOR es Gebaeude gab - eine
@@ -968,6 +984,19 @@ class GameWorld {
 
     if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
     if (typeof snapshot.insurancePool === 'number') this.insurancePool = snapshot.insurancePool;
+    if (snapshot.market && typeof snapshot.market === 'object') {
+      // Kurse einzeln uebernehmen: ein aelterer Spielstand kennt neu
+      // hinzugekommene Papiere nicht, und ein fehlender Kurs wuerde jede
+      // Rechnung damit zu NaN machen.
+      const savedPrices = snapshot.market.prices || {};
+      for (const stock of STOCKS) {
+        const v = Number(savedPrices[stock.symbol]);
+        if (Number.isFinite(v) && v > 0) this.market.prices[stock.symbol] = v;
+      }
+      const r = Number(snapshot.market.reserve);
+      this.market.reserve = Number.isFinite(r) && r >= 0 ? r : 0;
+    }
+
     if (snapshot.politics && typeof snapshot.politics === 'object') {
       // Felder einzeln uebernehmen statt das Objekt zu ersetzen: ein aelterer
       // Spielstand kennt neuere Felder nicht, und ein fehlendes phaseEndsAt
@@ -1493,6 +1522,104 @@ class GameWorld {
       // der Rest verschwindet als Geld-Senke.
       this.bankVault += Math.round(remaining * VAULT_TAX_SHARE);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // BOERSE: Kurse, Kauf, Verkauf
+  // ---------------------------------------------------------------------
+
+  /** Kursschritt fuer alle Papiere. Laeuft bei jedem slowTick. */
+  stepMarket() {
+    for (const stock of STOCKS) {
+      this.market.prices[stock.symbol] = stepPrice(stock, this.market.prices[stock.symbol]);
+    }
+  }
+
+  /** Marktzustand fuer den Client, inkl. eigenem Bestand. */
+  buildMarketState(playerId) {
+    const player = playerId != null ? this.players.get(playerId) : null;
+    const portfolio = (player && player.portfolio) || {};
+    return {
+      // Der Kassenbestand ist bewusst SICHTBAR: er begrenzt, was beim Verkauf
+      // ueberhaupt ausgezahlt werden kann. Wer das nicht sieht, haelt eine
+      // gekappte Auszahlung fuer einen Fehler.
+      reserve: Math.floor(this.market.reserve),
+      stocks: STOCKS.map((s) => ({
+        symbol: s.symbol,
+        name: s.name,
+        price: this.market.prices[s.symbol],
+        basePrice: s.basePrice,
+        volatility: s.volatility,
+        owned: portfolio[s.symbol] || 0,
+        maxShares: MAX_SHARES_PER_STOCK,
+      })),
+    };
+  }
+
+  /** Kauft Anteile. Das Geld wandert vollstaendig in den Kassenbestand. */
+  buyShares(playerId, symbol, shares) {
+    const player = this.players.get(playerId);
+    const stock = findStock(symbol);
+    if (!player || !stock) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+
+    const count = Math.floor(Number(shares));
+    if (!Number.isFinite(count) || count <= 0) return { ok: false, reason: 'invalid_amount' };
+
+    if (!player.portfolio) player.portfolio = {};
+    const owned = player.portfolio[symbol] || 0;
+    if (owned + count > MAX_SHARES_PER_STOCK) return { ok: false, reason: 'position_limit' };
+
+    const price = this.market.prices[symbol];
+    const cost = Math.round(price * count);
+    if (player.cash < cost) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'buyShares');
+    if (away) return away;
+
+    player.cash -= cost;
+    this.market.reserve += cost;
+    player.portfolio[symbol] = owned + count;
+    this.market.prices[symbol] = applyTradeImpact(stock, price, count, true);
+
+    return { ok: true, symbol, shares: count, cost, price, player };
+  }
+
+  /**
+   * Verkauft Anteile. Die Auszahlung ist auf den Kassenbestand BEGRENZT - das
+   * ist der Kern der Geldmengen-Garantie: Gewinne stammen immer aus den Kaeufen
+   * anderer, nie aus dem Nichts. Ist die Kasse leer, gibt es entsprechend
+   * weniger.
+   */
+  sellShares(playerId, symbol, shares) {
+    const player = this.players.get(playerId);
+    const stock = findStock(symbol);
+    if (!player || !stock) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+
+    const count = Math.floor(Number(shares));
+    if (!Number.isFinite(count) || count <= 0) return { ok: false, reason: 'invalid_amount' };
+
+    if (!player.portfolio) player.portfolio = {};
+    const owned = player.portfolio[symbol] || 0;
+    if (owned < count) return { ok: false, reason: 'not_enough_shares' };
+
+    const away = this.checkPlaceRequirement(player, 'sellShares');
+    if (away) return away;
+
+    const price = this.market.prices[symbol];
+    const gross = Math.round(price * count);
+    const payout = Math.min(gross, Math.floor(this.market.reserve));
+
+    player.portfolio[symbol] = owned - count;
+    if (player.portfolio[symbol] === 0) delete player.portfolio[symbol];
+    this.market.reserve -= payout;
+    player.cash += payout;
+    this.market.prices[symbol] = applyTradeImpact(stock, price, count, false);
+
+    return { ok: true, symbol, shares: count, payout, gross, capped: payout < gross, price, player };
   }
 
   // ---------------------------------------------------------------------
