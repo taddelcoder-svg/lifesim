@@ -1529,6 +1529,29 @@ class GameWorld {
         collected += player.bank - after;
         player.bank = after;
       }
+
+      // DEPOTGEBUEHR - schliesst dasselbe Loch, wegen dem schon das Bankguthaben
+      // besteuert wird: sonst schiebt man sein Vermoegen einfach dorthin, wo die
+      // Steuer nicht hinreicht, und sie laeuft ins Leere. Nach Einfuehrung der
+      // Boerse war das Depot genau so ein steuerfreier Tresor - mit Platz fuer
+      // ein Vielfaches der teuersten Immobilie und jederzeit liquide.
+      //
+      // Die Gebuehr wird NICHT durch Zwangsverkauf beglichen: eine Auszahlung
+      // haengt am Kassenbestand der Boerse und koennte gar nicht gedeckt sein.
+      // Stattdessen aus Bargeld, dann Guthaben - und was dann noch fehlt, wird
+      // zu Schulden. Damit kann sich niemand durch "alles in Aktien, kein Geld"
+      // der Abgabe entziehen; die Schuld verzinst sich wie jede andere.
+      const depotFee = Math.round(this.portfolioValue(player) * rate);
+      if (depotFee > 0) {
+        let owed = depotFee;
+        const fromCash = Math.min(player.cash, owed);
+        player.cash -= fromCash; owed -= fromCash;
+        const fromBank = Math.min(player.bank, owed);
+        player.bank -= fromBank; owed -= fromBank;
+        if (owed > 0) player.debt += owed;
+        collected += depotFee;
+      }
+
       if (collected <= 0) continue;
 
       // Amtsbezuege zuerst - daher der Interessenkonflikt: der Buergermeister
@@ -1589,6 +1612,17 @@ class GameWorld {
   // BOERSE: Kurse, Kauf, Verkauf
   // ---------------------------------------------------------------------
 
+  /** Kurswert des Depots eines Spielers. */
+  portfolioValue(player) {
+    if (!player || !player.portfolio) return 0;
+    let sum = 0;
+    for (const [symbol, shares] of Object.entries(player.portfolio)) {
+      const price = this.market.prices[symbol];
+      if (Number.isFinite(price)) sum += price * shares;
+    }
+    return sum;
+  }
+
   /** Kursschritt fuer alle Papiere. Laeuft bei jedem slowTick. */
   stepMarket() {
     for (const stock of STOCKS) {
@@ -1605,6 +1639,9 @@ class GameWorld {
       // ueberhaupt ausgezahlt werden kann. Wer das nicht sieht, haelt eine
       // gekappte Auszahlung fuer einen Fehler.
       reserve: Math.floor(this.market.reserve),
+      // Seit das Depot gebuehrenpflichtig ist, muss sein Wert ablesbar sein -
+      // sonst ueberrascht die Abbuchung.
+      portfolioValue: Math.round(this.portfolioValue(player)),
       stocks: STOCKS.map((s) => ({
         symbol: s.symbol,
         name: s.name,
@@ -2576,7 +2613,11 @@ class GameWorld {
     // Bewusst nach GESAMTVERMOEGEN, nicht nach Bargeld: sonst fuehrt an, wer
     // sein Geld herumtraegt, statt wer wirklich am meisten hat - und ausgerechnet
     // die diebstahlsichere Bank waere fuer die Rangliste unsichtbar.
+    // Depot MUSS mitzaehlen: sonst erscheint ausgerechnet der als arm, der sein
+    // Vermoegen in Aktien haelt - derselbe Fehler, wegen dem die Kategorie
+    // urspruenglich von Bargeld auf Gesamtvermoegen umgestellt wurde.
     const netWorth = (p) => p.cash + p.bank - p.debt
+      + this.portfolioValue(p)
       + [...this.properties.values()].reduce((sum, prop) => sum + (prop.ownerId === p.id ? prop.price : 0), 0);
 
     const top = (list, value) => list
