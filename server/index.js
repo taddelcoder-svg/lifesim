@@ -162,6 +162,7 @@ wss.on('connection', (ws) => {
       // Politischer Stand gehoert zum Beitritt: wer neu dazukommt, muss sehen,
       // ob gerade Wahl ist und wer regiert.
       send(ws, { type: 'politicsState', ...world.buildPoliticsState() });
+      send(ws, { type: 'marketState', ...world.buildMarketState(result.player.id) });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -518,6 +519,37 @@ wss.on('connection', (ws) => {
         broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
       } else {
         send(ws, { type: 'actionError', action: 'buyNewVehicle', reason: result.reason });
+      }
+      return;
+    }
+
+    // --- Boerse: Kauf und Verkauf ---
+
+    if (['buyShares', 'sellShares'].includes(msg.type) && ws.playerId != null) {
+      const result = msg.type === 'buyShares'
+        ? world.buyShares(ws.playerId, msg.symbol, msg.shares)
+        : world.sellShares(ws.playerId, msg.symbol, msg.shares);
+      if (result.ok) {
+        send(ws, {
+          type: 'marketAction',
+          action: msg.type,
+          symbol: result.symbol,
+          shares: result.shares,
+          cost: result.cost,
+          payout: result.payout,
+          capped: !!result.capped,
+        });
+        // Kurse aendern sich durch den Handel - das betrifft alle. Der eigene
+        // Bestand geht nur an den Handelnden.
+        send(ws, { type: 'marketState', ...world.buildMarketState(ws.playerId) });
+        for (const client of wss.clients) {
+          if (client !== ws && client.playerId != null && client.readyState === 1) {
+            send(client, { type: 'marketState', ...world.buildMarketState(client.playerId) });
+          }
+        }
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
+      } else {
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
       }
       return;
     }
@@ -890,6 +922,14 @@ setInterval(() => {
 
   // Wahlphase/Amtszeit voranbringen. Meldet nur etwas, wenn ein Wechsel
   // stattgefunden hat - sonst laege bei jedem Tick ein Broadcast an.
+  // Kurse bewegen sich mit jedem Wirtschaftszyklus.
+  world.stepMarket();
+  for (const client of wss.clients) {
+    if (client.playerId != null && client.readyState === 1) {
+      send(client, { type: 'marketState', ...world.buildMarketState(client.playerId) });
+    }
+  }
+
   const politicsEvent = world.advancePolitics();
   if (politicsEvent) {
     broadcast({ type: 'politicsState', ...world.buildPoliticsState() });
