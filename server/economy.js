@@ -24,6 +24,28 @@ const PROPERTIES = [
   { id: 'prop_14', name: 'Stadthaus Nordviertel', price: 1900, incomePerTick: 26, maintenancePerTick: 7, position: { x: 600, y: 200 } },
 ];
 
+// Obergrenze fuer Firmen pro Spieler. Anders als bei Fahrzeugen (endliche
+// Weltausstattung) gibt es hier KEINE natuerliche Bremse: eine Firma amortisiert
+// sich auf Stufe 3 in gut zwei Minuten, ohne Deckel koennte ein einzelner Spieler
+// beliebig viele gruenden und die Wirtschaft aushebeln.
+const MAX_OWNED_COMPANIES = 3;
+
+// Ausbaustufen fuer Immobilien - dieselbe Idee wie bei den Firmen, aber als
+// FAKTOREN statt fester Werte, weil jede Immobilie einen eigenen Ertrag hat.
+//
+// Der Unterhalt steigt bewusst mit: ein Ausbau soll den Ertrag erhoehen, nicht
+// die Marge verdoppeln. Und weil Einbruchsbeute, Alarmkosten und
+// Versicherungspraemie alle am Ertrag haengen, macht jeder Ausbau das Objekt
+// automatisch auch zum lohnenderen Ziel und teurer im Schutz - Reichtum wird
+// dadurch sichtbar riskanter, ohne dass dafuer eine Extraregel noetig waere.
+//
+// upgradeCostRatio bezieht sich auf den KAUFPREIS der Immobilie.
+const PROPERTY_LEVELS = [
+  { level: 1, upgradeCostRatio: null, incomeMult: 1,   maintenanceMult: 1,   name: 'Grundzustand' },
+  { level: 2, upgradeCostRatio: 0.6,  incomeMult: 1.5, maintenanceMult: 1.3, name: 'renoviert' },
+  { level: 3, upgradeCostRatio: 1.2,  incomeMult: 2.2, maintenanceMult: 1.8, name: 'luxussaniert' },
+];
+
 const COMPANY_FOUNDING_COST = 500;
 
 // Ausbaustufen. Stufe 1 bekommt man beim Gruenden, hoehere kosten Geld und
@@ -57,6 +79,8 @@ module.exports = {
   PROPERTIES,
   COMPANY_FOUNDING_COST,
   COMPANY_LEVELS,
+  MAX_OWNED_COMPANIES,
+  PROPERTY_LEVELS,
   EMPLOYEE_INCOME_PER_TICK,
   EMPLOYEE_WAGE_PER_TICK,
   EMPLOYMENT_OFFER_DURATION_MS,
