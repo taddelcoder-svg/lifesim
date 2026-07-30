@@ -415,6 +415,9 @@
     <h4>🏥 Gesundheit &amp; Freizeit</h4>
     <div id="wellbeingActions"></div>
 
+    <h4>🏁 Rennen</h4>
+    <div id="raceBox"></div>
+
     <h4>🕶️ Hinterhof</h4>
     <div id="blackmarketBox"></div>
 
@@ -925,6 +928,7 @@
       if (!net) return;
 
       renderWellbeingSection();
+      renderRaceSection();
       renderBlackmarketSection();
       renderMarketSection();
       renderPoliticsSection();
@@ -1189,6 +1193,7 @@
           max_level: 'Weiter ausbauen geht nicht.',
           already_owned: 'Das besitzt du schon.',
           no_papers: 'Du hast keine gefälschten Papiere.',
+          already_entered: 'Du bist schon angemeldet.',
           no_election: 'Gerade findet keine Wahl statt.',
           invalid_amount: 'Ungültige Stückzahl.',
           position_limit: 'Mehr Anteile dieses Papiers darfst du nicht halten.',
@@ -1818,6 +1823,52 @@
     }
 
     // ---------------------------------------------------------------------
+    // Rennen: Zeitfahren
+    // ---------------------------------------------------------------------
+    const raceBoxEl = document.getElementById('raceBox');
+
+    function renderRaceSection() {
+      if (!net || !net.localPlayer) return;
+      const r = net.race || { board: [] };
+      raceBoxEl.innerHTML = '';
+
+      const secs = Math.max(0, Math.round(((r.seasonEndsAt || 0) - Date.now()) / 1000));
+      const head = document.createElement('div');
+      head.className = 'market-item-detail';
+      head.innerHTML =
+        `Preistopf: <b>$${r.pot ?? 0}</b> · Saison endet in ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}<br>` +
+        `Anmelden, dann im Fahrzeug die vier Kontrollpunkte der Reihe nach abfahren. ` +
+        `Die Uhr startet am ersten.`;
+      raceBoxEl.appendChild(head);
+
+      const row = document.createElement('div');
+      row.className = 'market-item';
+      row.innerHTML = '<div class="market-item-detail">Startgeld geht vollständig in den Topf.</div>';
+      const btn = document.createElement('button');
+      btn.className = 'market-btn-small';
+      btn.textContent = `Anmelden $${r.entryFee ?? 120}`;
+      btn.addEventListener('click', () => net.enterRace());
+      row.appendChild(btn);
+      raceBoxEl.appendChild(row);
+
+      const board = r.board || [];
+      if (board.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'market-empty';
+        empty.textContent = 'Noch keine Zeiten in dieser Saison.';
+        raceBoxEl.appendChild(empty);
+        return;
+      }
+      board.forEach((entry, i) => {
+        const line = document.createElement('div');
+        line.className = 'leaderboard-row';
+        line.innerHTML = `<span><span class="leaderboard-rank">#${i + 1}</span>${escapeHtml(entry.name)}</span>` +
+          `<span>${(entry.ms / 1000).toFixed(1)}s</span>`;
+        raceBoxEl.appendChild(line);
+      });
+    }
+
+    // ---------------------------------------------------------------------
     // Hinterhof: Schwarzmarktwaren
     // ---------------------------------------------------------------------
     const blackmarketBoxEl = document.getElementById('blackmarketBox');
@@ -2246,6 +2297,18 @@
         else if (msg.action === 'castVote') showToast('🗳️ Stimme abgegeben.');
         else showToast(`🗳️ Steuersatz auf ${(msg.taxRate * 100).toFixed(2)}% gesetzt.`);
         if (marketPanel.style.display !== 'none') renderPoliticsSection();
+      };
+      net.onRaceState = () => {
+        if (marketPanel.style.display !== 'none') renderRaceSection();
+      };
+      net.onRaceEntered = (msg) => {
+        showToast(`🏁 Angemeldet für $${msg.fee} — fahr zur Startlinie, die Uhr läuft dort los.`);
+      };
+      net.onRaceFinished = (msg) => {
+        showToast(msg.improved
+          ? `🏁 Runde in ${(msg.ms / 1000).toFixed(1)}s — neue Bestzeit!`
+          : `🏁 Runde in ${(msg.ms / 1000).toFixed(1)}s (deine Bestzeit: ${(msg.previousMs / 1000).toFixed(1)}s).`);
+        if (marketPanel.style.display !== 'none') renderRaceSection();
       };
       net.onBlackmarketState = () => {
         if (marketPanel.style.display !== 'none') renderBlackmarketSection();
