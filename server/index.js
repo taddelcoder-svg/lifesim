@@ -175,6 +175,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'environmentState', ...world.buildEnvironmentState() });
       send(ws, { type: 'newsState', ...world.buildNewsState() });
       send(ws, { type: 'blackmarketState', ...world.buildBlackmarketState(result.player.id) });
+      send(ws, { type: 'raceState', ...world.buildRaceState() });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -587,6 +588,18 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'enterRace' && ws.playerId != null) {
+      const result = world.enterRace(ws.playerId);
+      if (result.ok) {
+        send(ws, { type: 'raceEntered', fee: result.fee });
+        broadcast({ type: 'raceState', ...world.buildRaceState() });
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
+      } else {
+        send(ws, { type: 'actionError', action: 'enterRace', reason: result.reason });
+      }
+      return;
+    }
+
     if (['buyIllegalItem', 'useForgedPapers'].includes(msg.type) && ws.playerId != null) {
       const result = msg.type === 'buyIllegalItem'
         ? world.buyIllegalItem(ws.playerId, msg.itemId)
@@ -982,6 +995,23 @@ setInterval(() => {
   if (movingVehicles.length > 0) {
     broadcast({ type: 'vehicleDelta', vehicles: movingVehicles });
   }
+
+  // Kontrollpunkte im schnellen Takt pruefen: bei Sportwagentempo (760) legt man
+  // in einem langsamen Zyklus über 7000 Einheiten zurueck und faehrt an jeder
+  // Linie vorbei, ohne dass sie je bemerkt wuerde.
+  const finishedRuns = world.updateRaces();
+  for (const run of finishedRuns) {
+    sendToPlayer(run.player.id, {
+      type: 'raceFinished',
+      ms: run.ms,
+      improved: run.improved,
+      previousMs: run.previousMs,
+    });
+    if (run.improved) {
+      broadcast({ type: 'raceState', ...world.buildRaceState() });
+      announce('economy', `${run.player.name} fuhr eine Rundenzeit von ${(run.ms / 1000).toFixed(1)}s.`);
+    }
+  }
 }, FAST_TICK_MS);
 
 // slowTick: individuelle Lebensuhr weiterlaufen lassen, plus Wirtschaft (Phase 3):
@@ -999,6 +1029,18 @@ setInterval(() => {
   // der Server (Grundprinzip 1) - und das Wetter kennt er ohnehin nur von dort.
   world.updateWeather();
   broadcast({ type: 'environmentState', ...world.buildEnvironmentState() });
+
+  // Rennsaison auswerten, wenn sie abgelaufen ist.
+  const raceEvent = world.advanceRaceSeason();
+  if (raceEvent) {
+    broadcast({ type: 'raceState', ...world.buildRaceState() });
+    if (raceEvent.type === 'winner') {
+      announce('economy', `🏁 ${raceEvent.name} gewinnt die Rennsaison mit ${(raceEvent.ms / 1000).toFixed(1)}s und $${raceEvent.prize}.`);
+      broadcast({ type: 'statUpdate', players: [...world.players.values()].map(serializePublic) });
+    } else {
+      announce('economy', 'Die Rennsaison endete ohne Teilnehmer — der Topf bleibt stehen.');
+    }
+  }
 
   // Kurse bewegen sich mit jedem Wirtschaftszyklus.
   world.stepMarket();
