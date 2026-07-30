@@ -142,6 +142,14 @@ const {
   buildItemCatalog,
 } = require('./blackmarket');
 const {
+  CHECKPOINTS,
+  CHECKPOINT_RADIUS,
+  RACE_ENTRY_FEE,
+  RACE_SEASON_MS,
+  RACE_TIMEOUT_MS,
+  lapLength,
+} = require('./racing');
+const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
   CHILD_COST,
@@ -364,6 +372,13 @@ class GameWorld {
     // Stadtnachrichten: Ringpuffer der juengsten oeffentlichen Ereignisse.
     this.news = [];
     this.nextNewsId = 1;
+
+    // Rennen: Preistopf aus Startgeldern, Bestzeiten der laufenden Saison.
+    this.race = {
+      pot: 0,
+      seasonEndsAt: Date.now() + RACE_SEASON_MS,
+      bestTimes: {}, // spielerId -> { name, ms }
+    };
 
     // Polizei-NPCs: keine echten Spieler, einfache Verfolgungs-KI serverseitig.
     this.cops = [];
@@ -920,6 +935,7 @@ class GameWorld {
       environment: this.environment,
       news: this.news,
       nextNewsId: this.nextNewsId,
+      race: { pot: this.race.pot, seasonEndsAt: this.race.seasonEndsAt, bestTimes: this.race.bestTimes },
       bankVault: this.bankVault,
       // Fahrzeuge fehlten hier bisher komplett: Besitz und Standort gingen bei
       // JEDEM Neustart verloren, also bei jedem Render-Deploy. Ein gekaufter
@@ -974,6 +990,9 @@ class GameWorld {
         // ein Absturz statt nur eines falschen Werts.
         portfolio: (saved.portfolio && typeof saved.portfolio === 'object') ? saved.portfolio : {},
         items: (saved.items && typeof saved.items === 'object') ? saved.items : {},
+        // Ein laufender Rennversuch ueberlebt den Neustart bewusst NICHT: die
+        // Uhr lief waehrend der Ausfallzeit weiter und die Zeit waere wertlos.
+        race: null,
       };
 
       // Aeltere Spielstaende wurden gespeichert, BEVOR es Gebaeude gab - eine
@@ -1027,6 +1046,18 @@ class GameWorld {
 
     if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
     if (typeof snapshot.insurancePool === 'number') this.insurancePool = snapshot.insurancePool;
+    if (snapshot.race && typeof snapshot.race === 'object') {
+      const pot = Number(snapshot.race.pot);
+      this.race.pot = Number.isFinite(pot) && pot >= 0 ? pot : 0;
+      const ends = Number(snapshot.race.seasonEndsAt);
+      // Ein abgelaufenes Saisonende aus einem alten Spielstand wuerde die
+      // Auswertung sofort ausloesen - das ist gewollt, aber ein unsinniger Wert
+      // (NaN) wuerde sie fuer immer blockieren.
+      this.race.seasonEndsAt = Number.isFinite(ends) ? ends : Date.now() + RACE_SEASON_MS;
+      const bt = snapshot.race.bestTimes;
+      this.race.bestTimes = (bt && typeof bt === 'object') ? bt : {};
+    }
+
     if (Array.isArray(snapshot.news)) {
       // Nur wohlgeformte Eintraege uebernehmen: eine kaputte Meldung wuerde
       // sonst bei jedem Beitritt mitgeschickt und die Anzeige stoeren.
@@ -1620,6 +1651,129 @@ class GameWorld {
       // der Rest verschwindet als Geld-Senke.
       this.bankVault += Math.round(remaining * VAULT_TAX_SHARE);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // RENNEN: Zeitfahren auf dem Rundkurs
+  // ---------------------------------------------------------------------
+
+  buildRaceState() {
+    const board = Object.entries(this.race.bestTimes)
+      .map(([id, r]) => ({ playerId: Number(id), name: r.name, ms: r.ms }))
+      .sort((a, b) => a.ms - b.ms)
+      .slice(0, 10);
+    return {
+      pot: Math.floor(this.race.pot),
+      seasonEndsAt: this.race.seasonEndsAt,
+      entryFee: RACE_ENTRY_FEE,
+      checkpoints: CHECKPOINTS,
+      checkpointRadius: CHECKPOINT_RADIUS,
+      lapLength: lapLength(),
+      board,
+    };
+  }
+
+  /**
+   * Meldet zum Zeitfahren an. Die Uhr laeuft NICHT sofort los, sondern erst am
+   * ersten Kontrollpunkt - sonst muesste man beim Bezahlen schon an der Linie
+   * stehen, und die Rennleitung liegt zwangslaeufig woanders (Orte sitzen auf
+   * Blockmitten, die Strecke auf Strassen).
+   */
+  enterRace(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.race && player.race.armed) return { ok: false, reason: 'already_entered' };
+    if (player.cash < RACE_ENTRY_FEE) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'enterRace');
+    if (away) return away;
+
+    player.cash -= RACE_ENTRY_FEE;
+    this.race.pot += RACE_ENTRY_FEE;
+    player.race = { armed: true, armedAt: Date.now(), startedAt: null, nextCheckpoint: 0 };
+    return { ok: true, fee: RACE_ENTRY_FEE, player };
+  }
+
+  /**
+   * Prueft bei jedem schnellen Tick, ob angemeldete Fahrer einen Kontrollpunkt
+   * erreicht haben. Gibt abgeschlossene Laeufe zurueck.
+   *
+   * Man MUSS im Fahrzeug sitzen - zu Fuss abzukuerzen waere sonst schneller als
+   * jede Route ueber die Strassen.
+   */
+  updateRaces() {
+    const now = Date.now();
+    const finished = [];
+
+    for (const player of this.players.values()) {
+      const r = player.race;
+      if (!r || !r.armed) continue;
+
+      // Abgelaufene Anmeldung verfaellt - das Startgeld bleibt im Topf.
+      if (now - r.armedAt > RACE_TIMEOUT_MS) {
+        player.race = null;
+        continue;
+      }
+      if (player.vehicleId == null) continue;
+
+      // Ziel ist der naechste Kontrollpunkt; nach dem letzten zaehlt die
+      // Startlinie erneut - erst dann ist es eine VOLLE Runde. Ohne diesen
+      // Schlussabschnitt waere die gefahrene Strecke nur drei von vier Seiten
+      // des Rundkurses, und die ausgewiesene Rundenlaenge stimmte nicht.
+      const cp = CHECKPOINTS[r.nextCheckpoint % CHECKPOINTS.length];
+      const dist = Math.hypot(player.position.x - cp.x, player.position.y - cp.y);
+      if (dist > CHECKPOINT_RADIUS) continue;
+
+      if (r.nextCheckpoint === 0 && r.startedAt == null) {
+        // Erster Kontrollpunkt: die Uhr laeuft ab jetzt.
+        r.startedAt = now;
+        r.nextCheckpoint = 1;
+        continue;
+      }
+
+      r.nextCheckpoint += 1;
+      if (r.nextCheckpoint <= CHECKPOINTS.length) continue;
+
+      const ms = now - r.startedAt;
+      player.race = null;
+      const previous = this.race.bestTimes[player.id];
+      const improved = !previous || ms < previous.ms;
+      if (improved) this.race.bestTimes[player.id] = { name: player.name, ms };
+      finished.push({ player, ms, improved, previousMs: previous ? previous.ms : null });
+    }
+
+    return finished;
+  }
+
+  /**
+   * Beendet eine Saison, wenn sie abgelaufen ist: der Topf geht an die
+   * Bestzeit. Ohne Teilnehmer bleibt er stehen und waechst weiter - das macht
+   * die naechste Saison umso lohnender.
+   */
+  advanceRaceSeason() {
+    const now = Date.now();
+    if (now < this.race.seasonEndsAt) return null;
+
+    this.race.seasonEndsAt = now + RACE_SEASON_MS;
+
+    const entries = Object.entries(this.race.bestTimes)
+      .map(([id, r]) => ({ playerId: Number(id), name: r.name, ms: r.ms }))
+      .sort((a, b) => a.ms - b.ms);
+
+    if (entries.length === 0) return { type: 'no_winner', pot: Math.floor(this.race.pot) };
+
+    const winner = entries[0];
+    const prize = Math.floor(this.race.pot);
+    this.race.bestTimes = {};
+    this.race.pot = 0;
+
+    const player = this.players.get(winner.playerId);
+    if (player) player.cash += prize;
+    // Ist der Sieger nicht mehr da, verfaellt der Topf - er kam aus
+    // Startgeldern und darf nicht doppelt ausgeschuettet werden.
+    return { type: 'winner', name: winner.name, ms: winner.ms, prize };
   }
 
   // ---------------------------------------------------------------------
