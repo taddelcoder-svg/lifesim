@@ -90,6 +90,11 @@ class NetClient {
     this.onProtectionChanged = null;
     this.onPropertyUpgraded = null;
 
+    // Banden
+    this.gangState = { gangs: [], myGang: null, territory: [] };
+    this.onGangState = null;
+    this.onGangAction = null;
+
     // Rennen
     this.race = { pot: 0, board: [], checkpoints: [] };
     this.onRaceState = null;
@@ -581,6 +586,17 @@ class NetClient {
 
       case 'politicsAction': {
         if (this.onPoliticsAction) this.onPoliticsAction(msg);
+        break;
+      }
+
+      case 'gangState': {
+        this.gangState = msg;
+        if (this.onGangState) this.onGangState(msg);
+        break;
+      }
+
+      case 'gangAction': {
+        if (this.onGangAction) this.onGangAction(msg);
         break;
       }
 
@@ -1154,6 +1170,30 @@ class NetClient {
 
   setTaxRate(rate) {
     this.send({ type: 'setTaxRate', rate });
+  }
+
+  foundGang(name) {
+    this.send({ type: 'foundGang', name });
+  }
+
+  joinGang(gangId) {
+    this.send({ type: 'joinGang', gangId });
+  }
+
+  leaveGang() {
+    this.send({ type: 'leaveGang' });
+  }
+
+  depositToGang(amount) {
+    this.send({ type: 'depositToGang', amount });
+  }
+
+  withdrawFromGang(amount) {
+    this.send({ type: 'withdrawFromGang', amount });
+  }
+
+  claimTerritory(quadrantId) {
+    this.send({ type: 'claimTerritory', quadrantId });
   }
 
   enterRace() {
