@@ -76,7 +76,7 @@ const PLACES = [
     // zehnten Ort: das Maklerbuero verwaltet ohnehin alles rund um Immobilien,
     // und von den 25 Blockmitten waere sonst KEINE mehr frei (14 Immobilien,
     // 9 Orte) - die letzte bleibt bewusst fuer etwas Groesseres reserviert.
-    actions: ['buyProperty', 'sellProperty', 'buyAlarm', 'setInsurance'],
+    actions: ['buyProperty', 'sellProperty', 'buyAlarm', 'setInsurance', 'upgradeProperty'],
   },
   {
     id: 'cityhall',
