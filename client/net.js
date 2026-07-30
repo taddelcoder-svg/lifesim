@@ -88,6 +88,8 @@ class NetClient {
 
     // Schutz: Alarmanlage und Versicherung
     this.onProtectionChanged = null;
+    this.onPropertyUpgraded = null;
+    this.onPropertyUpgraded = null;
     this.onAlarmTriggered = null;
 
     // Kriminalitaet: Einbruch und Bankueberfall
@@ -568,6 +570,16 @@ class NetClient {
 
       case 'politicsAction': {
         if (this.onPoliticsAction) this.onPoliticsAction(msg);
+        break;
+      }
+
+      case 'propertyUpgraded': {
+        if (this.onPropertyUpgraded) this.onPropertyUpgraded(msg);
+        break;
+      }
+
+      case 'propertyUpgraded': {
+        if (this.onPropertyUpgraded) this.onPropertyUpgraded(msg);
         break;
       }
 
@@ -1104,6 +1116,14 @@ class NetClient {
 
   setTaxRate(rate) {
     this.send({ type: 'setTaxRate', rate });
+  }
+
+  upgradeProperty(propertyId) {
+    this.send({ type: 'upgradeProperty', propertyId });
+  }
+
+  upgradeProperty(propertyId) {
+    this.send({ type: 'upgradeProperty', propertyId });
   }
 
   buyAlarm(propertyId) {
