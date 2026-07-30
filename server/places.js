@@ -162,7 +162,9 @@ const PLACES = [
     // statt "Schwarzmarkt" - der Ort steht auf der Karte, weil man ihn sonst
     // nie fände, gibt aber nicht preis, was dort gehandelt wird.
     position: { x: 2600, y: 600 },
-    actions: ['buyIllegalItem'],
+    // Bandengruendung und Gebietsansprueche laufen ebenfalls hier - eine
+    // Bande ist keine Sache fuers Gewerbeamt.
+    actions: ['buyIllegalItem', 'foundGang', 'claimTerritory'],
   },
   {
     id: 'dealership',
