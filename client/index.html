@@ -350,8 +350,13 @@
       <div class="social-tab active" data-section="chatSection">Chat</div>
       <div class="social-tab" data-section="friendsSection">Freunde</div>
       <div class="social-tab" data-section="familySection">Familie</div>
+      <div class="social-tab" data-section="gangSection">Bande</div>
       <div class="social-tab" data-section="newsSection">Stadt</div>
       <div class="social-tab" data-section="leaderboardSection">Rangliste</div>
+    </div>
+
+    <div id="gangSection" class="social-section">
+      <div id="gangBox"></div>
     </div>
 
     <div id="newsSection" class="social-section">
@@ -1194,6 +1199,13 @@
           already_owned: 'Das besitzt du schon.',
           no_papers: 'Du hast keine gefälschten Papiere.',
           already_entered: 'Du bist schon angemeldet.',
+          already_in_gang: 'Du bist schon in einer Bande.',
+          not_in_gang: 'Du bist in keiner Bande.',
+          not_leader: 'Das darf nur der Anführer.',
+          gang_full: 'Diese Bande ist voll.',
+          name_taken: 'Diesen Namen gibt es schon.',
+          invalid_name: 'Der Name ist zu kurz.',
+          territory_taken: 'Dieses Viertel gehört schon jemandem.',
           no_election: 'Gerade findet keine Wahl statt.',
           invalid_amount: 'Ungültige Stückzahl.',
           position_limit: 'Mehr Anteile dieses Papiers darfst du nicht halten.',
@@ -1354,6 +1366,116 @@
     const chatMessagesEl = document.getElementById('chatMessages');
     const chatInput = document.getElementById('chatInput');
     const chatSendBtn = document.getElementById('chatSendBtn');
+    const gangBoxEl = document.getElementById('gangBox');
+
+    function renderGangSection() {
+      if (!net || !net.localPlayer) return;
+      const st = net.gangState || { gangs: [], territory: [] };
+      gangBoxEl.innerHTML = '';
+
+      // Gebietsübersicht steht immer oben - sie betrifft auch, wer in keiner
+      // Bande ist (die Beute im fremden Gebiet bleibt normal).
+      const terr = document.createElement('div');
+      terr.className = 'market-item-detail';
+      terr.innerHTML = '<b>Viertel:</b> ' + (st.territory || [])
+        .map((t) => `${escapeHtml(t.name)}: ${t.gangName ? escapeHtml(t.gangName) : '—'}`)
+        .join(' · ');
+      gangBoxEl.appendChild(terr);
+
+      if (!st.myGang) {
+        const info = document.createElement('div');
+        info.className = 'market-item-detail';
+        info.textContent = `Gründung kostet $${st.foundingCost ?? 1500} und geht nur im Hinterhof.`;
+        gangBoxEl.appendChild(info);
+
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Bandenname';
+        input.maxLength = 24;
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small danger';
+        btn.textContent = 'Gründen';
+        btn.addEventListener('click', () => net.foundGang(input.value));
+        row.appendChild(input);
+        row.appendChild(btn);
+        gangBoxEl.appendChild(row);
+
+        for (const g of st.gangs || []) {
+          const gr = document.createElement('div');
+          gr.className = 'market-item';
+          gr.innerHTML = `<div><div class="market-item-name">${escapeHtml(g.name)}</div>` +
+            `<div class="market-item-detail">${g.memberCount}/${g.maxMembers} Mitglieder</div></div>`;
+          const join = document.createElement('button');
+          join.className = 'market-btn-small';
+          join.textContent = 'Beitreten';
+          join.disabled = g.memberCount >= g.maxMembers;
+          if (!join.disabled) join.addEventListener('click', () => net.joinGang(g.id));
+          gr.appendChild(join);
+          gangBoxEl.appendChild(gr);
+        }
+        return;
+      }
+
+      const mine = st.myGang;
+      const isLeader = mine.leaderId === net.myId;
+      const head = document.createElement('div');
+      head.className = 'market-item-detail';
+      head.innerHTML = `<b>${escapeHtml(mine.name)}</b> · Kasse: $${mine.treasury}` +
+        (isLeader ? ' · du führst sie' : '');
+      gangBoxEl.appendChild(head);
+
+      for (const m of mine.members) {
+        const mr = document.createElement('div');
+        mr.className = 'market-item';
+        mr.innerHTML = `<div class="market-item-detail">${escapeHtml(m.name)}` +
+          `${m.id === mine.leaderId ? ' (Anführer)' : ''}${m.connected ? '' : ' — offline'}</div>`;
+        gangBoxEl.appendChild(mr);
+      }
+
+      const money = document.createElement('div');
+      money.className = 'market-item';
+      const amt = document.createElement('input');
+      amt.type = 'number'; amt.min = '1'; amt.value = '100';
+      const dep = document.createElement('button');
+      dep.className = 'market-btn-small';
+      dep.textContent = 'Einzahlen';
+      dep.addEventListener('click', () => net.depositToGang(Number(amt.value)));
+      money.appendChild(amt);
+      money.appendChild(dep);
+      if (isLeader) {
+        const wd = document.createElement('button');
+        wd.className = 'market-btn-small ghost';
+        wd.textContent = 'Abheben';
+        wd.addEventListener('click', () => net.withdrawFromGang(Number(amt.value)));
+        money.appendChild(wd);
+      }
+      gangBoxEl.appendChild(money);
+
+      if (isLeader) {
+        for (const t of st.territory || []) {
+          if (t.gangId != null) continue;
+          const tr = document.createElement('div');
+          tr.className = 'market-item';
+          tr.innerHTML = `<div class="market-item-detail">${escapeHtml(t.name)} ist frei — ` +
+            `$${st.claimCost} aus der Kasse, dann $${st.upkeep} pro Zyklus.</div>`;
+          const cb = document.createElement('button');
+          cb.className = 'market-btn-small danger';
+          cb.textContent = 'Beanspruchen';
+          cb.addEventListener('click', () => net.claimTerritory(t.id));
+          tr.appendChild(cb);
+          gangBoxEl.appendChild(tr);
+        }
+      }
+
+      const leave = document.createElement('button');
+      leave.className = 'market-btn-small ghost';
+      leave.textContent = 'Bande verlassen';
+      leave.addEventListener('click', () => net.leaveGang());
+      gangBoxEl.appendChild(leave);
+    }
+
     const newsListEl = document.getElementById('newsList');
 
     // Farben je Meldungsart, damit sich die Liste ueberfliegen laesst.
@@ -1421,6 +1543,7 @@
         // Beim Oeffnen frisch zeichnen: die Altersangaben ("vor 3 min") waeren
         // sonst der Stand vom letzten Eintreffen einer Meldung.
         if (tab.dataset.section === 'newsSection') renderNewsSection();
+        if (tab.dataset.section === 'gangSection') renderGangSection();
       });
     });
 
@@ -2258,6 +2381,21 @@
       };
       net.onAlarmTriggered = (msg) => {
         showToast(`🔔 Alarm bei "${msg.propertyName}" — ein Einbruch wurde verhindert.`);
+      };
+      net.onGangState = () => {
+        if (socialPanel.style.display !== 'none') renderGangSection();
+      };
+      net.onGangAction = (msg) => {
+        const texts = {
+          foundGang: 'Bande gegründet.',
+          joinGang: 'Du bist der Bande beigetreten.',
+          leaveGang: msg.disbanded ? `"${msg.gangName}" wurde aufgelöst.` : 'Bande verlassen.',
+          depositToGang: `$${msg.amount} in die Kasse eingezahlt.`,
+          withdrawFromGang: `$${msg.amount} aus der Kasse genommen.`,
+          claimTerritory: `${msg.quadrant} beansprucht.`,
+        };
+        showToast(`👥 ${texts[msg.action] || 'Erledigt.'}`);
+        if (socialPanel.style.display !== 'none') renderGangSection();
       };
       net.onNews = (item) => {
         if (socialPanel.style.display !== 'none') renderNewsSection();
