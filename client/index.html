@@ -415,6 +415,9 @@
     <h4>🏥 Gesundheit &amp; Freizeit</h4>
     <div id="wellbeingActions"></div>
 
+    <h4>🕶️ Hinterhof</h4>
+    <div id="blackmarketBox"></div>
+
     <h4>📈 Börse</h4>
     <div id="marketBox"></div>
 
@@ -922,6 +925,7 @@
       if (!net) return;
 
       renderWellbeingSection();
+      renderBlackmarketSection();
       renderMarketSection();
       renderPoliticsSection();
       renderLegalSection();
@@ -1183,6 +1187,8 @@
           already_burgled: 'Da wurde gerade schon eingebrochen.',
           already_protected: 'Das ist bereits geschützt.',
           max_level: 'Weiter ausbauen geht nicht.',
+          already_owned: 'Das besitzt du schon.',
+          no_papers: 'Du hast keine gefälschten Papiere.',
           no_election: 'Gerade findet keine Wahl statt.',
           invalid_amount: 'Ungültige Stückzahl.',
           position_limit: 'Mehr Anteile dieses Papiers darfst du nicht halten.',
@@ -1812,6 +1818,52 @@
     }
 
     // ---------------------------------------------------------------------
+    // Hinterhof: Schwarzmarktwaren
+    // ---------------------------------------------------------------------
+    const blackmarketBoxEl = document.getElementById('blackmarketBox');
+
+    function renderBlackmarketSection() {
+      if (!net || !net.localPlayer) return;
+      const bm = net.blackmarket || { items: [] };
+      blackmarketBoxEl.innerHTML = '';
+
+      const head = document.createElement('div');
+      head.className = 'market-item-detail';
+      head.textContent = 'Einkäufe hier sind selbst strafbar — man kann dabei beobachtet werden.';
+      blackmarketBoxEl.appendChild(head);
+
+      for (const item of bm.items || []) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        const info = document.createElement('div');
+        info.innerHTML =
+          `<div class="market-item-name">${escapeHtml(item.name)}${item.owned ? ` (${item.owned})` : ''}</div>` +
+          `<div class="market-item-detail">$${item.price} · ${escapeHtml(item.description)}</div>`;
+        row.appendChild(info);
+
+        const buy = document.createElement('button');
+        buy.className = 'market-btn-small danger';
+        buy.textContent = 'Kaufen';
+        // Dauerhafte Waren nur einmal - ein zweiter Scanner bringt nichts.
+        buy.disabled = !item.consumable && item.owned > 0;
+        if (!buy.disabled) buy.addEventListener('click', () => net.buyIllegalItem(item.id));
+        row.appendChild(buy);
+
+        // Papiere lassen sich direkt hier benutzen - ortsungebunden, das ist
+        // ihr Vorteil gegenüber Anwalt und Bestechung.
+        if (item.id === 'papers' && item.owned > 0) {
+          const use = document.createElement('button');
+          use.className = 'market-btn-small';
+          use.textContent = 'Benutzen';
+          use.addEventListener('click', () => net.useForgedPapers());
+          row.appendChild(use);
+        }
+
+        blackmarketBoxEl.appendChild(row);
+      }
+    }
+
+    // ---------------------------------------------------------------------
     // Börse: Kurse, Kauf, Verkauf
     // ---------------------------------------------------------------------
     const marketBoxEl = document.getElementById('marketBox');
@@ -2194,6 +2246,22 @@
         else if (msg.action === 'castVote') showToast('🗳️ Stimme abgegeben.');
         else showToast(`🗳️ Steuersatz auf ${(msg.taxRate * 100).toFixed(2)}% gesetzt.`);
         if (marketPanel.style.display !== 'none') renderPoliticsSection();
+      };
+      net.onBlackmarketState = () => {
+        if (marketPanel.style.display !== 'none') renderBlackmarketSection();
+      };
+      net.onBlackmarketAction = (msg) => {
+        if (msg.action === 'useForgedPapers') {
+          showToast('🕶️ Papiere benutzt — die Fahndung ist erledigt.');
+        } else {
+          showToast(msg.busted
+            ? `🕶️ ${msg.item} gekauft für $${msg.price} — aber jemand hat dich gesehen.`
+            : `🕶️ ${msg.item} gekauft für $${msg.price}.`);
+        }
+        if (marketPanel.style.display !== 'none') renderBlackmarketSection();
+      };
+      net.onPursuitWarning = () => {
+        showToast('📡 Scanner: die Polizei hat dich im Visier!');
       };
       net.onPropertyUpgraded = (msg) => {
         showToast(`🔨 "${msg.propertyName}" ist jetzt ${msg.levelName} — für $${msg.cost}.`);
