@@ -89,7 +89,12 @@ class NetClient {
     // Schutz: Alarmanlage und Versicherung
     this.onProtectionChanged = null;
     this.onPropertyUpgraded = null;
-    this.onPropertyUpgraded = null;
+
+    // Schwarzmarkt
+    this.blackmarket = { items: [] };
+    this.onBlackmarketState = null;
+    this.onBlackmarketAction = null;
+    this.onPursuitWarning = null;
     this.onAlarmTriggered = null;
 
     // Kriminalitaet: Einbruch und Bankueberfall
@@ -573,8 +578,19 @@ class NetClient {
         break;
       }
 
-      case 'propertyUpgraded': {
-        if (this.onPropertyUpgraded) this.onPropertyUpgraded(msg);
+      case 'blackmarketState': {
+        this.blackmarket = msg;
+        if (this.onBlackmarketState) this.onBlackmarketState(msg);
+        break;
+      }
+
+      case 'blackmarketAction': {
+        if (this.onBlackmarketAction) this.onBlackmarketAction(msg);
+        break;
+      }
+
+      case 'pursuitWarning': {
+        if (this.onPursuitWarning) this.onPursuitWarning(msg);
         break;
       }
 
@@ -1118,8 +1134,12 @@ class NetClient {
     this.send({ type: 'setTaxRate', rate });
   }
 
-  upgradeProperty(propertyId) {
-    this.send({ type: 'upgradeProperty', propertyId });
+  buyIllegalItem(itemId) {
+    this.send({ type: 'buyIllegalItem', itemId });
+  }
+
+  useForgedPapers() {
+    this.send({ type: 'useForgedPapers' });
   }
 
   upgradeProperty(propertyId) {
