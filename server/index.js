@@ -74,6 +74,19 @@ function announce(kind, text) {
   broadcast({ type: 'newsItem', item: world.pushNews(kind, text) });
 }
 
+/**
+ * Bandenzustand an alle - aber jedem seinen eigenen: die Kasse und die
+ * Mitgliederliste gehen nur an die eigene Bande, deshalb je Empfaenger neu
+ * gebaut statt einmal per broadcast.
+ */
+function broadcastGangState() {
+  for (const client of wss.clients) {
+    if (client.playerId != null && client.readyState === 1) {
+      send(client, { type: 'gangState', ...world.buildGangState(client.playerId) });
+    }
+  }
+}
+
 function buildEconomyStateMessage() {
   return {
     type: 'economyState',
@@ -176,6 +189,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'newsState', ...world.buildNewsState() });
       send(ws, { type: 'blackmarketState', ...world.buildBlackmarketState(result.player.id) });
       send(ws, { type: 'raceState', ...world.buildRaceState() });
+      send(ws, { type: 'gangState', ...world.buildGangState(result.player.id) });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -582,6 +596,29 @@ wss.on('connection', (ws) => {
         // Kandidatenliste, Stimmenstand und Steuersatz betreffen alle.
         broadcast({ type: 'politicsState', ...world.buildPoliticsState() });
         broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
+      } else {
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
+      }
+      return;
+    }
+
+    if (['foundGang','joinGang','leaveGang','depositToGang','withdrawFromGang','claimTerritory']
+        .includes(msg.type) && ws.playerId != null) {
+      const result =
+        msg.type === 'foundGang' ? world.foundGang(ws.playerId, msg.name)
+        : msg.type === 'joinGang' ? world.joinGang(ws.playerId, msg.gangId)
+        : msg.type === 'leaveGang' ? world.leaveGang(ws.playerId)
+        : msg.type === 'depositToGang' ? world.depositToGang(ws.playerId, msg.amount)
+        : msg.type === 'withdrawFromGang' ? world.withdrawFromGang(ws.playerId, msg.amount)
+        : world.claimTerritory(ws.playerId, msg.quadrantId);
+      if (result.ok) {
+        send(ws, { type: 'gangAction', action: msg.type, ...result, player: undefined, gang: undefined });
+        // Bandenliste und Gebietsstand betreffen alle - jeder soll sehen, wem er
+        // beitreten koennte und wer welches Viertel haelt.
+        broadcastGangState();
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
+        if (msg.type === 'foundGang') announce('crime', `Eine neue Bande nennt sich "${result.gang.name}".`);
+        if (msg.type === 'claimTerritory') announce('crime', `${result.gang.name} beansprucht ${result.quadrant}.`);
       } else {
         send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
       }
@@ -1029,6 +1066,15 @@ setInterval(() => {
   // der Server (Grundprinzip 1) - und das Wetter kennt er ohnehin nur von dort.
   world.updateWeather();
   broadcast({ type: 'environmentState', ...world.buildEnvironmentState() });
+
+  // Gebietsunterhalt einziehen. Wer nicht zahlen kann, verliert das Viertel.
+  const lostTerritory = world.chargeTerritoryUpkeep();
+  if (lostTerritory.length > 0) {
+    broadcastGangState();
+    for (const l of lostTerritory) {
+      announce('crime', `${l.gangName} kann ${l.quadrant} nicht mehr halten — das Viertel ist frei.`);
+    }
+  }
 
   // Rennsaison auswerten, wenn sie abgelaufen ist.
   const raceEvent = world.advanceRaceSeason();
