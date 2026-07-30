@@ -136,6 +136,12 @@ const {
 } = require('./daynight');
 const { NEWS_LIMIT } = require('./news');
 const {
+  BUST_CHANCE,
+  BUST_WANTED,
+  findItem,
+  buildItemCatalog,
+} = require('./blackmarket');
+const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
   CHILD_COST,
@@ -967,6 +973,7 @@ class GameWorld {
         // Depot: ohne Absicherung waere es undefined und jeder Zugriff darauf
         // ein Absturz statt nur eines falschen Werts.
         portfolio: (saved.portfolio && typeof saved.portfolio === 'object') ? saved.portfolio : {},
+        items: (saved.items && typeof saved.items === 'object') ? saved.items : {},
       };
 
       // Aeltere Spielstaende wurden gespeichert, BEVOR es Gebaeude gab - eine
@@ -1613,6 +1620,80 @@ class GameWorld {
       // der Rest verschwindet als Geld-Senke.
       this.bankVault += Math.round(remaining * VAULT_TAX_SHARE);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // SCHWARZMARKT: Waren kaufen und benutzen
+  // ---------------------------------------------------------------------
+
+  /** Katalog samt eigenem Bestand. */
+  buildBlackmarketState(playerId) {
+    const player = playerId != null ? this.players.get(playerId) : null;
+    const owned = (player && player.items) || {};
+    return {
+      items: buildItemCatalog().map((i) => ({ ...i, owned: owned[i.id] || 0 })),
+    };
+  }
+
+  /** Besitzt der Spieler diese Ware? */
+  hasItem(player, itemId) {
+    return !!(player && player.items && player.items[itemId] > 0);
+  }
+
+  /** Verbraucht eine Ware. Gibt false zurueck, wenn keine da war. */
+  consumeItem(player, itemId) {
+    if (!this.hasItem(player, itemId)) return false;
+    player.items[itemId] -= 1;
+    if (player.items[itemId] <= 0) delete player.items[itemId];
+    return true;
+  }
+
+  /**
+   * Kauft eine Ware. Der Einkauf ist selbst strafbar: mit BUST_CHANCE wird man
+   * dabei beobachtet und das Fahndungslevel steigt - die Ware bekommt man
+   * trotzdem, es ist ein Risikozuschlag und kein Fehlschlag.
+   */
+  buyIllegalItem(playerId, itemId) {
+    const player = this.players.get(playerId);
+    const item = findItem(itemId);
+    if (!player || !item) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+
+    if (!player.items) player.items = {};
+    // Dauerhafte Waren nur einmal - ein zweiter Scanner bringt nichts.
+    if (!item.consumable && this.hasItem(player, itemId)) {
+      return { ok: false, reason: 'already_owned' };
+    }
+    if (player.cash < item.price) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'buyIllegalItem');
+    if (away) return away;
+
+    player.cash -= item.price;
+    player.items[itemId] = (player.items[itemId] || 0) + 1;
+
+    let busted = false;
+    if (Math.random() < BUST_CHANCE) {
+      busted = true;
+      player.wanted += BUST_WANTED;
+      player.lastCrimeAt = Date.now();
+    }
+
+    return { ok: true, item: item.name, itemId, price: item.price, busted, player };
+  }
+
+  /** Benutzt gefaelschte Papiere: Fahndung sofort auf 0, ohne Weg und ohne Risiko. */
+  useForgedPapers(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.wanted <= 0) return { ok: false, reason: 'not_wanted' };
+    if (!this.hasItem(player, 'papers')) return { ok: false, reason: 'no_papers' };
+
+    this.consumeItem(player, 'papers');
+    player.wanted = 0;
+    return { ok: true, player };
   }
 
   // ---------------------------------------------------------------------
@@ -2494,14 +2575,20 @@ class GameWorld {
     burglar.wanted += BURGLARY_WANTED_ON_ATTEMPT;
 
     // Die Alarmanlage senkt die Erfolgschance deutlich (0,45 -> 0,2).
-    const chance = property.hasAlarm ? ALARM_BURGLARY_SUCCESS_CHANCE : BURGLARY_SUCCESS_CHANCE;
+    // Ein Dietrich hebt sie wieder an und wird dabei verbraucht - auch bei
+    // einem Fehlschlag, sonst waere er risikolos.
+    const lockpick = findItem('lockpick');
+    const usedLockpick = this.consumeItem(burglar, 'lockpick');
+    const chance = usedLockpick
+      ? (property.hasAlarm ? lockpick.burglaryChanceAlarmed : lockpick.burglaryChance)
+      : (property.hasAlarm ? ALARM_BURGLARY_SUCCESS_CHANCE : BURGLARY_SUCCESS_CHANCE);
 
     if (Math.random() >= chance) {
       // Scheitert der Versuch an einer Anlage, geht zusaetzlich die Meldung an
       // die Polizei raus. Damit ist die Anlage nicht nur passiver Schutz,
       // sondern macht das Ziel aktiv unattraktiv.
       if (property.hasAlarm) burglar.wanted += ALARM_WANTED_BONUS_ON_FAILURE;
-      return { ok: true, success: false, alarmTriggered: !!property.hasAlarm, burglar, owner, property };
+      return { ok: true, success: false, alarmTriggered: !!property.hasAlarm, usedLockpick, burglar, owner, property };
     }
 
     // Beute = entgangener Ertrag ueber die Ausfallzeit, in slowTicks gerechnet.
@@ -2525,7 +2612,7 @@ class GameWorld {
       }
     }
 
-    return { ok: true, success: true, loot, payout, burglar, owner, property };
+    return { ok: true, success: true, loot, payout, usedLockpick, burglar, owner, property };
   }
 
   /**
@@ -2594,6 +2681,9 @@ class GameWorld {
     const chaseRange = POLICE_CHASE_RANGE * policeRangeMult;
     const chaseSpeed = POLICE_CHASE_SPEED * policeSpeedMult;
 
+    // Spieler mit Polizeiscanner, die neu ins Visier geraten sind.
+    const pursued = [];
+
     const wantedPlayers = [...this.players.values()].filter(
       (p) => p.connected && p.wanted > 0 && !this.isJailed(p)
     );
@@ -2610,6 +2700,11 @@ class GameWorld {
       }
 
       if (target) {
+        // Scanner-Warnung nur beim NEUEN Ziel, nicht in jedem Tick - sonst
+        // waere es eine Dauermeldung statt einer Warnung.
+        if (cop.targetPlayerId !== target.id && this.hasItem(target, 'scanner')) {
+          pursued.push(target);
+        }
         cop.targetPlayerId = target.id;
         const dx = target.position.x - cop.position.x;
         const dy = target.position.y - cop.position.y;
@@ -2640,7 +2735,10 @@ class GameWorld {
       cop.position.y = Math.max(0, Math.min(WORLD_HEIGHT, cop.position.y + cop.velocity.y * dtSec));
     }
 
-    return arrests;
+    // Frueher wurde nur `arrests` zurueckgegeben. Der Scanner braucht
+    // zusaetzlich die neu Verfolgten - deshalb jetzt ein Objekt. Der einzige
+    // Aufrufer in index.js ist entsprechend angepasst.
+    return { arrests, pursued };
   }
 
   /** Entlaesst Spieler, deren Haftzeit abgelaufen ist. */
