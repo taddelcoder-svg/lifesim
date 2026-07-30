@@ -73,6 +73,7 @@ function createPlayer(name, token) {
     portfolio: {},         // Wertpapierbestand: Kuerzel -> Stueckzahl (siehe market.js)
     items: {},             // Schwarzmarktwaren: Kuerzel -> Anzahl (siehe blackmarket.js)
     race: null,            // laufender Rennversuch (siehe racing.js), nie gespeichert
+    gangId: null,          // Mitgliedschaft in einer Bande (siehe gangs.js)
     spouseId: null,        // Ehepartner-ID, oder null
     pendingReincarnation: null, // gesetzt bei Tod: { heirChildId } - Spieler wartet auf Weiterleben-Aktion
     ws: null, // Laufzeitreferenz, wird niemals serialisiert
