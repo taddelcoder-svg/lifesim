@@ -950,12 +950,17 @@
           : '';
         // Schutzstatus ist fuer ALLE sichtbar - das ist der Punkt: eine
         // Alarmanlage schreckt nur ab, wenn potenzielle Einbrecher sie sehen.
+        // Ausbaustufe anzeigen: sie erklaert, warum Ertrag und Beute hoeher sind.
+        const levelNames = { 1: '', 2: '🔨 renoviert', 3: '✨ luxussaniert' };
+        const levelText = (prop.level > 1)
+          ? ` · <span style="color:#d8c88f">${levelNames[prop.level]}</span>` : '';
+
         const protectText =
           (prop.hasAlarm ? ' · <span style="color:#8fd8a0">🔔 gesichert</span>' : '') +
           (prop.insured ? ' · <span style="color:#8fb0d8">🛡️ versichert</span>' : '');
         info.innerHTML =
           `<div class="market-item-name">${prop.name}</div>` +
-          `<div class="market-item-detail">$${prop.price} · +${prop.incomePerTick}/-${prop.maintenancePerTick} pro Tick · ${ownerText}${burgledText}${protectText}</div>`;
+          `<div class="market-item-detail">$${prop.price} · +${prop.incomePerTick}/-${prop.maintenancePerTick} pro Tick · ${ownerText}${levelText}${burgledText}${protectText}</div>`;
         row.appendChild(info);
 
         const btn = document.createElement('button');
@@ -984,6 +989,17 @@
         // Schutz: nur beim eigenen Besitz. Preise stehen im Knopf, damit man
         // vor dem Weg zum Maklerbuero weiss, was es kostet.
         if (isMine) {
+          // Ausbaukosten: MUSS mit PROPERTY_LEVELS in server/economy.js
+          // uebereinstimmen - nur fuer die Anzeige, gerechnet wird im Server.
+          const UPGRADE_RATIOS = { 1: 0.6, 2: 1.2 };
+          const ratio = UPGRADE_RATIOS[prop.level || 1];
+          if (ratio) {
+            const upBtn = document.createElement('button');
+            upBtn.className = 'market-btn-small';
+            upBtn.textContent = `🔨 Ausbau $${Math.round(prop.price * ratio)}`;
+            upBtn.addEventListener('click', () => net.upgradeProperty(prop.id));
+            row.appendChild(upBtn);
+          }
           if (!prop.hasAlarm) {
             const alarmBtn = document.createElement('button');
             alarmBtn.className = 'market-btn-small';
@@ -1166,6 +1182,7 @@
           not_owned: 'Das Objekt gehört niemandem — da gibt es nichts zu holen.',
           already_burgled: 'Da wurde gerade schon eingebrochen.',
           already_protected: 'Das ist bereits geschützt.',
+          max_level: 'Weiter ausbauen geht nicht.',
           no_election: 'Gerade findet keine Wahl statt.',
           invalid_amount: 'Ungültige Stückzahl.',
           position_limit: 'Mehr Anteile dieses Papiers darfst du nicht halten.',
@@ -2177,6 +2194,10 @@
         else if (msg.action === 'castVote') showToast('🗳️ Stimme abgegeben.');
         else showToast(`🗳️ Steuersatz auf ${(msg.taxRate * 100).toFixed(2)}% gesetzt.`);
         if (marketPanel.style.display !== 'none') renderPoliticsSection();
+      };
+      net.onPropertyUpgraded = (msg) => {
+        showToast(`🔨 "${msg.propertyName}" ist jetzt ${msg.levelName} — für $${msg.cost}.`);
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
       };
       net.onProtectionChanged = (msg) => {
         if (msg.action === 'buyAlarm') {
