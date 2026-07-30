@@ -150,6 +150,17 @@ const {
   lapLength,
 } = require('./racing');
 const {
+  GANG_FOUNDING_COST,
+  MAX_GANG_MEMBERS,
+  MAX_GANG_NAME_LENGTH,
+  QUADRANTS,
+  TERRITORY_CLAIM_COST,
+  TERRITORY_UPKEEP_PER_TICK,
+  TERRITORY_LOOT_BONUS,
+  quadrantAt,
+  findQuadrant,
+} = require('./gangs');
+const {
   MARRIAGE_HAPPINESS_BONUS,
   DIVORCE_HAPPINESS_PENALTY,
   CHILD_COST,
@@ -372,6 +383,12 @@ class GameWorld {
     // Stadtnachrichten: Ringpuffer der juengsten oeffentlichen Ereignisse.
     this.news = [];
     this.nextNewsId = 1;
+
+    // Banden und Territorium.
+    this.gangs = new Map();   // id -> { id, name, leaderId, members:[], treasury }
+    this.nextGangId = 1;
+    this.territory = {};      // quadrantId -> gangId
+    for (const q of QUADRANTS) this.territory[q.id] = null;
 
     // Rennen: Preistopf aus Startgeldern, Bestzeiten der laufenden Saison.
     this.race = {
@@ -648,6 +665,10 @@ class GameWorld {
         // danach auf eine Spieler-ID, die es nicht mehr gibt: das Fahrzeug
         // waere fuer alle Zeit weder kaufbar noch auffindbar.
         this.releaseVehiclesOwnedBy(id);
+        // Auch aus der Bande austragen - sonst zeigt gang.members auf eine
+        // Spieler-ID, die es nicht mehr gibt, und eine verwaiste Bande hielte
+        // ihr Gebiet fuer immer.
+        if (player.gangId != null) this.leaveGang(id);
         this.players.delete(id);
         this.tokenIndex.delete(player.token);
         this.lastBroadcastMovement.delete(id);
@@ -936,6 +957,9 @@ class GameWorld {
       news: this.news,
       nextNewsId: this.nextNewsId,
       race: { pot: this.race.pot, seasonEndsAt: this.race.seasonEndsAt, bestTimes: this.race.bestTimes },
+      gangs: [...this.gangs.values()],
+      nextGangId: this.nextGangId,
+      territory: this.territory,
       bankVault: this.bankVault,
       // Fahrzeuge fehlten hier bisher komplett: Besitz und Standort gingen bei
       // JEDEM Neustart verloren, also bei jedem Render-Deploy. Ein gekaufter
@@ -993,6 +1017,7 @@ class GameWorld {
         // Ein laufender Rennversuch ueberlebt den Neustart bewusst NICHT: die
         // Uhr lief waehrend der Ausfallzeit weiter und die Zeit waere wertlos.
         race: null,
+        gangId: saved.gangId ?? null,
       };
 
       // Aeltere Spielstaende wurden gespeichert, BEVOR es Gebaeude gab - eine
@@ -1046,6 +1071,33 @@ class GameWorld {
 
     if (typeof snapshot.bankVault === 'number') this.bankVault = snapshot.bankVault;
     if (typeof snapshot.insurancePool === 'number') this.insurancePool = snapshot.insurancePool;
+    if (Array.isArray(snapshot.gangs)) {
+      for (const g of snapshot.gangs) {
+        if (!g || typeof g.name !== 'string' || !Array.isArray(g.members)) continue;
+        const treasury = Number(g.treasury);
+        this.gangs.set(g.id, {
+          id: g.id,
+          name: g.name,
+          leaderId: g.leaderId,
+          members: g.members.slice(),
+          treasury: Number.isFinite(treasury) && treasury >= 0 ? treasury : 0,
+        });
+      }
+      const nextId = Number(snapshot.nextGangId);
+      this.nextGangId = Number.isFinite(nextId) && nextId > 0
+        ? nextId
+        : Math.max(0, ...this.gangs.keys()) + 1;
+    }
+    if (snapshot.territory && typeof snapshot.territory === 'object') {
+      for (const q of QUADRANTS) {
+        const holder = snapshot.territory[q.id];
+        // Nur uebernehmen, wenn es die Bande wirklich noch gibt - sonst bliebe
+        // ein Gebiet dauerhaft von einer geloeschten Bande belegt und waere fuer
+        // niemanden mehr zu beanspruchen.
+        this.territory[q.id] = this.gangs.has(holder) ? holder : null;
+      }
+    }
+
     if (snapshot.race && typeof snapshot.race === 'object') {
       const pot = Number(snapshot.race.pot);
       this.race.pot = Number.isFinite(pot) && pot >= 0 ? pot : 0;
@@ -1651,6 +1703,202 @@ class GameWorld {
       // der Rest verschwindet als Geld-Senke.
       this.bankVault += Math.round(remaining * VAULT_TAX_SHARE);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // BANDEN: Gruendung, Mitglieder, Kasse, Territorium
+  // ---------------------------------------------------------------------
+
+  gangOf(player) {
+    if (!player || player.gangId == null) return null;
+    return this.gangs.get(player.gangId) || null;
+  }
+
+  buildGangState(playerId) {
+    const player = playerId != null ? this.players.get(playerId) : null;
+    const mine = this.gangOf(player);
+    return {
+      // Alle Banden mit Namen und Groesse - man soll sehen, wem man beitreten
+      // koennte und wer die Gebiete haelt. Die Kasse ist NUR fuer die eigenen
+      // Mitglieder sichtbar, sonst waere jede Bande ein Preisschild fuer Diebe.
+      gangs: [...this.gangs.values()].map((g) => ({
+        id: g.id,
+        name: g.name,
+        leaderId: g.leaderId,
+        memberCount: g.members.length,
+        maxMembers: MAX_GANG_MEMBERS,
+      })),
+      myGang: mine ? {
+        id: mine.id,
+        name: mine.name,
+        leaderId: mine.leaderId,
+        treasury: Math.floor(mine.treasury),
+        members: mine.members
+          .map((id) => this.players.get(id))
+          .filter(Boolean)
+          .map((p) => ({ id: p.id, name: p.name, connected: p.connected })),
+      } : null,
+      territory: QUADRANTS.map((q) => {
+        const holder = this.territory[q.id] != null ? this.gangs.get(this.territory[q.id]) : null;
+        return { id: q.id, name: q.name, gangId: holder ? holder.id : null, gangName: holder ? holder.name : null };
+      }),
+      foundingCost: GANG_FOUNDING_COST,
+      claimCost: TERRITORY_CLAIM_COST,
+      upkeep: TERRITORY_UPKEEP_PER_TICK,
+    };
+  }
+
+  foundGang(playerId, rawName) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (player.gangId != null) return { ok: false, reason: 'already_in_gang' };
+
+    const name = String(rawName || '').trim().slice(0, MAX_GANG_NAME_LENGTH);
+    if (name.length < 3) return { ok: false, reason: 'invalid_name' };
+    if ([...this.gangs.values()].some((g) => g.name.toLowerCase() === name.toLowerCase())) {
+      return { ok: false, reason: 'name_taken' };
+    }
+    if (player.cash < GANG_FOUNDING_COST) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'foundGang');
+    if (away) return away;
+
+    player.cash -= GANG_FOUNDING_COST;
+    const id = this.nextGangId++;
+    this.gangs.set(id, { id, name, leaderId: playerId, members: [playerId], treasury: 0 });
+    player.gangId = id;
+    return { ok: true, gang: this.gangs.get(id), player };
+  }
+
+  joinGang(playerId, gangId) {
+    const player = this.players.get(playerId);
+    const gang = this.gangs.get(gangId);
+    if (!player || !gang) return { ok: false, reason: 'not_found' };
+    if (player.gangId != null) return { ok: false, reason: 'already_in_gang' };
+    if (gang.members.length >= MAX_GANG_MEMBERS) return { ok: false, reason: 'gang_full' };
+
+    gang.members.push(playerId);
+    player.gangId = gang.id;
+    return { ok: true, gang, player };
+  }
+
+  /**
+   * Austritt. Verlaesst der Anfuehrer, rueckt das aelteste verbleibende Mitglied
+   * nach; ist niemand mehr da, wird die Bande aufgeloest UND ihr Territorium
+   * freigegeben - sonst blieben Gebiete fuer immer von einer Bande gehalten,
+   * die es nicht mehr gibt.
+   */
+  leaveGang(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    const gang = this.gangOf(player);
+    if (!gang) return { ok: false, reason: 'not_in_gang' };
+
+    gang.members = gang.members.filter((id) => id !== playerId);
+    player.gangId = null;
+
+    if (gang.members.length === 0) {
+      this.disbandGang(gang.id);
+      return { ok: true, disbanded: true, gangName: gang.name, player };
+    }
+    if (gang.leaderId === playerId) gang.leaderId = gang.members[0];
+    return { ok: true, disbanded: false, gangName: gang.name, player };
+  }
+
+  /** Loest eine Bande auf und gibt ihre Gebiete frei. */
+  disbandGang(gangId) {
+    for (const q of QUADRANTS) {
+      if (this.territory[q.id] === gangId) this.territory[q.id] = null;
+    }
+    for (const p of this.players.values()) {
+      if (p.gangId === gangId) p.gangId = null;
+    }
+    this.gangs.delete(gangId);
+  }
+
+  /** Zahlt Bargeld in die Bandenkasse ein. Ortsungebunden - Einzahlen ist nie das Problem. */
+  depositToGang(playerId, amount) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    const gang = this.gangOf(player);
+    if (!gang) return { ok: false, reason: 'not_in_gang' };
+
+    const amt = Math.floor(Number(amount));
+    if (!Number.isFinite(amt) || amt <= 0) return { ok: false, reason: 'invalid_amount' };
+    if (player.cash < amt) return { ok: false, reason: 'insufficient_funds' };
+
+    player.cash -= amt;
+    gang.treasury += amt;
+    return { ok: true, amount: amt, treasury: gang.treasury, player };
+  }
+
+  /** Nimmt Geld aus der Kasse. NUR der Anfuehrer - sonst waere die Kasse eine Selbstbedienung. */
+  withdrawFromGang(playerId, amount) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    const gang = this.gangOf(player);
+    if (!gang) return { ok: false, reason: 'not_in_gang' };
+    if (gang.leaderId !== playerId) return { ok: false, reason: 'not_leader' };
+
+    const amt = Math.floor(Number(amount));
+    if (!Number.isFinite(amt) || amt <= 0) return { ok: false, reason: 'invalid_amount' };
+    if (gang.treasury < amt) return { ok: false, reason: 'insufficient_funds' };
+
+    gang.treasury -= amt;
+    player.cash += amt;
+    return { ok: true, amount: amt, treasury: gang.treasury, player };
+  }
+
+  /** Beansprucht ein freies Gebiet. Bezahlt wird aus der Bandenkasse, nicht privat. */
+  claimTerritory(playerId, quadrantId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    const gang = this.gangOf(player);
+    if (!gang) return { ok: false, reason: 'not_in_gang' };
+    if (gang.leaderId !== playerId) return { ok: false, reason: 'not_leader' };
+
+    const quad = findQuadrant(quadrantId);
+    if (!quad) return { ok: false, reason: 'not_found' };
+    if (this.territory[quad.id] != null) return { ok: false, reason: 'territory_taken' };
+    if (gang.treasury < TERRITORY_CLAIM_COST) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'claimTerritory');
+    if (away) return away;
+
+    gang.treasury -= TERRITORY_CLAIM_COST;
+    this.territory[quad.id] = gang.id;
+    return { ok: true, quadrant: quad.name, quadrantId: quad.id, gang, player };
+  }
+
+  /**
+   * Zieht bei jedem langsamen Tick den Unterhalt aller gehaltenen Gebiete ein.
+   * Reicht die Kasse nicht, geht das Gebiet verloren - das ist der einzige Weg,
+   * wie Territorium den Besitzer wechselt, und er braucht keinen Kampf.
+   */
+  chargeTerritoryUpkeep() {
+    const lost = [];
+    for (const q of QUADRANTS) {
+      const gangId = this.territory[q.id];
+      if (gangId == null) continue;
+      const gang = this.gangs.get(gangId);
+      if (!gang) { this.territory[q.id] = null; continue; }
+
+      if (gang.treasury < TERRITORY_UPKEEP_PER_TICK) {
+        this.territory[q.id] = null;
+        lost.push({ gangName: gang.name, quadrant: q.name });
+        continue;
+      }
+      gang.treasury -= TERRITORY_UPKEEP_PER_TICK;
+    }
+    return lost;
+  }
+
+  /** Haelt die Bande dieses Spielers den Quadranten an dieser Position? */
+  controlsPositionOf(player, x, y) {
+    const gang = this.gangOf(player);
+    if (!gang) return false;
+    return this.territory[quadrantAt(x, y, this.cityLayout.worldSize)] === gang.id;
   }
 
   // ---------------------------------------------------------------------
@@ -2747,7 +2995,13 @@ class GameWorld {
 
     // Beute = entgangener Ertrag ueber die Ausfallzeit, in slowTicks gerechnet.
     const ticks = BURGLARY_DISABLE_MS / SLOW_TICK_MS;
-    const loot = Math.max(1, Math.round(property.incomePerTick * ticks));
+    // Im eigenen Bandengebiet faellt die Beute hoeher aus. Bewusst nur die
+    // BEUTE und nicht die Erfolgschance: sonst waere Gebietskontrolle ein
+    // Freibrief, und Alarmanlagen - die an der Chance ansetzen - waeren
+    // gegenueber der kontrollierenden Bande wertlos.
+    const territoryBonus = this.controlsPositionOf(burglar, property.position.x, property.position.y)
+      ? TERRITORY_LOOT_BONUS : 0;
+    const loot = Math.max(1, Math.round(property.incomePerTick * ticks * (1 + territoryBonus)));
 
     property.disabledUntil = now + BURGLARY_DISABLE_MS;
     burglar.cash += loot;
@@ -2766,7 +3020,7 @@ class GameWorld {
       }
     }
 
-    return { ok: true, success: true, loot, payout, usedLockpick, burglar, owner, property };
+    return { ok: true, success: true, loot, payout, usedLockpick, territoryBonus: territoryBonus > 0, burglar, owner, property };
   }
 
   /**
