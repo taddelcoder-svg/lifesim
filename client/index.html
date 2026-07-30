@@ -203,12 +203,72 @@
   .market-item:last-child { border-bottom: none; }
   .market-item-name { font-weight: 600; }
   .market-item-detail { color: #9aa0ab; font-size: 11px; }
-  .market-btn-small {
-    padding: 6px 10px; border-radius: 6px; border: none; background: #4a7cff;
-    color: white; cursor: pointer; font-size: 12px; white-space: nowrap;
+  /* ---------------------------------------------------------------------
+     Kenney UI Pack 2.0 (CC0) - dieselbe Lizenz wie die KayKit-Modelle.
+     Nur SECHS Sprites, direkt als Data-URI eingebettet (zusammen 2,8 KB):
+     das Pack hat 1310 Dateien und 5,5 MB, die sich ueber den GitHub-
+     Web-Editor nicht sinnvoll hochladen liessen. Eingebettet bleibt es bei
+     einer einzigen Datei, die ohnehin bei jeder Aenderung neu hochgeladen wird.
+
+     Die Knoepfe sind 192x64 mit ~8px Eckradius und einer 8px hohen
+     Tiefenkante unten - daher die groessere untere Scheibe im border-image-slice.
+     --------------------------------------------------------------------- */
+  :root {
+    --ui-btn: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAABACAMAAAB7sojtAAAABGdBTUEAALGPC/xhBQAAAFpQTFRFE2SIFGWGFH2qE2SGE2WGFXupFXyoE2WHEmWIE2WHFXyoFX2oAAAAIpXFLq3jJ6zlKKHUKq/pH6LbFXWdFXSbFGuPFG6TJp3PFXqjMrXtFGWHNr33Fn2oHJ/X6J2ntQAAAA10Uk5TTz8/769fz59v37+fAFCD/Y0AAAC3SURBVGje7drFEcRQDARRrRlkpg9y/mmu01BVdwTz7iOqxTgM5rBhGAtV0dEcN6rUZtMcs8PiPJnV0tiT3fZYI2Yxb/vrsH3L0ewD5Pw6LWcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8AQI3+Vs8bl/+S5nQQ7fp79DLrPV6/7V7JJ0ej6+nknKdAev88OdSqmS6yr5+QaIaOt5f/u917Xrvc7vO9U/pKhYHxPSWF8AAAAASUVORK5CYII=');
+    --ui-btn_r: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAABACAMAAAB7sojtAAAABGdBTUEAALGPC/xhBQAAAFpQTFRFiBAghhAgzggohhAjhhAihxAizAsozAoqiBAihxAizAspzQoqAAAA6TtX3ytI8kxm9UBdmA4ksgwntwwnoQ4l90hk8C5NxAsp5jZS+FdwhxAj/2J7zQsq7idH6b4d9AAAAA10Uk5TTz8/r++fX89v37+fAIlLwNYAAAC4SURBVGje7drZEYQwDARRLTdY3KdtkX+aSxqq6o5g3v+IahGGwRw2DKFQFQ3muKDSmE1zzA6L82TWSGtPdttjrZjFfF6vw64zR7MPkPPrtJwBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwBPg/i5ni8/9y3c5u2X3ffrbZTUbve4fzVZJm+fj65akSsftdf59pErK5LpSfr4BIlp73l9/73Xteq/z+071D93+WB/+RfD4AAAAAElFTkSuQmCC');
+    --ui-btn_g: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAABACAMAAAB7sojtAAAABGdBTUEAALGPC/xhBQAAAFpQTFRFZGeBZWmCmpquZmeAZWeAmZmuZWiAmJqvZWeBZmiAmJqvmJqvAAAA5eXrvr/N0dLchYedcnSLiIqgeHqR6uvx7u/03uDqy8zXkZOp8vL1ZmiA////mJqv2tznhb1sPQAAAA10Uk5TTz8/r+9fn89v37+fAD/wGGoAAAC3SURBVGje7drFEcRQDARRrRlkpg9y/mmu01BVdwTz7iOqxTgM5rBhGAtV0dEcN6rUZvMUs8PiNJvV0tqT3fZYK2YxX/frsPvK0ewD5Pw6LWcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8AQI3+Xs9Ln//C5nQXbfp79dNrPF6/7FbJO0ej6+rkmqdASv88ORKimT60r5+QaIaON5f/O917Xrvc7vO9U/m0NYH/hhx5QAAAAASUVORK5CYII=');
+    --ui-field: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAABACAMAAAB7sojtAAAABGdBTUEAALGPC/xhBQAAADlQTFRFmJqvmJmvmJqvmpqumZmumJmvmJqvAAAA3uDq5eXrvr/N7u/06uvx0dLcy8zX8vL12tzn////mJqvv+mrIwAAAAh0Uk5Tz6+/P1/fnwCODdFmAAAArUlEQVRo3u3ayQ0DMQxDUY83ze4R+y92fEoBuQQKPivgAwSdmMxKz1kBk3MvZsm6AqdbqtK+DQ+Yse1STUm3h82t2V/Dj/UJmPXwIU2A+xM07h9AxPv5N0C0BwoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIDvASy2fgsIPPprc3Z5xux/ztllS0vs4euSinRF7X9JJf7426y2qPVbNXsBH8JPGN4bzYMAAAAASUVORK5CYII=');
+    --ui-track: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAQCAMAAADeZIrLAAAABGdBTUEAALGPC/xhBQAAAFRQTFRFsrK7sLC6sbG5srK6u7u7sLC5sbG5sLC6tbW9s7O4sLC6sLC5sLC6AAAA5ubp8PDyyMjP0tLYubnC19fcvr7G3Nzg6+vt+vr69fX2tLS+sLC6////GzpOWQAAAA50Uk5TT8+PPw/fX58fL++vvwAP1MCXAAAAvElEQVQ4y7WUSRLDIAwE5S1gFu8OZvj/P0NcdgJni76JQ08JlUQ20gsTEb1lIvVRLA0uDEtE7iPbdvDzOzJ7dBwBqa+NARqLCyduQf3cX6c+bamBH8PFABaG2zd6NCSwhh8Th3/6+1YIUjhCMQ4oAkJBgPIBxb9Ip0PeOYa8p0PWRPDurp3nCMh8RLbCdn3SscE8XzST+qq4yVLBn13tHko+D2hzXzx2Ut/Naclxi3IffZ9e5/0zL65znfo+dKd6N5HxmDgAAAAASUVORK5CYII=');
+    --ui-thumb: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAgCAMAAAA/gEgKAAAABGdBTUEAALGPC/xhBQAAAEJQTFRFFX2oFX2oFnyoFXyoFn2oFn2oFXyoEXeqAAAAHo27LKneKqXZJp3PMrXtNLnyLq3jIJHAIpXFLLHrFn2oNr33HJ/X6JWsQwAAAAl0Uk5T75+vv98vzw8A1KvrswAAAHtJREFUKM/tycsWgyAMhOFRQOhVdML7v2rTniMN4L6bzir5P6RjYXJuCvXFcURPnY89xIWX2zVziS1o30S3VYHp+24EppdiBLZbQdONoO1fQderYGZu+kcyZ5Br29+ykgoipZvIH34HTxn2UHDcRrnTIYAn05yCH7sP6QUncDStIs2OTgAAAABJRU5ErkJggg==');
   }
-  .market-btn-small.danger { background: #e05a5a; }
-  .market-btn-small.ghost { background: #3a3f4b; }
+
+  .market-btn-small {
+    padding: 7px 12px; border-style: solid; border-color: transparent;
+    border-width: 6px 8px 9px 8px;
+    border-image-source: var(--ui-btn);
+    border-image-slice: 12 12 16 12 fill;
+    border-image-width: 6px 8px 9px 8px;
+    background: none;
+    /* Dunkle Schrift ist hier keine Geschmacksfrage: weiss auf dem blauen
+       Sprite kommt nur auf Kontrast 3,0, auf dem grauen sogar auf 1,37 -
+       also unlesbar. Dunkel erreicht 5,4 bzw. 11,9. */
+    color: #10222e; font-weight: 600;
+    cursor: pointer; font-size: 12px; white-space: nowrap;
+  }
+  .market-btn-small:active { transform: translateY(1px); }
+  .market-btn-small:disabled { opacity: 0.45; cursor: default; transform: none; }
+  /* Rot ist dunkel genug, dass weiss dort besser liegt (4,19 gegen 3,89). */
+  .market-btn-small.danger { border-image-source: var(--ui-btn_r); color: #fff; }
+  .market-btn-small.ghost { border-image-source: var(--ui-btn_g); color: #10222e; }
+  /* Schieberegler (bisher nur der Steuersatz im Rathaus). Ohne
+     appearance:none ignorieren die Browser jede eigene Gestaltung. Schiene und
+     Griff brauchen je Browser eigene Pseudoelemente - sie lassen sich NICHT in
+     einer Regel zusammenfassen, ein unbekannter Selektor wuerde die ganze
+     Regel verwerfen. */
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    background: none; height: 26px; flex: 1; min-width: 80px;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 12px; border-style: solid; border-color: transparent;
+    border-width: 5px; border-image-source: var(--ui-track);
+    border-image-slice: 6 fill; border-image-width: 5px;
+  }
+  input[type=range]::-moz-range-track {
+    height: 12px; border-style: solid; border-color: transparent;
+    border-width: 5px; border-image-source: var(--ui-track);
+    border-image-slice: 6 fill; border-image-width: 5px;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 18px; height: 24px; margin-top: -7px;
+    background: var(--ui-thumb) center/contain no-repeat; border: none;
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 18px; height: 24px; border: none;
+    background: var(--ui-thumb) center/contain no-repeat;
+  }
+
   .market-empty { color: #6a7080; font-size: 12px; padding: 4px 0; }
   #bankOverview { margin-bottom: 10px; }
   .bank-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
@@ -216,16 +276,23 @@
   .bank-row.debt .bank-value { color: #e08080; }
   .bank-row.savings .bank-value { color: #7fd88f; }
   .bank-op { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
-  .bank-op input {
-    flex: 1; min-width: 0; padding: 7px 8px; border-radius: 4px; border: 1px solid #3a3f4b;
-    background: #1a1d23; color: #e8e8e8; font-size: 12px;
+  /* Eingabefelder in den Bedienbereichen bekommen den Rahmen-Sprite. Da der
+     hell ist, MUSS die Schrift dunkel werden - das bisherige #e8e8e8 auf hellem
+     Grund waere so unlesbar wie weiss auf dem grauen Knopf. Betrifft nur die
+     Felder in den Panels; Name und Chat bleiben dunkel, weil sie ausserhalb
+     stehen und dort kein heller Knopf danebenliegt. */
+  .bank-op input, #foundCompanyRow input, .market-item input {
+    flex: 1; min-width: 0; padding: 8px 10px;
+    border-style: solid; border-color: transparent; border-width: 8px;
+    border-image-source: var(--ui-field);
+    border-image-slice: 14 fill; border-image-width: 8px;
+    background: none; color: #10222e; font-size: 12px; font-weight: 600;
   }
+  .bank-op input::placeholder, #foundCompanyRow input::placeholder,
+  .market-item input::placeholder { color: #5a6b78; }
   .bank-op button { white-space: nowrap; }
   #foundCompanyRow { display: flex; gap: 6px; margin-bottom: 10px; }
-  #foundCompanyRow input {
-    flex: 1; padding: 7px 8px; border-radius: 4px; border: 1px solid #3a3f4b;
-    background: #1a1d23; color: #e8e8e8; font-size: 12px;
-  }
+
   #actionToast {
     position: fixed; bottom: max(10px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
     background: #22262f; border: 1px solid #3a3f4b; color: #e8e8e8; font-size: 13px;
