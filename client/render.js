@@ -252,6 +252,7 @@ class Renderer {
       townhall: 0x6a5a3a,
       exchange: 0x2e6a4a,
       blackmarket: 0x2a2a2e,
+      raceoffice: 0x7a3a2e,
     };
 
     for (const place of this.net.places) {
