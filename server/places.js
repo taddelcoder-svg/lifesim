@@ -142,6 +142,18 @@ const PLACES = [
     actions: ['buyShares', 'sellShares'],
   },
   {
+    id: 'raceoffice',
+    name: 'Rennleitung',
+    dative: 'zur Rennleitung',
+    icon: '🏁',
+    // Direkt neben der Startlinie (2400/400), aber auf einer Blockmitte - die
+    // Strecke selbst liegt auf Strassen und kann deshalb kein Ort sein.
+    // Anmelden und Fahren sind getrennt: die Uhr laeuft erst am ersten
+    // Kontrollpunkt los, man muss also nicht an der Linie stehen, wenn man zahlt.
+    position: { x: 2200, y: 600 },
+    actions: ['enterRace'],
+  },
+  {
     id: 'blackmarket',
     name: 'Hinterhof',
     dative: 'zum Hinterhof',
