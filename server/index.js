@@ -586,6 +586,48 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'upgradeProperty' && ws.playerId != null) {
+      const result = world.upgradeProperty(ws.playerId, msg.propertyId);
+      if (result.ok) {
+        send(ws, {
+          type: 'propertyUpgraded',
+          propertyName: result.property.name,
+          cost: result.cost,
+          level: result.level,
+          levelName: result.levelName,
+        });
+        // Ertrag, Einbruchsbeute und Schutzkosten haengen daran - der neue Stand
+        // gehoert also an alle, nicht nur an den Besitzer.
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+        announce('economy', `"${result.property.name}" wurde ${result.levelName}.`);
+      } else {
+        send(ws, { type: 'actionError', action: 'upgradeProperty', reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'upgradeProperty' && ws.playerId != null) {
+      const result = world.upgradeProperty(ws.playerId, msg.propertyId);
+      if (result.ok) {
+        send(ws, {
+          type: 'propertyUpgraded',
+          propertyName: result.property.name,
+          cost: result.cost,
+          level: result.level,
+          levelName: result.levelName,
+        });
+        // Der Ausbau aendert Ertrag, Einbruchsbeute und Schutzkosten - das sehen
+        // alle, auch potenzielle Einbrecher.
+        broadcast(buildEconomyStateMessage());
+        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
+        announce('economy', `"${result.property.name}" wurde ${result.levelName}.`);
+      } else {
+        send(ws, { type: 'actionError', action: 'upgradeProperty', reason: result.reason });
+      }
+      return;
+    }
+
     if (['buyAlarm', 'setInsurance'].includes(msg.type) && ws.playerId != null) {
       const result = msg.type === 'buyAlarm'
         ? world.buyAlarm(ws.playerId, msg.propertyId)
