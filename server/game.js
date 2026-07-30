@@ -23,6 +23,7 @@ const {
   COMPANY_FOUNDING_COST,
   COMPANY_LEVELS,
   MAX_OWNED_COMPANIES,
+  PROPERTY_LEVELS,
   EMPLOYEE_INCOME_PER_TICK,
   EMPLOYEE_WAGE_PER_TICK,
   EMPLOYMENT_OFFER_DURATION_MS,
@@ -310,7 +311,19 @@ class GameWorld {
     // dadurch entsteht echte Konkurrenz zwischen Spielern um wenige Objekte.
     this.properties = new Map();
     for (const def of PROPERTIES) {
-      this.properties.set(def.id, { ...def, ownerId: null });
+      // baseIncome/baseMaintenance festhalten: Ausbaustufen aendern
+      // incomePerTick und maintenancePerTick DIREKT am Objekt, damit alle
+      // Verbraucher (Ertrag, Einbruchsbeute, Alarmkosten, Praemie,
+      // Entschaedigung) automatisch mitziehen. Ohne die Ausgangswerte liesse
+      // sich die Stufe nach einem Neustart nicht rekonstruieren.
+      this.properties.set(def.id, {
+        ...def,
+        ownerId: null,
+        level: 1,
+        invested: 0,
+        baseIncome: def.incomePerTick,
+        baseMaintenance: def.maintenancePerTick,
+      });
     }
 
     this.companies = new Map(); // id -> { id, ownerId, name }
@@ -890,6 +903,8 @@ class GameWorld {
         disabledUntil: p.disabledUntil || null,
         hasAlarm: !!p.hasAlarm,
         insured: !!p.insured,
+        level: p.level || 1,
+        invested: p.invested || 0,
       })),
       insurancePool: this.insurancePool,
       politics: this.politics,
@@ -1067,6 +1082,14 @@ class GameWorld {
           property.disabledUntil = saved.disabledUntil || null;
           property.hasAlarm = !!saved.hasAlarm;
           property.insured = !!saved.insured;
+          // Stufe wiederherstellen UND daraus Ertrag/Unterhalt neu berechnen:
+          // Immobilien werden beim Start aus den Grundwerten aufgebaut, der
+          // Ausbau steckt also nur in dieser Zahl.
+          const lvl = Number(saved.level);
+          property.level = Number.isFinite(lvl) && lvl >= 1 && lvl <= PROPERTY_LEVELS.length ? lvl : 1;
+          const inv = Number(saved.invested);
+          property.invested = Number.isFinite(inv) && inv >= 0 ? inv : 0;
+          this.applyPropertyLevel(property);
         }
       }
     }
@@ -1394,9 +1417,11 @@ class GameWorld {
     const away = this.checkPlaceRequirement(player, 'sellProperty');
     if (away) return away;
 
-    const refund = Math.round(property.price * PROPERTY_SELL_BACK_RATIO);
+    // Auch das Investierte anteilig erstatten - sonst waere jeder Ausbau beim
+    // Verkauf ein Totalverlust.
+    const refund = Math.round((property.price + (property.invested || 0)) * PROPERTY_SELL_BACK_RATIO);
     player.cash += refund;
-    property.ownerId = null;
+    this.returnPropertyToBank(property);
     return { ok: true, refund, property };
   }
 
@@ -1460,7 +1485,7 @@ class GameWorld {
       if (!property.ownerId) continue;
       const owner = this.players.get(property.ownerId);
       if (!owner) {
-        property.ownerId = null; // Besitzer existiert nicht mehr (sollte selten vorkommen)
+        this.returnPropertyToBank(property); // Besitzer existiert nicht mehr (sollte selten vorkommen)
         continue;
       }
       // Nach einem Einbruch faellt der Ertrag zeitweise aus - die Instandhaltung
@@ -1478,7 +1503,7 @@ class GameWorld {
       const net = (disabled ? 0 : property.incomePerTick)
         - property.maintenancePerTick - alarmCost - premium;
       if (owner.cash + net < 0) {
-        property.ownerId = null;
+        this.returnPropertyToBank(property);
         repossessed.push({ type: 'property', asset: property, player: owner });
         continue;
       }
@@ -1918,7 +1943,8 @@ class GameWorld {
   creditLimit(player) {
     let propertyValue = 0;
     for (const prop of this.properties.values()) {
-      if (prop.ownerId === player.id) propertyValue += prop.price;
+      // Investiertes zaehlt als Sicherheit mit - es steckt genauso im Objekt.
+      if (prop.ownerId === player.id) propertyValue += prop.price + (prop.invested || 0);
     }
     const jobBonus = player.job ? LOAN_LIMIT_PER_JOB_LEVEL * (player.jobLevel + 1) : 0;
     return Math.round(LOAN_BASE_LIMIT + propertyValue * LOAN_LIMIT_PER_PROPERTY_VALUE + jobBonus);
@@ -2310,6 +2336,68 @@ class GameWorld {
     return { ok: true, cost, cleared, player };
   }
 
+  /** Setzt Ertrag und Unterhalt gemaess der Ausbaustufe neu. */
+  applyPropertyLevel(property) {
+    const def = PROPERTY_LEVELS[(property.level || 1) - 1] || PROPERTY_LEVELS[0];
+    property.incomePerTick = Math.round(property.baseIncome * def.incomeMult);
+    property.maintenancePerTick = Math.round(property.baseMaintenance * def.maintenanceMult);
+  }
+
+  /**
+   * Gibt eine Immobilie an die Bank zurueck: herrenlos UND im Grundzustand.
+   *
+   * Drei Wege fuehren hierher - Rueckverkauf, Zwangsverwertung und ein
+   * verschwundener Besitzer. Ohne gemeinsame Stelle muesste jeder von ihnen an
+   * den Ausbau denken, und der naechste Kaeufer bekaeme den Luxusausbau seines
+   * Vorgaengers zum Grundpreis geschenkt.
+   */
+  returnPropertyToBank(property) {
+    property.ownerId = null;
+    property.level = 1;
+    property.invested = 0;
+    property.hasAlarm = false;
+    property.insured = false;
+    this.applyPropertyLevel(property);
+  }
+
+  /** Die naechsthoehere Ausbaustufe, oder null wenn schon maximal. */
+  nextPropertyLevel(property) {
+    return PROPERTY_LEVELS[(property.level || 1)] || null;
+  }
+
+  /** Kosten des naechsten Ausbaus, oder null. */
+  propertyUpgradeCost(property) {
+    const next = this.nextPropertyLevel(property);
+    return next ? Math.round(property.price * next.upgradeCostRatio) : null;
+  }
+
+  /** Baut eine eigene Immobilie eine Stufe aus. Ortsgebunden ans Maklerbuero. */
+  upgradeProperty(playerId, propertyId) {
+    const player = this.players.get(playerId);
+    const property = this.properties.get(propertyId);
+    if (!player || !property) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (property.ownerId !== playerId) return { ok: false, reason: 'not_owner' };
+
+    const next = this.nextPropertyLevel(property);
+    if (!next) return { ok: false, reason: 'max_level' };
+
+    const cost = this.propertyUpgradeCost(property);
+    if (player.cash < cost) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'upgradeProperty');
+    if (away) return away;
+
+    player.cash -= cost;
+    property.level = next.level;
+    // Investiertes mitfuehren: es zaehlt zum Vermoegen, erhoeht den
+    // Kreditrahmen und wird beim Rueckverkauf anteilig erstattet.
+    property.invested = (property.invested || 0) + cost;
+    this.applyPropertyLevel(property);
+
+    return { ok: true, cost, level: property.level, levelName: next.name, property };
+  }
+
   // ---------------------------------------------------------------------
   // SCHUTZ: Alarmanlage und Versicherung (Gegenseite zum Einbruch)
   // ---------------------------------------------------------------------
@@ -2659,7 +2747,8 @@ class GameWorld {
     // urspruenglich von Bargeld auf Gesamtvermoegen umgestellt wurde.
     const netWorth = (p) => p.cash + p.bank - p.debt
       + this.portfolioValue(p)
-      + [...this.properties.values()].reduce((sum, prop) => sum + (prop.ownerId === p.id ? prop.price : 0), 0);
+      + [...this.properties.values()].reduce(
+        (sum, prop) => sum + (prop.ownerId === p.id ? prop.price + (prop.invested || 0) : 0), 0);
 
     const top = (list, value) => list
       .slice()
