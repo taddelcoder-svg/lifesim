@@ -90,6 +90,12 @@ class NetClient {
     this.onProtectionChanged = null;
     this.onPropertyUpgraded = null;
 
+    // Rennen
+    this.race = { pot: 0, board: [], checkpoints: [] };
+    this.onRaceState = null;
+    this.onRaceEntered = null;
+    this.onRaceFinished = null;
+
     // Schwarzmarkt
     this.blackmarket = { items: [] };
     this.onBlackmarketState = null;
@@ -575,6 +581,22 @@ class NetClient {
 
       case 'politicsAction': {
         if (this.onPoliticsAction) this.onPoliticsAction(msg);
+        break;
+      }
+
+      case 'raceState': {
+        this.race = msg;
+        if (this.onRaceState) this.onRaceState(msg);
+        break;
+      }
+
+      case 'raceEntered': {
+        if (this.onRaceEntered) this.onRaceEntered(msg);
+        break;
+      }
+
+      case 'raceFinished': {
+        if (this.onRaceFinished) this.onRaceFinished(msg);
         break;
       }
 
@@ -1132,6 +1154,10 @@ class NetClient {
 
   setTaxRate(rate) {
     this.send({ type: 'setTaxRate', rate });
+  }
+
+  enterRace() {
+    this.send({ type: 'enterRace' });
   }
 
   buyIllegalItem(itemId) {
