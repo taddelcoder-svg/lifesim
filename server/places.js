@@ -142,6 +142,17 @@ const PLACES = [
     actions: ['buyShares', 'sellShares'],
   },
   {
+    id: 'blackmarket',
+    name: 'Hinterhof',
+    dative: 'zum Hinterhof',
+    icon: '🕶️',
+    // Am weitesten draussen im neuen Bezirk. Bewusst neutral benannt: "Hinterhof"
+    // statt "Schwarzmarkt" - der Ort steht auf der Karte, weil man ihn sonst
+    // nie fände, gibt aber nicht preis, was dort gehandelt wird.
+    position: { x: 2600, y: 600 },
+    actions: ['buyIllegalItem'],
+  },
+  {
     id: 'dealership',
     name: 'Autohaus',
     dative: 'zum Autohaus',
