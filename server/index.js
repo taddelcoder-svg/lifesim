@@ -174,6 +174,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'marketState', ...world.buildMarketState(result.player.id) });
       send(ws, { type: 'environmentState', ...world.buildEnvironmentState() });
       send(ws, { type: 'newsState', ...world.buildNewsState() });
+      send(ws, { type: 'blackmarketState', ...world.buildBlackmarketState(result.player.id) });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -586,23 +587,22 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    if (msg.type === 'upgradeProperty' && ws.playerId != null) {
-      const result = world.upgradeProperty(ws.playerId, msg.propertyId);
+    if (['buyIllegalItem', 'useForgedPapers'].includes(msg.type) && ws.playerId != null) {
+      const result = msg.type === 'buyIllegalItem'
+        ? world.buyIllegalItem(ws.playerId, msg.itemId)
+        : world.useForgedPapers(ws.playerId);
       if (result.ok) {
         send(ws, {
-          type: 'propertyUpgraded',
-          propertyName: result.property.name,
-          cost: result.cost,
-          level: result.level,
-          levelName: result.levelName,
+          type: 'blackmarketAction',
+          action: msg.type,
+          item: result.item,
+          price: result.price,
+          busted: !!result.busted,
         });
-        // Ertrag, Einbruchsbeute und Schutzkosten haengen daran - der neue Stand
-        // gehoert also an alle, nicht nur an den Besitzer.
-        broadcast(buildEconomyStateMessage());
-        broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
-        announce('economy', `"${result.property.name}" wurde ${result.levelName}.`);
+        send(ws, { type: 'blackmarketState', ...world.buildBlackmarketState(ws.playerId) });
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
       } else {
-        send(ws, { type: 'actionError', action: 'upgradeProperty', reason: result.reason });
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
       }
       return;
     }
@@ -617,8 +617,8 @@ wss.on('connection', (ws) => {
           level: result.level,
           levelName: result.levelName,
         });
-        // Der Ausbau aendert Ertrag, Einbruchsbeute und Schutzkosten - das sehen
-        // alle, auch potenzielle Einbrecher.
+        // Ertrag, Einbruchsbeute und Schutzkosten haengen daran - der neue Stand
+        // gehoert also an alle, nicht nur an den Besitzer.
         broadcast(buildEconomyStateMessage());
         broadcast({ type: 'statUpdate', players: [serializePublic(world.players.get(ws.playerId))] });
         announce('economy', `"${result.property.name}" wurde ${result.levelName}.`);
@@ -666,6 +666,7 @@ wss.on('connection', (ws) => {
           loot: result.loot || 0,
           propertyName: result.property.name,
           alarmTriggered: !!result.alarmTriggered,
+          usedLockpick: !!result.usedLockpick,
         });
         if (result.success && result.owner) {
           sendToPlayer(result.owner.id, {
@@ -1153,8 +1154,12 @@ setInterval(() => {
 
 // COPS_TICK: Polizei-NPCs bewegen sich in eigenem, fluessigerem Takt.
 setInterval(() => {
-  const arrests = world.updateCops(COPS_TICK_MS);
+  const { arrests, pursued } = world.updateCops(COPS_TICK_MS);
   broadcast({ type: 'copsState', cops: world.buildCopsState() });
+  // Warnung NUR an den Betroffenen: dass jemand verfolgt wird, ist keine
+  // oeffentliche Information - sonst waere der Scanner ein Werkzeug fuer alle
+  // anderen statt fuer seinen Besitzer.
+  for (const p of pursued) sendToPlayer(p.id, { type: 'pursuitWarning' });
   if (arrests.length > 0) {
     broadcast({ type: 'statUpdate', players: arrests.map(serializePublic) });
     for (const p of arrests) announce('police', `${p.name} wurde von der Polizei verhaftet.`);
