@@ -71,6 +71,7 @@ function createPlayer(name, token) {
     lastGymAt: 0,          // Cooldown gegen Fitnessstudio-Spam (siehe wellbeing.js)
     friends: [],           // IDs befreundeter Spieler (nie Teil von serializePublic - privat)
     portfolio: {},         // Wertpapierbestand: Kuerzel -> Stueckzahl (siehe market.js)
+    items: {},             // Schwarzmarktwaren: Kuerzel -> Anzahl (siehe blackmarket.js)
     spouseId: null,        // Ehepartner-ID, oder null
     pendingReincarnation: null, // gesetzt bei Tod: { heirChildId } - Spieler wartet auf Weiterleben-Aktion
     ws: null, // Laufzeitreferenz, wird niemals serialisiert
