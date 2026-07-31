@@ -1223,6 +1223,9 @@
 
     if (net) {
       net.onEconomyState = () => {
+        // Firmenschilder neu setzen: eine neue oder geschlossene Firma aendert,
+        // welche Industriegebaeude beschriftet sind.
+        if (renderer && renderer.buildCompanySigns) renderer.buildCompanySigns();
         if (marketPanel.style.display !== 'none') renderMarketPanel();
       };
       net.onTradeOffer = () => {
@@ -1286,6 +1289,7 @@
           jailed: 'Aus dem Gefängnis geht das nicht.',
           too_many_vehicles: 'Du besitzt schon genug Fahrzeuge.',
           too_many_companies: 'Du führst schon genug Firmen.',
+          no_site_left: 'Im Industriegebiet ist kein Grundstück mehr frei.',
           not_pretty_enough: 'Dafür reicht dein Aussehen noch nicht — trainier im Fitnessstudio.',
           not_jailed: 'Du sitzt gar nicht.',
           not_wanted: 'Es wird gar nicht nach dir gefahndet.',
