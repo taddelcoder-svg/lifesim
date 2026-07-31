@@ -90,6 +90,12 @@ class NetClient {
     this.onProtectionChanged = null;
     this.onPropertyUpgraded = null;
 
+    // Haustiere
+    this.petState = { species: [], pet: null };
+    this.onPetState = null;
+    this.onPetAction = null;
+    this.onPetRanAway = null;
+
     // Banden
     this.gangState = { gangs: [], myGang: null, territory: [] };
     this.onGangState = null;
@@ -586,6 +592,22 @@ class NetClient {
 
       case 'politicsAction': {
         if (this.onPoliticsAction) this.onPoliticsAction(msg);
+        break;
+      }
+
+      case 'petState': {
+        this.petState = msg;
+        if (this.onPetState) this.onPetState(msg);
+        break;
+      }
+
+      case 'petAction': {
+        if (this.onPetAction) this.onPetAction(msg);
+        break;
+      }
+
+      case 'petRanAway': {
+        if (this.onPetRanAway) this.onPetRanAway(msg);
         break;
       }
 
@@ -1170,6 +1192,14 @@ class NetClient {
 
   setTaxRate(rate) {
     this.send({ type: 'setTaxRate', rate });
+  }
+
+  buyPet(species, name) {
+    this.send({ type: 'buyPet', species, name });
+  }
+
+  feedPet() {
+    this.send({ type: 'feedPet' });
   }
 
   foundGang(name) {
