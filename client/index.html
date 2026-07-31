@@ -523,6 +523,9 @@
     <h4>🏪 Läden im Gewerbebezirk</h4>
     <div id="shopList"></div>
 
+    <h4>🏡 Wohnhäuser in der Vorstadt</h4>
+    <div id="homeList"></div>
+
     <h4>Meine Firmen</h4>
     <div id="foundCompanyRow">
       <input id="companyNameInput" type="text" placeholder="Firmenname" maxlength="30">
@@ -815,6 +818,7 @@
     const marketPanel = document.getElementById('marketPanel');
     const propertyListEl = document.getElementById('propertyList');
     const shopListEl = document.getElementById('shopList');
+    const homeListEl = document.getElementById('homeList');
     const companyListEl = document.getElementById('companyList');
     const tradeListEl = document.getElementById('tradeList');
     const companyNameInput = document.getElementById('companyNameInput');
@@ -1018,6 +1022,7 @@
       // serverseitig dasselbe - aber in getrennte Listen gehängt.
       propertyListEl.innerHTML = '';
       shopListEl.innerHTML = '';
+      homeListEl.innerHTML = '';
       if (net.properties.size === 0) {
         propertyListEl.innerHTML = '<div class="market-empty">Lädt...</div>';
       }
@@ -1025,9 +1030,13 @@
       // aufzulisten wäre eine Wand aus fremdem Besitz, durch die man scrollen
       // müsste, um an die eigenen zu kommen.
       let shopsShown = 0;
+      let homesShown = 0;
       for (const prop of net.properties.values()) {
         const isShop = prop.kind === 'shop';
-        if (isShop && prop.ownerId && prop.ownerId !== net.myId) continue;
+        const isHome = prop.kind === 'home';
+        // Gleiche Filterung wie bei den Läden: fremder Besitz bliebe eine
+        // Wand, durch die man sich zu den eigenen durchscrollen müsste.
+        if ((isShop || isHome) && prop.ownerId && prop.ownerId !== net.myId) continue;
         const row = document.createElement('div');
         row.className = 'market-item';
 
@@ -1121,13 +1130,18 @@
         }
 
         if (isShop) { shopListEl.appendChild(row); shopsShown++; }
+        else if (isHome) { homeListEl.appendChild(row); homesShown++; }
         else propertyListEl.appendChild(row);
       }
-      if (shopsShown === 0) {
+      for (const [count, el, text] of [
+        [shopsShown, shopListEl, 'Alle Läden sind vergeben.'],
+        [homesShown, homeListEl, 'Alle Wohnhäuser sind vergeben.'],
+      ]) {
+        if (count > 0) continue;
         const empty = document.createElement('div');
         empty.className = 'market-empty';
-        empty.textContent = 'Alle Läden sind vergeben.';
-        shopListEl.appendChild(empty);
+        empty.textContent = text;
+        el.appendChild(empty);
       }
 
       // Firmen (nur eigene)
@@ -1309,6 +1323,8 @@
           too_many_vehicles: 'Du besitzt schon genug Fahrzeuge.',
           too_many_companies: 'Du führst schon genug Firmen.',
           too_many_shops: 'Mehr Läden darfst du nicht besitzen.',
+          already_has_home: 'Du hast schon ein Zuhause.',
+          no_home: 'Dafür brauchst du erst ein eigenes Zuhause.',
           no_site_left: 'Im Industriegebiet ist kein Grundstück mehr frei.',
           not_pretty_enough: 'Dafür reicht dein Aussehen noch nicht — trainier im Fitnessstudio.',
           not_jailed: 'Du sitzt gar nicht.',
