@@ -1310,9 +1310,18 @@ try {
   if (fs.existsSync(SNAPSHOT_PATH)) {
     const saved = JSON.parse(fs.readFileSync(SNAPSHOT_PATH, 'utf8'));
     const restoredCount = world.restoreFromSnapshot(saved);
-    console.log(`Weltzustand wiederhergestellt: ${restoredCount} Spieler.`);
+    // Alter mitloggen: das ist die entscheidende Information, wenn Fortschritt
+    // verlorenzugehen scheint. Ist der Stand jedes Mal frisch (Sekunden alt),
+    // wird korrekt gespeichert. Fehlt die Datei nach jedem Deploy komplett,
+    // liegt es nicht am Speichern, sondern daran, dass der Server auf einem
+    // fluechtigen Dateisystem laeuft und die Datei mit dem Container weg ist.
+    const ageMin = saved.savedAt ? Math.round((Date.now() - saved.savedAt) / 60000) : null;
+    console.log(`Weltzustand wiederhergestellt: ${restoredCount} Spieler.`
+      + (ageMin != null ? ` Snapshot-Alter: ${ageMin} Minuten.` : ''));
   } else {
     console.log('Kein vorheriger Weltzustand gefunden - starte mit leerer Welt.');
+    console.log('  Erscheint diese Zeile nach JEDEM Deploy, ist das Dateisystem fluechtig:');
+    console.log('  gespeichert wird korrekt, aber die Datei ueberlebt den Containerwechsel nicht.');
   }
 } catch (err) {
   console.error('Weltzustand konnte nicht geladen werden, starte mit leerer Welt:', err.message);
