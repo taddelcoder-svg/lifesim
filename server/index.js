@@ -189,6 +189,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'newsState', ...world.buildNewsState() });
       send(ws, { type: 'blackmarketState', ...world.buildBlackmarketState(result.player.id) });
       send(ws, { type: 'raceState', ...world.buildRaceState() });
+      send(ws, { type: 'petState', ...world.buildPetState(result.player.id) });
       send(ws, { type: 'gangState', ...world.buildGangState(result.player.id) });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
@@ -619,6 +620,22 @@ wss.on('connection', (ws) => {
         broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
         if (msg.type === 'foundGang') announce('crime', `Eine neue Bande nennt sich "${result.gang.name}".`);
         if (msg.type === 'claimTerritory') announce('crime', `${result.gang.name} beansprucht ${result.quadrant}.`);
+      } else {
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
+      }
+      return;
+    }
+
+    if (['buyPet', 'feedPet'].includes(msg.type) && ws.playerId != null) {
+      const result = msg.type === 'buyPet'
+        ? world.buyPet(ws.playerId, msg.species, msg.name)
+        : world.feedPet(ws.playerId);
+      if (result.ok) {
+        send(ws, { type: 'petAction', action: msg.type, ...result, player: undefined });
+        send(ws, { type: 'petState', ...world.buildPetState(ws.playerId) });
+        // Das Tier laeuft im 3D-Bild mit, also muessen es auch die anderen
+        // sehen - der Spielerzustand traegt es mit.
+        broadcast({ type: 'statUpdate', players: [serializePublic(result.player)] });
       } else {
         send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
       }
@@ -1074,6 +1091,14 @@ setInterval(() => {
     for (const l of lostTerritory) {
       announce('crime', `${l.gangName} kann ${l.quadrant} nicht mehr halten — das Viertel ist frei.`);
     }
+  }
+
+  // Vernachlaessigte Tiere laufen weg.
+  const runaways = world.checkNeglectedPets();
+  for (const r of runaways) {
+    sendToPlayer(r.player.id, { type: 'petRanAway', petName: r.petName });
+    sendToPlayer(r.player.id, { type: 'petState', ...world.buildPetState(r.player.id) });
+    broadcast({ type: 'statUpdate', players: [serializePublic(r.player)] });
   }
 
   // Rennsaison auswerten, wenn sie abgelaufen ist.
