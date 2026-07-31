@@ -43,6 +43,34 @@ const REMOTE_SNAP_DISTANCE = 8; // 3D-Einheiten - darueber wird hart gesetzt (z.
 // Quader-Darstellungen zurueck - das Spiel bleibt dann spielbar.
 const MODEL_FILE = 'citybits.glb';
 
+// Zweite Modelldatei: Strassenteile und die Gebaeude der drei neuen Bezirke
+// (Kenney City Kit, CC0 - wie das KayKit-Set). 21 Modelle, 1,5 MB, aus vier
+// Einzelpaketen mit zusammen 178 Modellen und 10 MB zusammengefuehrt und
+// entdoppelt. Beide Dateien landen im selben modelTemplates-Verzeichnis.
+const CITYKIT_FILE = 'citykit.glb';
+
+// Kantenlaenge des alten Stadtkerns. Alles darunter bleibt beim urspruenglichen
+// KayKit-Aussehen - die Altstadt soll sich nicht ueber Nacht veraendern.
+const CORE_SIZE = 2800;
+
+// Bezirke bekommen eigene Gebaeudesaetze. Damit erkennt man am Haeuserbild, wo
+// man ist - und, da die Bandenquadranten ueber dem Kern liegen, auch den
+// Unterschied zwischen Altstadt und Neubaugebiet.
+const DISTRICT_MODELS = {
+  core: null, // null = die bestehenden KayKit-Gebaeude
+  commercial: ['com_a', 'com_b', 'com_c', 'com_d', 'com_e', 'com_f'],
+  suburban:   ['sub_a', 'sub_b', 'sub_c', 'sub_d', 'sub_e', 'sub_f'],
+  industrial: ['ind_a', 'ind_b', 'ind_c', 'ind_d', 'ind_e', 'ind_f'],
+};
+
+/** Welcher Bezirk liegt an dieser Weltposition? */
+function districtAt(x, y) {
+  if (x < CORE_SIZE && y < CORE_SIZE) return 'core';
+  if (x >= CORE_SIZE && y < CORE_SIZE) return 'commercial';
+  if (x < CORE_SIZE) return 'suburban';
+  return 'industrial';
+}
+
 // glTF-Norm: die Vorderseite eines Modells zeigt nach -Z. Im Spiel zeigen
 // Fahrzeuge nach +Z, deshalb 180 Grad drehen. Sollten die Autos rueckwaerts
 // fahren, ist das hier die einzige Stelle, die geaendert werden muss.
@@ -367,6 +395,17 @@ class Renderer {
     for (const mesh of this.cityMeshes) this.scene.remove(mesh);
     this.cityMeshes = [];
 
+    // Strassenkacheln aus dem Stadtkit. Nur wenn die Modelle da sind - sonst
+    // bleiben die flachen Flaechen, damit die Karte nie leer ist.
+    if (this.modelTemplates.has('road_straight')) {
+      this.buildRoadTiles();
+    } else {
+      this.buildFlatRoads();
+    }
+  }
+
+  /** Frueheres Verhalten: einfarbige Flaechen. Rueckfall ohne Modelle. */
+  buildFlatRoads() {
     const roadMat = new THREE.MeshStandardMaterial({ color: 0x15171c });
     const worldSize3D = WORLD_SIZE_3D;
 
@@ -388,23 +427,103 @@ class Renderer {
       this.scene.add(mesh);
       this.cityMeshes.push(mesh);
     }
+  }
+
+  /**
+   * Legt das Strassenraster aus echten Kacheln aus: an jeder Kreuzung eine
+   * Kreuzungskachel, dazwischen gerade Stuecke.
+   *
+   * Die Laenge der geraden Stuecke ergibt sich aus der Luecke zwischen zwei
+   * Kreuzungen (Rasterabstand minus eine Kreuzungsbreite), geteilt durch die
+   * Anzahl - so passt es exakt auf, ohne Fugen oder Ueberlappung. Die Kacheln
+   * sind 1x1, ihre Breite wird auf die Strassenbreite gezogen.
+   */
+  buildRoadTiles() {
+    const roads = this.net.worldRoads || [];
+    const verticals = roads.filter((r) => r.orientation === 'vertical').map((r) => r.center).sort((a, b) => a - b);
+    const horizontals = roads.filter((r) => r.orientation === 'horizontal').map((r) => r.center).sort((a, b) => a - b);
+    if (verticals.length === 0 || horizontals.length === 0) return;
+
+    const width = (roads[0].width || 90) * WORLD_SCALE;
+    const TILES_PER_GAP = 4;
+
+    const crossings = [];
+    for (const vx of verticals) {
+      for (const hz of horizontals) {
+        crossings.push({ x: vx * WORLD_SCALE, z: hz * WORLD_SCALE, sx: width, sy: 1, sz: width });
+      }
+    }
+
+    const straights = [];
+    // Senkrechte Strassen: gerade Stuecke zwischen benachbarten Querstrassen.
+    for (const vx of verticals) {
+      for (let i = 0; i < horizontals.length - 1; i++) {
+        const from = horizontals[i] * WORLD_SCALE + width / 2;
+        const to = horizontals[i + 1] * WORLD_SCALE - width / 2;
+        const len = (to - from) / TILES_PER_GAP;
+        if (len <= 0) continue;
+        for (let t = 0; t < TILES_PER_GAP; t++) {
+          straights.push({ x: vx * WORLD_SCALE, z: from + len * (t + 0.5), sx: width, sy: 1, sz: len });
+        }
+      }
+    }
+    // Waagerechte: gleiches Verfahren, Kachel um 90 Grad gedreht, damit die
+    // Fahrbahnmarkierung in Fahrtrichtung liegt.
+    for (const hz of horizontals) {
+      for (let i = 0; i < verticals.length - 1; i++) {
+        const from = verticals[i] * WORLD_SCALE + width / 2;
+        const to = verticals[i + 1] * WORLD_SCALE - width / 2;
+        const len = (to - from) / TILES_PER_GAP;
+        if (len <= 0) continue;
+        for (let t = 0; t < TILES_PER_GAP; t++) {
+          straights.push({ x: from + len * (t + 0.5), z: hz * WORLD_SCALE, rotY: Math.PI / 2, sx: width, sy: 1, sz: len });
+        }
+      }
+    }
+
+    for (const [name, list] of [['road_cross', crossings], ['road_straight', straights]]) {
+      const inst = this.createModelInstances(name, list);
+      if (inst) {
+        // Kacheln werfen keinen Schatten - sie liegen flach, und bei ueber
+        // 1900 Stueck kostet die Schattenberechnung mehr, als sie zeigt.
+        inst.castShadow = false;
+        this.scene.add(inst);
+        this.cityMeshes.push(inst);
+      }
+    }
+    console.log('Strassenkacheln:', crossings.length + straights.length, 'in 2 Zeichenaufrufen');
 
     // Deko-Gebaeude: leicht unterschiedliche Grautoene, damit die Stadt nicht
     // wie eine Reihe identischer Kloetze wirkt.
+    // Gebaeude nach Modell gruppieren und je Modell EINE InstancedMesh bauen.
+    // Vorher war jedes Gebaeude ein eigenes Objekt - bei 40 ging das, bei 239
+    // in der vergroesserten Welt nicht mehr.
+    const byModel = new Map();
+
     for (const b of this.net.worldBuildings) {
       // Modell deterministisch aus der Position waehlen, damit alle Clients
       // dieselbe Stadt sehen und sich beim Neuladen nichts veraendert.
-      const pick = Math.abs(Math.round(b.x * 31 + b.y * 17)) % BUILDING_MODEL_NAMES.length;
+      // Der Bezirk bestimmt dabei, aus WELCHEM Satz gewaehlt wird.
+      const district = districtAt(b.x, b.y);
+      const set = DISTRICT_MODELS[district] || BUILDING_MODEL_NAMES;
+      const names = set.every((n) => this.modelTemplates.has(n)) ? set : BUILDING_MODEL_NAMES;
+      const pick = Math.abs(Math.round(b.x * 31 + b.y * 17)) % names.length;
       const footprint = Math.max(b.w, b.d) * WORLD_SCALE;
-      const model = this.cloneModel(BUILDING_MODEL_NAMES[pick], footprint);
+      const name = names[pick];
 
-      if (model) {
-        model.position.set(b.x * WORLD_SCALE, 0, b.y * WORLD_SCALE);
-        // Viertelrotationen sorgen fuer Abwechslung, ohne die Kollisionsflaeche
-        // zu veraendern (die Modelle haben quadratischen Grundriss).
-        model.rotation.y = (pick % 4) * (Math.PI / 2);
-        this.scene.add(model);
-        this.cityMeshes.push(model);
+      if (this.modelTemplates.has(name)) {
+        const entry = this.normalizedGeometry(name);
+        // Auf die Grundflaeche skalieren - die Modelle der drei Kits sind
+        // unterschiedlich gross (0,8 bis 2,1 Einheiten), ohne Anpassung
+        // stuenden Reihenhaeuser und Fabrikhallen in derselben Luecke.
+        const scale = entry && entry.size.z > 0 ? footprint / entry.size.z : 1;
+        if (!byModel.has(name)) byModel.set(name, []);
+        byModel.get(name).push({
+          x: b.x * WORLD_SCALE,
+          z: b.y * WORLD_SCALE,
+          rotY: (pick % 4) * (Math.PI / 2),
+          sx: scale, sy: scale, sz: scale,
+        });
       } else {
         const h = b.height * WORLD_SCALE * 4;
         const geo = new THREE.BoxGeometry(b.w * WORLD_SCALE, h, b.d * WORLD_SCALE);
@@ -419,6 +538,19 @@ class Renderer {
         this.scene.add(mesh);
         this.cityMeshes.push(mesh);
       }
+    }
+
+    let instanced = 0;
+    for (const [name, list] of byModel) {
+      const inst = this.createModelInstances(name, list);
+      if (inst) {
+        this.scene.add(inst);
+        this.cityMeshes.push(inst);
+        instanced += list.length;
+      }
+    }
+    if (instanced > 0) {
+      console.log('Gebäude:', instanced, 'in', byModel.size, 'Zeichenaufrufen');
     }
 
     // Stadtdeko - nur wenn die Modelle geladen sind, sonst bleibt die Stadt schlicht
@@ -451,6 +583,24 @@ class Renderer {
       return;
     }
     const loader = new THREE.GLTFLoader();
+
+    // Das Stadtkit wird ZUSAETZLICH geladen und scheitert leise: fehlt die
+    // Datei, bleibt die Altstadt vollstaendig und die neuen Bezirke fallen auf
+    // die Ersatzquader zurueck - besser als eine schwarze Karte.
+    loader.load(
+      CITYKIT_FILE,
+      (gltf) => {
+        gltf.scene.traverse((child) => {
+          if (child.isMesh && child.name) this.modelTemplates.set(child.name, child);
+        });
+        this.modelsReady = this.modelTemplates.size > 0;
+        console.log('Stadtkit geladen, Modelle gesamt:', this.modelTemplates.size);
+        this.rebuildWithModels();
+      },
+      undefined,
+      (err) => console.warn('Stadtkit nicht geladen:', err && err.message),
+    );
+
     loader.load(
       MODEL_FILE,
       (gltf) => {
@@ -593,6 +743,68 @@ class Renderer {
    * Das ist der entscheidende Unterschied zu einzelnen Kopien: 60 Laternen
    * kosten so einen statt sechzig Zeichenaufrufe - wichtig fuers iPad.
    */
+  /**
+   * Geometrie eines Modells, auf den Ursprung zentriert und mit der Unterkante
+   * auf y=0. Wird zwischengespeichert, weil sie fuer jede Instanzgruppe
+   * gebraucht wird.
+   *
+   * Ohne diese Normalisierung muesste der Versatz in JEDE Instanzmatrix
+   * eingerechnet werden - und wuerde dabei mitrotiert und mitskaliert, was die
+   * Modelle bei gedrehten Instanzen verschieben wuerde.
+   */
+  normalizedGeometry(name) {
+    if (!this._normGeo) this._normGeo = new Map();
+    if (this._normGeo.has(name)) return this._normGeo.get(name);
+
+    const template = this.modelTemplates.get(name);
+    if (!template) return null;
+
+    const geo = template.geometry.clone();
+    geo.computeBoundingBox();
+    const b = geo.boundingBox;
+    geo.translate(-(b.min.x + b.max.x) / 2, -b.min.y, -(b.min.z + b.max.z) / 2);
+    geo.computeBoundingBox();
+
+    const size = new THREE.Vector3();
+    geo.boundingBox.getSize(size);
+    const entry = { geometry: geo, material: template.material, size };
+    this._normGeo.set(name, entry);
+    return entry;
+  }
+
+  /**
+   * Eine InstancedMesh aus beliebig vielen Platzierungen mit eigener Position,
+   * Drehung und Skalierung.
+   *
+   * Das ist der Grund, warum die vergroesserte Welt ueberhaupt tragbar ist:
+   * 1905 Strassenkacheln und 239 Gebaeude werden zu rund zwei Dutzend
+   * Zeichenaufrufen statt ueber zweitausend Einzelobjekten.
+   */
+  createModelInstances(name, placements) {
+    const entry = this.normalizedGeometry(name);
+    if (!entry || placements.length === 0) return null;
+
+    const mesh = new THREE.InstancedMesh(entry.geometry, entry.material, placements.length);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+
+    const matrix = new THREE.Matrix4();
+    const quat = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const scl = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+
+    placements.forEach((p, idx) => {
+      pos.set(p.x, p.y || 0, p.z);
+      quat.setFromAxisAngle(up, p.rotY || 0);
+      scl.set(p.sx != null ? p.sx : 1, p.sy != null ? p.sy : 1, p.sz != null ? p.sz : 1);
+      matrix.compose(pos, quat, scl);
+      mesh.setMatrixAt(idx, matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    return mesh;
+  }
+
   createPropInstances(name, placements) {
     const template = this.modelTemplates.get(name);
     if (!template || placements.length === 0) return null;
