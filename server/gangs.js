@@ -19,9 +19,17 @@ const MAX_GANG_NAME_LENGTH = 24;
 
 // --- Territorium ---
 //
-// Die Welt wird in vier Quadranten geteilt. Bewusst grob: bei 2800x2800 ist ein
-// Quadrant 1400x1400 gross und enthaelt mehrere Immobilien und Orte, ein
-// feineres Raster waere unuebersichtlich und die Kontrolle bedeutungslos.
+// Vier Quadranten - aber ueber dem STADTKERN, nicht ueber der ganzen Welt.
+//
+// Das ist keine Kosmetik: als die Welt auf 5600 vergroessert wurde, lagen
+// weiterhin ALLE 14 Immobilien im Bereich 0..2800, also im Nordwesten. Waeren
+// die Quadranten an der Weltgroesse ausgerichtet, haetten drei von vier
+// Gebieten keine einzige Immobilie - der Beutebonus liefe dort ins Leere und
+// Territorium waere zu drei Vierteln wertlos.
+//
+// Ueber dem Kern bleibt jeder Quadrant 1400x1400 gross und enthaelt mehrere
+// Immobilien. Ausserhalb des Kerns gibt es kein Territorium; kommen dort
+// spaeter Immobilien dazu, gehoert dieser Wert erhoeht.
 const QUADRANTS = [
   { id: 'nw', name: 'Nordwest' },
   { id: 'ne', name: 'Nordost' },
@@ -41,9 +49,16 @@ const TERRITORY_UPKEEP_PER_TICK = 25;
 // entwertet.
 const TERRITORY_LOOT_BONUS = 0.25;
 
-/** In welchem Quadranten liegt dieser Punkt? worldSize wird hereingereicht. */
-function quadrantAt(x, y, worldSize) {
-  const half = worldSize / 2;
+// Kantenlaenge des Stadtkerns, ueber dem die Quadranten liegen.
+const GANG_CORE_SIZE = 2800;
+
+/**
+ * In welchem Quadranten liegt dieser Punkt? Ausserhalb des Stadtkerns: null -
+ * dort gibt es kein Gebiet, das eine Bande halten koennte.
+ */
+function quadrantAt(x, y) {
+  if (x < 0 || y < 0 || x >= GANG_CORE_SIZE || y >= GANG_CORE_SIZE) return null;
+  const half = GANG_CORE_SIZE / 2;
   if (y < half) return x < half ? 'nw' : 'ne';
   return x < half ? 'sw' : 'se';
 }
@@ -57,6 +72,7 @@ module.exports = {
   MAX_GANG_MEMBERS,
   MAX_GANG_NAME_LENGTH,
   QUADRANTS,
+  GANG_CORE_SIZE,
   TERRITORY_CLAIM_COST,
   TERRITORY_UPKEEP_PER_TICK,
   TERRITORY_LOOT_BONUS,
