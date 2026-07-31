@@ -30,6 +30,36 @@ const PROPERTIES = [
 // beliebig viele gruenden und die Wirtschaft aushebeln.
 const MAX_OWNED_COMPANIES = 3;
 
+// --- Laeden (Gewerbebezirk) ---
+//
+// Die 68 Gewerbegebaeude werden kaufbar. Sie sind eine EIGENE Preisklasse und
+// treten nicht in Konkurrenz zu den 14 kuratierten Immobilien - deren Knappheit
+// ist oben ausdruecklich als Absicht vermerkt und wuerde durch 68 zusaetzliche
+// Objekte zunichtegemacht.
+//
+// Der Unterschied liegt in der Rendite, nicht im Preis: kuratierte Objekte
+// amortisieren in 15-22 Minuten, Laeden in 39-50. Wer Kapital hat, kauft
+// weiterhin lieber ein gutes Objekt; Laeden sind der Einstieg und die Menge.
+const SHOP_MIN_PRICE = 500;
+const SHOP_MAX_PRICE = 1500;
+const SHOP_INCOME_RATIO = 0.007;
+const SHOP_MAINTENANCE_RATIO = 0.45; // Anteil AM ERTRAG, nicht am Preis
+
+// Obergrenze je Spieler. Ohne sie koennte ein Vermoegender alle 68 aufkaufen -
+// bei den kuratierten 14 uebernimmt der Preis diese Rolle, bei billigen Laeden
+// nicht.
+const MAX_OWNED_SHOPS = 5;
+
+// Deterministische Namensteile: aus der Position abgeleitet, damit jeder Client
+// dieselben Namen sieht, ohne dass sie uebertragen werden muessen (Grundsatz 4).
+const SHOP_NAMES = [
+  'Bäckerei', 'Kiosk', 'Friseur', 'Buchladen', 'Blumen', 'Apotheke',
+  'Eisdiele', 'Werkstatt', 'Café', 'Schneiderei', 'Optiker', 'Imbiss',
+];
+const SHOP_STREETS = [
+  'am Markt', 'Nordseite', 'Hafenweg', 'Lindenhof', 'Ostring', 'Ecke West',
+];
+
 // Ausbaustufen fuer Immobilien - dieselbe Idee wie bei den Firmen, aber als
 // FAKTOREN statt fester Werte, weil jede Immobilie einen eigenen Ertrag hat.
 //
@@ -80,6 +110,13 @@ module.exports = {
   COMPANY_FOUNDING_COST,
   COMPANY_LEVELS,
   MAX_OWNED_COMPANIES,
+  SHOP_MIN_PRICE,
+  SHOP_MAX_PRICE,
+  SHOP_INCOME_RATIO,
+  SHOP_MAINTENANCE_RATIO,
+  MAX_OWNED_SHOPS,
+  SHOP_NAMES,
+  SHOP_STREETS,
   PROPERTY_LEVELS,
   EMPLOYEE_INCOME_PER_TICK,
   EMPLOYEE_WAGE_PER_TICK,
