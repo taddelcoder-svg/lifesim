@@ -9,8 +9,8 @@
 // gemeinsame Quelle - aendert sich die Weltgroesse dort, MUSS sie hier mit
 // (Grundprinzip 2). Laeuft es auseinander, korrigiert der Server jede Bewegung
 // am Rand, sichtbar als Ruckeln.
-const WORLD_WIDTH = 2800;
-const WORLD_HEIGHT = 2800;
+const WORLD_WIDTH = 5600;
+const WORLD_HEIGHT = 5600;
 const PLAYER_SPEED = 200; // px/s - MUSS mit server/game.js übereinstimmen
 
 // Diese drei Werte UND die Formel in stepMovement() muessen EXAKT mit
