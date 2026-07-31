@@ -142,6 +142,17 @@ const PLACES = [
     actions: ['buyShares', 'sellShares'],
   },
   {
+    id: 'petshop',
+    name: 'Tierhandlung',
+    dative: 'zur Tierhandlung',
+    icon: '🐾',
+    // In der Vorstadt, wo auch die Wohnhaeuser stehen - und ein Tier setzt ein
+    // Zuhause voraus. Der Block wird dadurch von der Stadtdeko freigehalten,
+    // die Vorstadt hat also 67 statt 68 Wohnhaeuser.
+    position: { x: 1400, y: 3400 },
+    actions: ['buyPet'],
+  },
+  {
     id: 'raceoffice',
     name: 'Rennleitung',
     dative: 'zur Rennleitung',
