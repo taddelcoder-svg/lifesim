@@ -24,6 +24,13 @@ const {
   COMPANY_LEVELS,
   MAX_OWNED_COMPANIES,
   PROPERTY_LEVELS,
+  SHOP_MIN_PRICE,
+  SHOP_MAX_PRICE,
+  SHOP_INCOME_RATIO,
+  SHOP_MAINTENANCE_RATIO,
+  MAX_OWNED_SHOPS,
+  SHOP_NAMES,
+  SHOP_STREETS,
   EMPLOYEE_INCOME_PER_TICK,
   EMPLOYEE_WAGE_PER_TICK,
   EMPLOYMENT_OFFER_DURATION_MS,
@@ -445,6 +452,12 @@ class GameWorld {
     this.industrialSites = this.cityLayout.buildings
       .map((b, index) => ({ index, x: b.x, y: b.y }))
       .filter((b) => b.x >= 2800 && b.y >= 2800);
+
+    // Laeden aus den Gewerbegebaeuden erzeugen. Sie kommen in DIESELBE
+    // properties-Map wie die kuratierten Objekte - damit funktionieren Kauf,
+    // Ertrag, Einbruch, Alarmanlage, Versicherung und Ausbau ohne eine einzige
+    // Zeile Sonderbehandlung. Unterschieden werden sie nur ueber `kind`.
+    for (const shop of this.generateShops()) this.properties.set(shop.id, shop);
 
     this.collisionRects = [
       ...this.cityLayout.buildings.map((b) => ({ x: b.x, y: b.y, w: b.w, d: b.d })),
@@ -1349,6 +1362,11 @@ class GameWorld {
     return [...this.properties.values()];
   }
 
+  /** Nur die kuratierten Objekte - fuer Auswertungen, die Laeden ausklammern. */
+  curatedProperties() {
+    return [...this.properties.values()].filter((p) => p.kind !== 'shop');
+  }
+
   buildCompaniesState() {
     return [...this.companies.values()].map((c) => ({
       id: c.id,
@@ -1514,6 +1532,10 @@ class GameWorld {
     if (!player || !property) return { ok: false, reason: 'not_found' };
     if (property.ownerId) return { ok: false, reason: 'already_owned' };
     if (player.cash < property.price) return { ok: false, reason: 'insufficient_funds' };
+
+    if (property.kind === 'shop' && this.ownedShopCount(playerId) >= MAX_OWNED_SHOPS) {
+      return { ok: false, reason: 'too_many_shops' };
+    }
 
     const away = this.checkPlaceRequirement(player, 'buyProperty');
     if (away) return away;
@@ -2862,6 +2884,59 @@ class GameWorld {
     player.wanted = 0;
     player.criminalRecord = [];
     return { ok: true, cost, cleared, player };
+  }
+
+  /**
+   * Erzeugt die Laeden aus den Gewerbegebaeuden (Bezirk x>=2800, y<2800).
+   *
+   * Preis und Name werden DETERMINISTISCH aus der Position abgeleitet
+   * (Grundsatz 4): so sieht jeder Client dieselben Laeden mit denselben
+   * Preisen, ohne dass etwas uebertragen werden muss - und nach einem Neustart
+   * ist alles unveraendert.
+   *
+   * Es werden bewusst KEINE eigenen Kollisionsflaechen angelegt: die Gebaeude
+   * stehen bereits als Stadtdeko und haben ihre Flaeche schon. Ein zweites
+   * Rechteck an derselben Stelle waere wirkungslos, aber irrefuehrend.
+   */
+  generateShops() {
+    const shops = [];
+    let n = 0;
+    for (const b of this.cityLayout.buildings) {
+      if (!(b.x >= 2800 && b.y < 2800)) continue;
+
+      const seed = Math.abs(Math.round(b.x * 73 + b.y * 31));
+      const span = SHOP_MAX_PRICE - SHOP_MIN_PRICE;
+      // Auf 50 gerundet, damit die Preise nicht wie Zufallszahlen aussehen.
+      const price = SHOP_MIN_PRICE + Math.round((seed % (span + 1)) / 50) * 50;
+      const incomePerTick = Math.max(1, Math.round(price * SHOP_INCOME_RATIO));
+      const maintenancePerTick = Math.max(1, Math.round(incomePerTick * SHOP_MAINTENANCE_RATIO));
+
+      const name = `${SHOP_NAMES[seed % SHOP_NAMES.length]} ${SHOP_STREETS[(seed >> 3) % SHOP_STREETS.length]}`;
+      shops.push({
+        id: `shop_${n++}`,
+        kind: 'shop',
+        name,
+        price,
+        incomePerTick,
+        maintenancePerTick,
+        position: { x: b.x, y: b.y },
+        ownerId: null,
+        level: 1,
+        invested: 0,
+        baseIncome: incomePerTick,
+        baseMaintenance: maintenancePerTick,
+      });
+    }
+    return shops;
+  }
+
+  /** Wie viele Laeden besitzt dieser Spieler? */
+  ownedShopCount(playerId) {
+    let n = 0;
+    for (const p of this.properties.values()) {
+      if (p.kind === 'shop' && p.ownerId === playerId) n++;
+    }
+    return n;
   }
 
   /** Setzt Ertrag und Unterhalt gemaess der Ausbaustufe neu. */
