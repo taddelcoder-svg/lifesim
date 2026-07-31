@@ -1,0 +1,6 @@
+# Der Weltzustand darf NIE ins Repo. Waere er eingecheckt, wuerde bei jedem
+# Deploy ein alter Stand mit ausgeliefert und die laufende Welt darauf
+# zurueckgesetzt - der Fortschritt seit dem Commit waere jedes Mal weg.
+world-snapshot.json
+
+node_modules/
