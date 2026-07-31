@@ -49,6 +49,15 @@ const MODEL_FILE = 'citybits.glb';
 // entdoppelt. Beide Dateien landen im selben modelTemplates-Verzeichnis.
 const CITYKIT_FILE = 'citykit.glb';
 
+// Haustiere (Kenney Cube Pets, CC0). Sechs Arten, 326 KB. Jedes Tier besteht
+// aus sieben Teilen, deren Versatz beim Zusammenfuehren in die Geometrie
+// gerechnet wurde - sie teilen sich also einen Ursprung und lassen sich als
+// Gruppe klonen.
+const PET_FILE = 'pets.glb';
+
+// Wie weit hinter dem Besitzer das Tier laeuft (3D-Einheiten).
+const PET_FOLLOW_DISTANCE = 0.9;
+
 // Kantenlaenge des alten Stadtkerns. Alles darunter bleibt beim urspruenglichen
 // KayKit-Aussehen - die Altstadt soll sich nicht ueber Nacht veraendern.
 const CORE_SIZE = 2800;
@@ -611,6 +620,18 @@ class Renderer {
     // Datei, bleibt die Altstadt vollstaendig und die neuen Bezirke fallen auf
     // die Ersatzquader zurueck - besser als eine schwarze Karte.
     loader.load(
+      PET_FILE,
+      (gltf) => {
+        gltf.scene.traverse((child) => {
+          if (child.isMesh && child.name) this.modelTemplates.set(child.name, child);
+        });
+        console.log('Haustiermodelle geladen');
+      },
+      undefined,
+      (err) => console.warn('Haustiermodelle nicht geladen:', err && err.message),
+    );
+
+    loader.load(
       CITYKIT_FILE,
       (gltf) => {
         gltf.scene.traverse((child) => {
@@ -977,6 +998,74 @@ class Renderer {
     this.facingById.delete(id);
   }
 
+  /**
+   * Haelt das Haustier eines Spielers hinter ihm her.
+   *
+   * Es folgt traege statt fest angeheftet zu sein - ein Tier, das starr im
+   * gleichen Abstand klebt, wirkt wie ein Anhaenger, kein Lebewesen. Die
+   * Verzoegerung ist derselbe rahmenratenunabhaengige Mischwert wie bei den
+   * anderen Spielern, damit es bei jeder Bildrate gleich aussieht.
+   */
+  syncPet(player, dtMs) {
+    if (!this.petObjects) this.petObjects = new Map();
+    const existing = this.petObjects.get(player.id);
+
+    if (!player.pet) {
+      if (existing) {
+        this.scene.remove(existing.group);
+        this.petObjects.delete(player.id);
+      }
+      return;
+    }
+
+    let entry = existing;
+    if (!entry || entry.species !== player.pet.species) {
+      if (entry) this.scene.remove(entry.group);
+      const group = this.clonePet(player.pet.species);
+      if (!group) return;
+      this.scene.add(group);
+      entry = { group, species: player.pet.species };
+      this.petObjects.set(player.id, entry);
+    }
+
+    const blend = frameRateIndependentBlend(REMOTE_POSITION_BLEND, dtMs);
+    const tx = player.x * WORLD_SCALE;
+    const tz = player.y * WORLD_SCALE;
+    // Zielpunkt etwas hinter dem Besitzer, nicht auf ihm - sonst stuenden
+    // Figur und Tier ineinander.
+    const dx = entry.group.position.x - tx;
+    const dz = entry.group.position.z - tz;
+    const d = Math.hypot(dx, dz) || 1;
+    const goalX = tx + (dx / d) * PET_FOLLOW_DISTANCE;
+    const goalZ = tz + (dz / d) * PET_FOLLOW_DISTANCE;
+
+    entry.group.position.x += (goalX - entry.group.position.x) * blend;
+    entry.group.position.z += (goalZ - entry.group.position.z) * blend;
+    // Blickrichtung zum Besitzer
+    entry.group.rotation.y = Math.atan2(tx - entry.group.position.x, tz - entry.group.position.z);
+  }
+
+  /**
+   * Baut ein Haustier aus seinen Teilen. Die Modelle bestehen aus sieben
+   * Meshes (pet_cat_2 bis pet_cat_8), deren Versatz beim Zusammenfuehren in die
+   * Geometrie gerechnet wurde - sie lassen sich deshalb einfach in eine Gruppe
+   * legen und sitzen an ihrem Platz.
+   */
+  clonePet(species) {
+    const group = new THREE.Group();
+    let found = 0;
+    for (const [name, template] of this.modelTemplates) {
+      if (!name.startsWith(`pet_${species}`)) continue;
+      const mesh = template.clone();
+      mesh.castShadow = true;
+      group.add(mesh);
+      found++;
+    }
+    if (found === 0) return null;
+    group.scale.setScalar(0.35);
+    return group;
+  }
+
   /** Ueberschreibt Position/Blickrichtung/Label aller sichtbaren Spieler anhand des Netzwerk-State. */
   syncEntities(dtMs) {
     const seen = new Set();
@@ -987,6 +1076,7 @@ class Renderer {
     for (const p of this.net.players.values()) {
       if (p.connected === false) continue;
       seen.add(p.id);
+      this.syncPet(p, dtMs);
 
       const isSelf = p.id === this.net.myId;
       const entry = this.getOrCreateEntity(p.id, isSelf);
