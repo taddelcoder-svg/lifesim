@@ -58,6 +58,15 @@ const PET_FILE = 'pets.glb';
 // Wie weit hinter dem Besitzer das Tier laeuft (3D-Einheiten).
 const PET_FOLLOW_DISTANCE = 0.9;
 
+// Ersatzfarben, falls pets.glb fehlt oder nicht laedt. Ein unsichtbares
+// Haustier ist nicht von einem fehlenden Feature zu unterscheiden - ein
+// farbiger Wuerfel dagegen zeigt sofort: die Daten stimmen, nur das Modell
+// fehlt. Gleiche Ueberlegung wie beim Stadtkit.
+const PET_FALLBACK_COLOURS = {
+  cat: 0xc8a06a, dog: 0x8a5a3a, bunny: 0xd8d0c8,
+  fox: 0xd07030, parrot: 0x40b060, pig: 0xe0a0b0,
+};
+
 // Kantenlaenge des alten Stadtkerns. Alles darunter bleibt beim urspruenglichen
 // KayKit-Aussehen - die Altstadt soll sich nicht ueber Nacht veraendern.
 const CORE_SIZE = 2800;
@@ -1036,6 +1045,11 @@ class Renderer {
       if (entry) this.scene.remove(entry.group);
       const group = this.clonePet(player.pet.species);
       if (!group) return;
+      console.log('Haustier eingesetzt:', player.pet.species, 'für Spieler', player.id);
+      // Sofort an den Besitzer setzen, nicht erst hinblenden: ein frisch
+      // erzeugtes Objekt steht am Weltursprung, und bei 5600 Einheiten
+      // Kantenlaenge waere es sekundenlang irgendwo am Kartenrand unterwegs.
+      group.position.set(player.x * WORLD_SCALE, 0, player.y * WORLD_SCALE + PET_FOLLOW_DISTANCE);
       this.scene.add(group);
       entry = { group, species: player.pet.species };
       this.petObjects.set(player.id, entry);
@@ -1065,14 +1079,32 @@ class Renderer {
    * legen und sitzen an ihrem Platz.
    */
   clonePet(species) {
-    const template = this.petTemplates.get(species);
-    if (!template) return null;
-
     const group = new THREE.Group();
-    const model = template.clone();
-    model.traverse((o) => { if (o.isMesh) o.castShadow = true; });
-    group.add(model);
-    group.scale.setScalar(0.35);
+    const template = this.petTemplates.get(species);
+
+    if (template) {
+      const model = template.clone();
+      model.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+      group.add(model);
+      group.scale.setScalar(0.35);
+      return group;
+    }
+
+    // Kein Modell da: Ersatzwuerfel statt gar nichts. Einmalig warnen, nicht
+    // bei jedem Tier - sonst laeuft die Konsole voll.
+    if (!this._petModelWarned) {
+      this._petModelWarned = true;
+      console.warn(
+        'pets.glb nicht geladen - Haustiere werden als Würfel dargestellt. '
+        + 'Liegt die Datei im selben Ordner wie citybits.glb?'
+      );
+    }
+    const geo = new THREE.BoxGeometry(0.5, 0.5, 0.7);
+    const mat = new THREE.MeshStandardMaterial({ color: PET_FALLBACK_COLOURS[species] || 0xaaaaaa });
+    const box = new THREE.Mesh(geo, mat);
+    box.position.y = 0.25;
+    box.castShadow = true;
+    group.add(box);
     return group;
   }
 
