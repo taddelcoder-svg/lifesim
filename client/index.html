@@ -484,6 +484,9 @@
   </div>
 
   <div id="marketPanel" style="display:none;">
+    <h4>🐾 Haustier</h4>
+    <div id="petBox"></div>
+
     <h4>🏥 Gesundheit &amp; Freizeit</h4>
     <div id="wellbeingActions"></div>
 
@@ -1007,6 +1010,7 @@
     function renderMarketPanel() {
       if (!net) return;
 
+      renderPetSection();
       renderWellbeingSection();
       renderRaceSection();
       renderBlackmarketSection();
@@ -1325,6 +1329,8 @@
           too_many_shops: 'Mehr Läden darfst du nicht besitzen.',
           already_has_home: 'Du hast schon ein Zuhause.',
           no_home: 'Dafür brauchst du erst ein eigenes Zuhause.',
+          already_has_pet: 'Du hast schon ein Tier.',
+          no_pet: 'Du hast kein Tier.',
           no_site_left: 'Im Industriegebiet ist kein Grundstück mehr frei.',
           not_pretty_enough: 'Dafür reicht dein Aussehen noch nicht — trainier im Fitnessstudio.',
           not_jailed: 'Du sitzt gar nicht.',
@@ -2290,6 +2296,67 @@
     }
 
     // ---------------------------------------------------------------------
+    // Haustier
+    // ---------------------------------------------------------------------
+    const petBoxEl = document.getElementById('petBox');
+
+    function renderPetSection() {
+      if (!net || !net.localPlayer) return;
+      const st = net.petState || { species: [] };
+      petBoxEl.innerHTML = '';
+
+      if (st.pet) {
+        const left = Math.max(0, Math.round((st.pet.neglectAt - Date.now()) / 1000));
+        const head = document.createElement('div');
+        head.className = 'market-item-detail';
+        // Die Frist sichtbar machen: ein Tier, das eines Tages kommentarlos
+        // verschwindet, wirkt wie ein Fehler und nicht wie eine Folge.
+        head.innerHTML = `<b>${escapeHtml(st.pet.name)}</b> (${escapeHtml(st.pet.speciesName)}) — ` +
+          (left > 0
+            ? `läuft weg in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
+            : '<span style="color:#e08080">läuft gleich weg!</span>');
+        petBoxEl.appendChild(head);
+
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = '<div class="market-item-detail">Füttern hebt die Zufriedenheit und setzt die Frist zurück.</div>';
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small';
+        btn.textContent = `Füttern $${st.feedCost ?? 18}`;
+        btn.addEventListener('click', () => net.feedPet());
+        row.appendChild(btn);
+        petBoxEl.appendChild(row);
+        return;
+      }
+
+      const info = document.createElement('div');
+      info.className = 'market-item-detail';
+      info.textContent = 'Nur mit eigenem Zuhause und nur in der Tierhandlung.';
+      petBoxEl.appendChild(info);
+
+      const nameRow = document.createElement('div');
+      nameRow.className = 'market-item';
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.placeholder = 'Name (optional)';
+      nameInput.maxLength = 20;
+      nameRow.appendChild(nameInput);
+      petBoxEl.appendChild(nameRow);
+
+      for (const sp of st.species || []) {
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        row.innerHTML = `<div class="market-item-name">${escapeHtml(sp.name)}</div>`;
+        const btn = document.createElement('button');
+        btn.className = 'market-btn-small';
+        btn.textContent = `$${sp.price}`;
+        btn.addEventListener('click', () => net.buyPet(sp.id, nameInput.value));
+        row.appendChild(btn);
+        petBoxEl.appendChild(row);
+      }
+    }
+
+    // ---------------------------------------------------------------------
     // Rechtliches: Bestechung und Anwalt
     // ---------------------------------------------------------------------
     const legalActionsEl = document.getElementById('legalActions');
@@ -2515,6 +2582,19 @@
       };
       net.onEnvironmentState = (env) => {
         if (renderer && renderer.applyEnvironment) renderer.applyEnvironment(env);
+      };
+      net.onPetState = () => {
+        if (marketPanel.style.display !== 'none') renderPetSection();
+      };
+      net.onPetAction = (msg) => {
+        showToast(msg.action === 'buyPet'
+          ? `🐾 ${msg.species} "${msg.petName}" für $${msg.price} gekauft.`
+          : `🐾 ${msg.petName} gefüttert — Zufriedenheit ${Math.round(msg.newHappiness)}.`);
+        if (marketPanel.style.display !== 'none') renderPetSection();
+      };
+      net.onPetRanAway = (msg) => {
+        showToast(`🐾 ${msg.petName} ist weggelaufen — zu lange nicht gefüttert.`);
+        if (marketPanel.style.display !== 'none') renderPetSection();
       };
       net.onMarketState = () => {
         if (marketPanel.style.display !== 'none') renderMarketSection();
