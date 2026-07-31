@@ -389,6 +389,28 @@ class Renderer {
     }
   }
 
+  /**
+   * Beschriftet die Firmensitze im Industriegebiet.
+   *
+   * Die Gebaeude stehen ohnehin als Stadtdeko da - hier kommt nur der Name
+   * darueber. Das macht aus einer Zahl in einem Menue einen Ort, den man
+   * ansteuern kann, und aus dem Industriegebiet eine Gegend mit Inhalt statt
+   * einer Kulisse.
+   */
+  buildCompanySigns() {
+    if (!this.companySigns) this.companySigns = [];
+    for (const sign of this.companySigns) this.scene.remove(sign);
+    this.companySigns = [];
+
+    for (const company of this.net.companies.values()) {
+      if (!company.site) continue;
+      const label = this.createLabelSprite(`🏭 ${company.name}`, [3.0, 0.75]);
+      label.position.set(company.site.x * WORLD_SCALE, 4.5, company.site.y * WORLD_SCALE);
+      this.scene.add(label);
+      this.companySigns.push(label);
+    }
+  }
+
   /** Baut Strassen und Deko-Gebaeude aus dem Server-Layout. Wird einmal aufgerufen, sobald es ankommt. */
   buildCityFromLayout() {
     // Vorherigen Aufbau entfernen, falls das Layout erneut ankommt (Reconnect)
@@ -570,6 +592,7 @@ class Renderer {
     // Zuletzt, damit die Bodenplatten der Orte ueber der Strasse liegen und
     // nicht von spaeter hinzugefuegter Deko ueberdeckt werden.
     this.buildPlaceMarkers();
+    this.buildCompanySigns();
   }
 
   /**
