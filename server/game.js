@@ -31,6 +31,13 @@ const {
   MAX_OWNED_SHOPS,
   SHOP_NAMES,
   SHOP_STREETS,
+  HOME_MIN_PRICE,
+  HOME_MAX_PRICE,
+  HOME_MAINTENANCE_RATIO,
+  MAX_OWNED_HOMES,
+  HOME_HAPPINESS_FLOOR,
+  HOME_NAMES,
+  HOME_STREETS,
   EMPLOYEE_INCOME_PER_TICK,
   EMPLOYEE_WAGE_PER_TICK,
   EMPLOYMENT_OFFER_DURATION_MS,
@@ -458,6 +465,7 @@ class GameWorld {
     // Ertrag, Einbruch, Alarmanlage, Versicherung und Ausbau ohne eine einzige
     // Zeile Sonderbehandlung. Unterschieden werden sie nur ueber `kind`.
     for (const shop of this.generateShops()) this.properties.set(shop.id, shop);
+    for (const home of this.generateHomes()) this.properties.set(home.id, home);
 
     this.collisionRects = [
       ...this.cityLayout.buildings.map((b) => ({ x: b.x, y: b.y, w: b.w, d: b.d })),
@@ -911,7 +919,14 @@ class GameWorld {
       // groesstenteils. Drei Stellen halten die Gleitkomma-Reste weiterhin
       // draussen und bilden alle vorkommenden Abzuege exakt ab.
       player.health = Math.max(0, Math.round((player.health - HEALTH_DECAY_PER_TICK) * 1000) / 1000);
-      player.happiness = Math.max(0, Math.round((player.happiness - happinessDecay) * 1000) / 1000);
+      // Ein eigenes Zuhause haelt die Zufriedenheit ueber einer Untergrenze.
+      // Das min() ist wichtig: wer beim Kauf schon DARUNTER liegt, wird nicht
+      // sprunghaft hochgesetzt - der Verfall stoppt nur, wo er gerade steht.
+      // Sonst waere ein Hauskauf ein sofortiger Zufriedenheitsschub.
+      const floor = this.ownsHome(player)
+        ? Math.min(player.happiness, HOME_HAPPINESS_FLOOR)
+        : 0;
+      player.happiness = Math.max(floor, Math.round((player.happiness - happinessDecay) * 1000) / 1000);
     }
   }
 
@@ -1362,9 +1377,14 @@ class GameWorld {
     return [...this.properties.values()];
   }
 
-  /** Nur die kuratierten Objekte - fuer Auswertungen, die Laeden ausklammern. */
+  /**
+   * Nur die 14 handgesetzten Objekte. Sie tragen als einzige KEIN `kind` -
+   * darauf zu pruefen ist die einzige Variante, die auch bei einer weiteren
+   * Klasse noch stimmt. Die erste Fassung filterte auf `kind !== 'shop'` und
+   * lieferte nach Einfuehrung der Wohnhaeuser prompt 82 statt 14 Objekte.
+   */
   curatedProperties() {
-    return [...this.properties.values()].filter((p) => p.kind !== 'shop');
+    return [...this.properties.values()].filter((p) => !p.kind);
   }
 
   buildCompaniesState() {
@@ -1535,6 +1555,9 @@ class GameWorld {
 
     if (property.kind === 'shop' && this.ownedShopCount(playerId) >= MAX_OWNED_SHOPS) {
       return { ok: false, reason: 'too_many_shops' };
+    }
+    if (property.kind === 'home' && this.ownedHomeCount(playerId) >= MAX_OWNED_HOMES) {
+      return { ok: false, reason: 'already_has_home' };
     }
 
     const away = this.checkPlaceRequirement(player, 'buyProperty');
@@ -2930,6 +2953,58 @@ class GameWorld {
     return shops;
   }
 
+  /**
+   * Erzeugt die Wohnhaeuser aus den Vorstadtgebaeuden (x<2800, y>=2800).
+   * Gleiches Verfahren wie bei den Laeden, aber OHNE Ertrag.
+   */
+  generateHomes() {
+    const homes = [];
+    let n = 0;
+    for (const b of this.cityLayout.buildings) {
+      if (!(b.x < 2800 && b.y >= 2800)) continue;
+
+      const seed = Math.abs(Math.round(b.x * 53 + b.y * 97));
+      const span = HOME_MAX_PRICE - HOME_MIN_PRICE;
+      const price = HOME_MIN_PRICE + Math.round((seed % (span + 1)) / 50) * 50;
+      const maintenancePerTick = Math.max(1, Math.round(price * HOME_MAINTENANCE_RATIO));
+
+      const name = `${HOME_NAMES[seed % HOME_NAMES.length]} ${HOME_STREETS[(seed >> 3) % HOME_STREETS.length]}`;
+      homes.push({
+        id: `home_${n++}`,
+        kind: 'home',
+        name,
+        price,
+        incomePerTick: 0,
+        maintenancePerTick,
+        position: { x: b.x, y: b.y },
+        ownerId: null,
+        level: 1,
+        invested: 0,
+        baseIncome: 0,
+        baseMaintenance: maintenancePerTick,
+      });
+    }
+    return homes;
+  }
+
+  /** Besitzt dieser Spieler ein Zuhause? */
+  ownsHome(player) {
+    if (!player) return false;
+    for (const p of this.properties.values()) {
+      if (p.kind === 'home' && p.ownerId === player.id) return true;
+    }
+    return false;
+  }
+
+  /** Wie viele Wohnhaeuser besitzt dieser Spieler? */
+  ownedHomeCount(playerId) {
+    let n = 0;
+    for (const p of this.properties.values()) {
+      if (p.kind === 'home' && p.ownerId === playerId) n++;
+    }
+    return n;
+  }
+
   /** Wie viele Laeden besitzt dieser Spieler? */
   ownedShopCount(playerId) {
     let n = 0;
@@ -3470,6 +3545,10 @@ class GameWorld {
     const player = this.players.get(playerId);
     if (!player) return { ok: false, reason: 'not_found' };
     if (player.spouseId == null) return { ok: false, reason: 'not_married' };
+    // Ohne Zuhause kein Kind. Das gibt den Vorstadthaeusern einen Zweck, der
+    // ueber eine Zahl hinausgeht, und verbindet zwei Systeme, die bisher
+    // nebeneinander herliefen.
+    if (!this.ownsHome(player)) return { ok: false, reason: 'no_home' };
     if (player.cash < CHILD_COST) return { ok: false, reason: 'insufficient_funds' };
 
     const spouse = this.players.get(player.spouseId);
