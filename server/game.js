@@ -150,6 +150,15 @@ const {
 } = require('./daynight');
 const { NEWS_LIMIT } = require('./news');
 const {
+  MAX_PET_NAME_LENGTH,
+  FEED_COST,
+  FEED_HAPPINESS_GAIN,
+  FEED_COOLDOWN_MS,
+  NEGLECT_TIMEOUT_MS,
+  findSpecies,
+  buildSpeciesCatalog,
+} = require('./pets');
+const {
   BUST_CHANCE,
   BUST_WANTED,
   findItem,
@@ -1053,6 +1062,12 @@ class GameWorld {
         // ein Absturz statt nur eines falschen Werts.
         portfolio: (saved.portfolio && typeof saved.portfolio === 'object') ? saved.portfolio : {},
         items: (saved.items && typeof saved.items === 'object') ? saved.items : {},
+        // Haustier nur uebernehmen, wenn die Art noch existiert - sonst haette
+        // der Spieler ein Tier, fuer das es kein Modell und keinen Preis gibt.
+        pet: (saved.pet && findSpecies(saved.pet.species))
+          ? { species: saved.pet.species, name: String(saved.pet.name || ''),
+              lastFedAt: Number(saved.pet.lastFedAt) || Date.now() }
+          : null,
         // Ein laufender Rennversuch ueberlebt den Neustart bewusst NICHT: die
         // Uhr lief waehrend der Ausfallzeit weiter und die Zeit waere wertlos.
         race: null,
@@ -2112,6 +2127,91 @@ class GameWorld {
     // Ist der Sieger nicht mehr da, verfaellt der Topf - er kam aus
     // Startgeldern und darf nicht doppelt ausgeschuettet werden.
     return { type: 'winner', name: winner.name, ms: winner.ms, prize };
+  }
+
+  // ---------------------------------------------------------------------
+  // HAUSTIERE
+  // ---------------------------------------------------------------------
+
+  buildPetState(playerId) {
+    const player = playerId != null ? this.players.get(playerId) : null;
+    const pet = player && player.pet ? player.pet : null;
+    return {
+      species: buildSpeciesCatalog(),
+      feedCost: FEED_COST,
+      pet: pet ? {
+        species: pet.species,
+        speciesName: (findSpecies(pet.species) || {}).name || pet.species,
+        name: pet.name,
+        lastFedAt: pet.lastFedAt,
+        // Verbleibende Zeit bis zum Weglaufen - der Client kann daraus warnen,
+        // statt dass das Tier eines Tages kommentarlos verschwindet.
+        neglectAt: pet.lastFedAt + NEGLECT_TIMEOUT_MS,
+      } : null,
+    };
+  }
+
+  /** Kauft ein Haustier. Braucht ein eigenes Zuhause - wie ein Kind. */
+  buyPet(playerId, speciesId, name) {
+    const player = this.players.get(playerId);
+    const species = findSpecies(speciesId);
+    if (!player || !species) return { ok: false, reason: 'not_found' };
+    if (this.isJailed(player)) return { ok: false, reason: 'jailed' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+    if (player.pet) return { ok: false, reason: 'already_has_pet' };
+    if (!this.ownsHome(player)) return { ok: false, reason: 'no_home' };
+    if (player.cash < species.price) return { ok: false, reason: 'insufficient_funds' };
+
+    const away = this.checkPlaceRequirement(player, 'buyPet');
+    if (away) return away;
+
+    player.cash -= species.price;
+    player.pet = {
+      species: species.id,
+      name: name && String(name).trim()
+        ? String(name).trim().slice(0, MAX_PET_NAME_LENGTH)
+        : species.name,
+      // Frisch gekauft gilt als gerade gefuettert, sonst liefe die Frist ab
+      // dem Nullpunkt und das Tier waere sofort in Gefahr.
+      lastFedAt: Date.now(),
+    };
+    return { ok: true, species: species.name, petName: player.pet.name, price: species.price, player };
+  }
+
+  /** Fuettern: kostet wenig, gibt Zufriedenheit, setzt die Frist zurueck. */
+  feedPet(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) return { ok: false, reason: 'not_found' };
+    if (!player.pet) return { ok: false, reason: 'no_pet' };
+    if (this.isAwaitingReincarnation(player)) return { ok: false, reason: 'dead' };
+
+    const now = Date.now();
+    if (now - player.pet.lastFedAt < FEED_COOLDOWN_MS) return { ok: false, reason: 'too_soon' };
+    if (player.cash < FEED_COST) return { ok: false, reason: 'insufficient_funds' };
+
+    player.cash -= FEED_COST;
+    player.pet.lastFedAt = now;
+    player.happiness = Math.min(100, player.happiness + FEED_HAPPINESS_GAIN);
+    return { ok: true, cost: FEED_COST, petName: player.pet.name, newHappiness: player.happiness, player };
+  }
+
+  /**
+   * Laufen lange nicht gefuetterte Tiere weg. Wird im langsamen Takt geprueft
+   * und gibt die Betroffenen zurueck, damit sie benachrichtigt werden koennen.
+   *
+   * Bewusst auch fuer NICHT verbundene Spieler: sonst waere Abmelden die
+   * bequemste Art, sich um die Verpflichtung zu druecken.
+   */
+  checkNeglectedPets() {
+    const now = Date.now();
+    const runaways = [];
+    for (const player of this.players.values()) {
+      if (!player.pet) continue;
+      if (now - player.pet.lastFedAt < NEGLECT_TIMEOUT_MS) continue;
+      runaways.push({ player, petName: player.pet.name });
+      player.pet = null;
+    }
+    return runaways;
   }
 
   // ---------------------------------------------------------------------
