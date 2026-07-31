@@ -435,6 +435,17 @@ class GameWorld {
       ...PLACES.map((p) => p.position),
     ]);
 
+    // Industriegebaeude als moegliche Firmensitze. Sie sind Teil der Stadtdeko
+    // und stehen bereits - hier wird nur festgehalten, welche davon vergeben
+    // werden koennen. Damit bekommen Firmen erstmals einen ORT: bisher waren
+    // sie reine Zahlen ohne jede Stelle auf der Karte.
+    //
+    // Die Liste ist deterministisch aus dem Stadtaufbau abgeleitet (Grundsatz 4)
+    // und deshalb auf allen Clients gleich; gespeichert wird nur der INDEX.
+    this.industrialSites = this.cityLayout.buildings
+      .map((b, index) => ({ index, x: b.x, y: b.y }))
+      .filter((b) => b.x >= 2800 && b.y >= 2800);
+
     this.collisionRects = [
       ...this.cityLayout.buildings.map((b) => ({ x: b.x, y: b.y, w: b.w, d: b.d })),
       ...PROPERTIES.map((p) => ({ x: p.position.x, y: p.position.y, w: 120, d: 120 })),
@@ -1185,7 +1196,18 @@ class GameWorld {
     }
 
     if (Array.isArray(snapshot.companies)) {
-      for (const company of snapshot.companies) this.companies.set(company.id, company);
+      for (const company of snapshot.companies) {
+        // Sitz aus dem gespeicherten INDEX neu bestimmen. Die Stadt wird beim
+        // Start deterministisch erzeugt, die Koordinaten koennten sich aber
+        // nach einer Weltaenderung verschoben haben - der Index ist die
+        // verlaessliche Groesse, die Position wird daraus abgeleitet.
+        if (company.siteIndex != null) {
+          const site = this.industrialSites.find((s) => s.index === company.siteIndex);
+          if (site) company.site = { x: site.x, y: site.y };
+          else { company.siteIndex = null; company.site = null; }
+        }
+        this.companies.set(company.id, company);
+      }
     }
 
     if (Array.isArray(snapshot.children)) {
@@ -1338,6 +1360,10 @@ class GameWorld {
       income: this.companyLevel(c).income,
       upkeep: this.companyLevel(c).upkeep,
       upgradeCost: this.nextCompanyLevel(c) ? this.nextCompanyLevel(c).upgradeCost : null,
+      // Der Sitz geht an ALLE: die Beschriftung am Gebaeude soll jeder sehen,
+      // nicht nur der Besitzer - sonst waere die Stadt fuer Fremde weiterhin
+      // anonym.
+      site: c.site || null,
     }));
   }
 
@@ -1516,6 +1542,12 @@ class GameWorld {
   }
 
   /** Gründet eine neue Firma fuer den Spieler. Kein Limit an der Gesamtzahl - anders als Immobilien. */
+  /** Der naechste unbesetzte Firmensitz, oder null wenn alle vergeben sind. */
+  findFreeIndustrialSite() {
+    const taken = new Set([...this.companies.values()].map((c) => c.siteIndex));
+    return this.industrialSites.find((s) => !taken.has(s.index)) || null;
+  }
+
   /** Wie viele Firmen besitzt dieser Spieler gerade? */
   ownedCompanyCount(playerId) {
     let n = 0;
@@ -1534,6 +1566,12 @@ class GameWorld {
     const away = this.checkPlaceRequirement(player, 'foundCompany');
     if (away) return away;
 
+    // Freien Firmensitz suchen. Ist keiner mehr da, kann auch keine Firma mehr
+    // gegruendet werden - eine natuerliche Obergrenze aus der Welt selbst
+    // statt einer weiteren Konstanten.
+    const site = this.findFreeIndustrialSite();
+    if (!site) return { ok: false, reason: 'no_site_left' };
+
     player.cash -= COMPANY_FOUNDING_COST;
     const company = {
       id: this.nextCompanyId++,
@@ -1541,6 +1579,8 @@ class GameWorld {
       name: name && String(name).trim() ? String(name).trim().slice(0, 30) : 'Neue Firma',
       level: 1,
       employees: [], // Spieler-IDs
+      siteIndex: site.index,
+      site: { x: site.x, y: site.y },
     };
     this.companies.set(company.id, company);
     return { ok: true, company };
