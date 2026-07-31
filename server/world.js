@@ -14,16 +14,20 @@
 // Die dritte Kopie in client/net.js bleibt unvermeidbar (kein Build-Schritt),
 // sie faellt damit unter Grundprinzip 2: aendert man hier, muss man dort mit.
 //
-// 2800 statt der urspruenglichen 2000: bei Raster 400 ergibt das 7x7 = 49
-// Blockmitten statt 25. Von den 25 waren 23 belegt (14 Immobilien + 9 Orte) -
-// die Stadt erzeugte deshalb nur noch DREI Dekogebaeude, und fuer neue Inhalte
-// war kein Platz mehr. Nicht Platzmangel fuer Spieler war der Grund (die Welt
-// ist zu 80% begehbar), sondern die Erschoepfung des Rasters.
+// 5600: bei Raster 400 ergibt das 14x14 = 196 Blockmitten. Die Vergroesserung
+// von 2000 auf 2800 hatte einen messbaren Grund (das Raster war erschoepft,
+// die Stadt erzeugte nur noch drei Dekogebaeude). Dieser Schritt hat ihn NICHT
+// - er ist eine bewusste Entscheidung fuer eine groessere Welt, nicht die
+// Behebung eines Engpasses. Wer sie zurueckdreht, verliert nur Flaeche.
+//
+// ALLE bestehenden Inhalte liegen unveraendert im Bereich 0..2800, also im
+// Nordwest-Quadranten. Wege und Balancing zwischen ihnen bleiben damit exakt
+// wie abgestimmt; die drei neuen Quadranten sind zusaetzliche Flaeche.
 //
 // Alle bestehenden Positionen (Immobilien, Orte, Startpunkt, Parkplaetze,
 // Gefaengnis) liegen unveraendert im alten Bereich - Wege und Balancing bleiben
 // damit exakt so, wie sie abgestimmt wurden.
-const WORLD_SIZE = 2800;
+const WORLD_SIZE = 5600;
 
 const ROAD_SPACING = 400;  // Abstand der Strassen im Raster
 const ROAD_WIDTH = 90;     // Breite der Strassen (begehbarer Korridor)
