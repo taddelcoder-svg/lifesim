@@ -1898,7 +1898,12 @@ class GameWorld {
   controlsPositionOf(player, x, y) {
     const gang = this.gangOf(player);
     if (!gang) return false;
-    return this.territory[quadrantAt(x, y, this.cityLayout.worldSize)] === gang.id;
+    const quad = quadrantAt(x, y);
+    // Ausserhalb des Stadtkerns gibt es kein Territorium - null als
+    // Schluessel wuerde sonst undefined liefern und der Vergleich waere
+    // zufaellig falsch statt bewusst falsch.
+    if (!quad) return false;
+    return this.territory[quad] === gang.id;
   }
 
   // ---------------------------------------------------------------------
