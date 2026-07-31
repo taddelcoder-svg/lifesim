@@ -185,7 +185,10 @@ class Renderer {
     this.buildingEntities = new Map(); // propertyId -> { group, mat, label, lastLabelText, lastColorKey }
     this.cityMeshes = []; // Strassen und Deko-Gebaeude aus dem Server-Layout
     this.vehicleEntities = new Map(); // vehicleId -> { group, mat, lastColorKey }
-    this.modelTemplates = new Map();  // Modellname -> Vorlage zum Klonen
+    this.modelTemplates = new Map();
+    // Haustiere getrennt halten: modelTemplates enthaelt einzelne Meshes (die
+    // Instanzierung greift auf .geometry zu), Haustiere sind ganze Teilbaeume.
+    this.petTemplates = new Map();  // Modellname -> Vorlage zum Klonen
     this.modelsReady = false;
     this.facingById = new Map(); // playerId -> Bogenmass, Blickrichtung bei Stillstand beibehalten
 
@@ -622,10 +625,20 @@ class Renderer {
     loader.load(
       PET_FILE,
       (gltf) => {
+        // Den GANZEN Teilbaum je Tier merken, nicht die einzelnen Meshes.
+        //
+        // Die Tiere sind mehrstufig verschachtelt: unter "animal-cat" haengt
+        // eine Zwischenebene und darunter erst die sieben Teile. Klont man nur
+        // die Blaetter und haengt sie in eine neue Gruppe, geht jede
+        // Transformation der Ebenen dazwischen verloren - die Teile landen
+        // uebereinander oder ausserhalb des Sichtfelds. Object3D.clone()
+        // uebernimmt den Teilbaum samt allem.
         gltf.scene.traverse((child) => {
-          if (child.isMesh && child.name) this.modelTemplates.set(child.name, child);
+          if (child.name && child.name.startsWith('animal-')) {
+            this.petTemplates.set(child.name.slice('animal-'.length), child);
+          }
         });
-        console.log('Haustiermodelle geladen');
+        console.log('Haustiermodelle geladen:', this.petTemplates.size);
       },
       undefined,
       (err) => console.warn('Haustiermodelle nicht geladen:', err && err.message),
@@ -1052,16 +1065,13 @@ class Renderer {
    * legen und sitzen an ihrem Platz.
    */
   clonePet(species) {
+    const template = this.petTemplates.get(species);
+    if (!template) return null;
+
     const group = new THREE.Group();
-    let found = 0;
-    for (const [name, template] of this.modelTemplates) {
-      if (!name.startsWith(`pet_${species}`)) continue;
-      const mesh = template.clone();
-      mesh.castShadow = true;
-      group.add(mesh);
-      found++;
-    }
-    if (found === 0) return null;
+    const model = template.clone();
+    model.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    group.add(model);
     group.scale.setScalar(0.35);
     return group;
   }
