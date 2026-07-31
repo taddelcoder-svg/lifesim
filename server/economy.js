@@ -52,6 +52,35 @@ const MAX_OWNED_SHOPS = 5;
 
 // Deterministische Namensteile: aus der Position abgeleitet, damit jeder Client
 // dieselben Namen sieht, ohne dass sie uebertragen werden muessen (Grundsatz 4).
+// --- Wohnhaeuser (Vorstadt) ---
+//
+// Die 68 Vorstadthaeuser sind die dritte und letzte Klasse - und die einzige,
+// die KEIN Geld einbringt. Ein Zuhause ist eine laufende Ausgabe mit einem
+// nicht-monetaeren Gegenwert: es haelt die Zufriedenheit ueber einer
+// Untergrenze und ist Voraussetzung fuer Kinder.
+//
+// Dass sie nichts abwerfen, macht sie nebenbei uninteressant fuer Einbrecher -
+// die Beute richtet sich nach dem Ertrag. Das ist beabsichtigt: aus einer
+// Privatwohnung ist mechanisch nichts zu holen, aus einem Laden schon.
+const HOME_MIN_PRICE = 600;
+const HOME_MAX_PRICE = 1800;
+const HOME_MAINTENANCE_RATIO = 0.004; // Anteil am Preis, pro Zyklus
+const MAX_OWNED_HOMES = 1;            // man wohnt an einem Ort
+
+// Untergrenze, unter die die Zufriedenheit mit eigenem Zuhause nicht weiter
+// faellt. Bewusst kein Bonus obendrauf: ein Zuhause ist Sicherheit, kein
+// Rausch - und ein zusaetzlicher Abzug auf den Verfall koennte diesen zusammen
+// mit drei Freunden online auf null bringen und die ganze Verfallsmechanik
+// aushebeln.
+const HOME_HAPPINESS_FLOOR = 45;
+
+const HOME_NAMES = [
+  'Reihenhaus', 'Doppelhaus', 'Bungalow', 'Stadtvilla', 'Siedlerhaus', 'Eckhaus',
+];
+const HOME_STREETS = [
+  'Amselweg', 'Birkenring', 'Am Anger', 'Erlengrund', 'Wiesenpfad', 'Talstraße',
+];
+
 const SHOP_NAMES = [
   'Bäckerei', 'Kiosk', 'Friseur', 'Buchladen', 'Blumen', 'Apotheke',
   'Eisdiele', 'Werkstatt', 'Café', 'Schneiderei', 'Optiker', 'Imbiss',
@@ -115,6 +144,13 @@ module.exports = {
   SHOP_INCOME_RATIO,
   SHOP_MAINTENANCE_RATIO,
   MAX_OWNED_SHOPS,
+  HOME_MIN_PRICE,
+  HOME_MAX_PRICE,
+  HOME_MAINTENANCE_RATIO,
+  MAX_OWNED_HOMES,
+  HOME_HAPPINESS_FLOOR,
+  HOME_NAMES,
+  HOME_STREETS,
   SHOP_NAMES,
   SHOP_STREETS,
   PROPERTY_LEVELS,
