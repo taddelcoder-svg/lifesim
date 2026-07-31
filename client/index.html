@@ -520,6 +520,9 @@
     <h4>Immobilien</h4>
     <div id="propertyList"></div>
 
+    <h4>🏪 Läden im Gewerbebezirk</h4>
+    <div id="shopList"></div>
+
     <h4>Meine Firmen</h4>
     <div id="foundCompanyRow">
       <input id="companyNameInput" type="text" placeholder="Firmenname" maxlength="30">
@@ -811,6 +814,7 @@
     const marketBtn = document.getElementById('marketBtn');
     const marketPanel = document.getElementById('marketPanel');
     const propertyListEl = document.getElementById('propertyList');
+    const shopListEl = document.getElementById('shopList');
     const companyListEl = document.getElementById('companyList');
     const tradeListEl = document.getElementById('tradeList');
     const companyNameInput = document.getElementById('companyNameInput');
@@ -1010,12 +1014,20 @@
       renderJobSection();
       renderCourseSection();
 
-      // Immobilien
+      // Immobilien und Läden. Die Zeilen werden gleich aufgebaut - beide sind
+      // serverseitig dasselbe - aber in getrennte Listen gehängt.
       propertyListEl.innerHTML = '';
+      shopListEl.innerHTML = '';
       if (net.properties.size === 0) {
         propertyListEl.innerHTML = '<div class="market-empty">Lädt...</div>';
       }
+      // Von den 68 Läden nur die freien und die eigenen zeigen. Alle 68
+      // aufzulisten wäre eine Wand aus fremdem Besitz, durch die man scrollen
+      // müsste, um an die eigenen zu kommen.
+      let shopsShown = 0;
       for (const prop of net.properties.values()) {
+        const isShop = prop.kind === 'shop';
+        if (isShop && prop.ownerId && prop.ownerId !== net.myId) continue;
         const row = document.createElement('div');
         row.className = 'market-item';
 
@@ -1108,7 +1120,14 @@
           row.appendChild(burgleBtn);
         }
 
-        propertyListEl.appendChild(row);
+        if (isShop) { shopListEl.appendChild(row); shopsShown++; }
+        else propertyListEl.appendChild(row);
+      }
+      if (shopsShown === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'market-empty';
+        empty.textContent = 'Alle Läden sind vergeben.';
+        shopListEl.appendChild(empty);
       }
 
       // Firmen (nur eigene)
@@ -1289,6 +1308,7 @@
           jailed: 'Aus dem Gefängnis geht das nicht.',
           too_many_vehicles: 'Du besitzt schon genug Fahrzeuge.',
           too_many_companies: 'Du führst schon genug Firmen.',
+          too_many_shops: 'Mehr Läden darfst du nicht besitzen.',
           no_site_left: 'Im Industriegebiet ist kein Grundstück mehr frei.',
           not_pretty_enough: 'Dafür reicht dein Aussehen noch nicht — trainier im Fitnessstudio.',
           not_jailed: 'Du sitzt gar nicht.',
