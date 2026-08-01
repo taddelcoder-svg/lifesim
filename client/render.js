@@ -1112,9 +1112,22 @@ class Renderer {
   petReport() {
     const d = this.petDiag;
     if (d.seen === 0) return 'Kein Haustier in den Spielerdaten — der Server schickt keins.';
-    if (d.loaded === 0 && d.placed > 0) return `pets.glb FEHLT — ${d.placed}x als Würfel gesetzt (${d.last})`;
     if (d.placed === 0) return `Haustier in den Daten (${d.seen}x), aber kein Objekt erzeugt.`;
-    return `${d.loaded} Modelle geladen, ${d.placed}x an Figur gehängt (${d.last})`;
+
+    // Am tatsaechlichen Szenenbaum ablesen statt an Zaehlern: die erste Fassung
+    // schloss aus "loaded === 0" auf einen Ersatzwuerfel und meldete "pets.glb
+    // FEHLT", obwohl das echte Modell verwendet wurde. Was zaehlt, ist was
+    // WIRKLICH an der Figur haengt.
+    const mine = this.entities.get(this.net.myId);
+    if (!mine || !mine.petNode) return `${d.placed}x gesetzt, aber nichts an deiner Figur (${d.last})`;
+
+    const box = new THREE.Box3().setFromObject(mine.petNode);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const echt = d.loaded > 0 ? 'Modell' : 'Ersatzwürfel';
+    return `${echt} an der Figur: ${size.x.toFixed(2)}x${size.y.toFixed(2)} bei `
+      + `[${mine.petNode.position.x.toFixed(1)}, ${mine.petNode.position.z.toFixed(1)}], `
+      + `Figur bei [${mine.group.position.x.toFixed(1)}, ${mine.group.position.z.toFixed(1)}]`;
   }
 
   /**
