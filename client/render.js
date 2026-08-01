@@ -61,7 +61,11 @@ const PET_FILE = 'pets.glb';
 // 0,35, die Figur also 0,7 breit. Die erste Fassung stand auf 0,9 - das Tier
 // sass damit praktisch im Koerper des Besitzers und war, weil die Kamera hinter
 // dem Spieler steht, komplett verdeckt. Bei Nacht sah man gar nichts mehr.
-const PET_FOLLOW_DISTANCE = 2.2;
+// Lokaler Versatz an der Figur. Seitlich, weil die Kamera hinter dem Spieler
+// steht - direkt dahinter waere das Tier wieder verdeckt, genau der Fehler der
+// ersten Fassung.
+const PET_SIDE_OFFSET = 1.1;
+const PET_BACK_OFFSET = 0.5;
 
 // Groesse relativ zur Figur (rund 1,5 Einheiten hoch). 0,35 ergab 0,56 - zu
 // klein, um bei Nacht aus der Verfolgerkamera erkennbar zu sein.
@@ -72,11 +76,6 @@ const PET_SCALE = 0.6;
 // Ecke steht.
 const PET_LABEL_HEIGHT = 1.2;
 
-// Obergrenze fuer den Rueckstand. Die Kamera steht 6 Einheiten hinter der
-// Figur; ohne Begrenzung faellt das Tier bei Sportwagentempo bis auf 5,8
-// zurueck und laeuft damit praktisch in die Kamera. Bei 3,5 bleibt es immer
-// im Bild zwischen Kamera und Spieler.
-const PET_MAX_LAG = 3.5;
 
 // Ersatzfarben, falls pets.glb fehlt oder nicht laedt. Ein unsichtbares
 // Haustier ist nicht von einem fehlenden Feature zu unterscheiden - ein
@@ -1047,74 +1046,63 @@ class Renderer {
   }
 
   /**
-   * Haelt das Haustier eines Spielers hinter ihm her.
+   * Haengt das Haustier als KIND an die Spielfigur.
    *
-   * Es folgt traege statt fest angeheftet zu sein - ein Tier, das starr im
-   * gleichen Abstand klebt, wirkt wie ein Anhaenger, kein Lebewesen. Die
-   * Verzoegerung ist derselbe rahmenratenunabhaengige Mischwert wie bei den
-   * anderen Spielern, damit es bei jeder Bildrate gleich aussieht.
+   * Voellig anderer Ansatz als zuvor: bisher war das Tier ein eigenes Objekt in
+   * der Szene mit eigener Position, die jeden Frame an den Spieler herangefuehrt
+   * wurde. Das hatte drei Fehlerquellen (Startposition, Folgeabstand,
+   * Rueckstandsgrenze) und in jeder davon steckte ein Fehler.
+   *
+   * Als Kind der Figurengruppe gibt es diese Fragen nicht mehr: die Gruppe wird
+   * ohnehin jeden Frame korrekt positioniert - sie traegt Koerper, Kopf und
+   * Namensschild, die alle sichtbar sind. Das Tier sitzt an einem festen
+   * lokalen Versatz und ist damit garantiert dort, wo der Spieler ist.
+   *
+   * Der Preis: es dreht sich mit dem Spieler statt hinterherzulaufen. Das sieht
+   * etwas starrer aus - aber ein starres sichtbares Tier ist besser als ein
+   * lebendiges unsichtbares.
    */
-  syncPet(player, dtMs) {
-    if (!this.petObjects) this.petObjects = new Map();
-    const existing = this.petObjects.get(player.id);
-
+  syncPetOnEntity(player, entry) {
     if (player.pet) this.petDiag.seen++;
 
-    if (!player.pet) {
-      if (existing) {
-        this.scene.remove(existing.group);
-        this.petObjects.delete(player.id);
-      }
-      return;
+    const current = entry.petNode;
+    const wanted = player.pet ? `${player.pet.species}|${player.pet.name}` : null;
+
+    if (entry.petKey === wanted) return; // unveraendert, nichts zu tun
+
+    if (current) {
+      // Schild haengt an der Gruppe, nicht am Tier - muss also eigens weg,
+      // sonst bleibt der Name eines weggelaufenen Tieres in der Luft stehen.
+      if (current.userData.label) entry.group.remove(current.userData.label);
+      entry.group.remove(current);
+      entry.petNode = null;
+      entry.petKey = null;
     }
+    if (!player.pet) return;
 
-    let entry = existing;
-    if (!entry || entry.species !== player.pet.species || entry.labelName !== player.pet.name) {
-      if (entry) this.scene.remove(entry.group);
-      const group = this.clonePet(player.pet.species);
-      if (!group) return;
-      this.petDiag.placed++;
-      this.petDiag.last = `${player.pet.species} für #${player.id}`;
-      // Sofort an den Besitzer setzen, nicht erst hinblenden: ein frisch
-      // erzeugtes Objekt steht am Weltursprung, und bei 5600 Einheiten
-      // Kantenlaenge waere es sekundenlang irgendwo am Kartenrand unterwegs.
-      group.position.set(player.x * WORLD_SCALE, 0, player.y * WORLD_SCALE + PET_FOLLOW_DISTANCE);
+    const pet = this.clonePet(player.pet.species);
+    if (!pet) return;
 
-      const label = this.createLabelSprite(`🐾 ${player.pet.name}`, [1.8, 0.45]);
-      label.position.y = PET_LABEL_HEIGHT;
-      group.add(label);
+    // Lokaler Versatz: seitlich versetzt und leicht nach hinten, damit das Tier
+    // weder in der Figur steckt noch von ihr verdeckt wird. Die Kamera steht
+    // hinter dem Spieler, deshalb ist "seitlich" hier zuverlaessiger als
+    // "dahinter".
+    pet.position.set(PET_SIDE_OFFSET, 0, -PET_BACK_OFFSET);
 
-      this.scene.add(group);
-      entry = { group, species: player.pet.species, labelName: player.pet.name };
-      this.petObjects.set(player.id, entry);
-    }
+    // Schild an die FIGURENGRUPPE haengen, nicht ans Tier: das Tier ist auf
+    // PET_SCALE verkleinert und wuerde das Schild mitschrumpfen. So bleibt es
+    // in derselben Groessenordnung wie der Spielername darueber.
+    const label = this.createLabelSprite(`🐾 ${player.pet.name}`, [1.6, 0.4]);
+    label.position.set(PET_SIDE_OFFSET, PET_LABEL_HEIGHT, -PET_BACK_OFFSET);
+    pet.userData.label = label;
 
-    const blend = frameRateIndependentBlend(REMOTE_POSITION_BLEND, dtMs);
-    const tx = player.x * WORLD_SCALE;
-    const tz = player.y * WORLD_SCALE;
-    // Zielpunkt etwas hinter dem Besitzer, nicht auf ihm - sonst stuenden
-    // Figur und Tier ineinander.
-    const dx = entry.group.position.x - tx;
-    const dz = entry.group.position.z - tz;
-    const d = Math.hypot(dx, dz) || 1;
-    const goalX = tx + (dx / d) * PET_FOLLOW_DISTANCE;
-    const goalZ = tz + (dz / d) * PET_FOLLOW_DISTANCE;
+    entry.group.add(pet);
+    entry.group.add(label);
+    entry.petNode = pet;
+    entry.petKey = wanted;
 
-    entry.group.position.x += (goalX - entry.group.position.x) * blend;
-    entry.group.position.z += (goalZ - entry.group.position.z) * blend;
-
-    // Zu weit zurueckgefallen? Dann direkt nachziehen. Das passiert nur bei
-    // hohem Tempo und ist dort auch richtig - ein Tier, das erst hinter der
-    // Kamera auftaucht, ist so gut wie keins.
-    const lagX = entry.group.position.x - tx;
-    const lagZ = entry.group.position.z - tz;
-    const lag = Math.hypot(lagX, lagZ);
-    if (lag > PET_MAX_LAG) {
-      entry.group.position.x = tx + (lagX / lag) * PET_MAX_LAG;
-      entry.group.position.z = tz + (lagZ / lag) * PET_MAX_LAG;
-    }
-    // Blickrichtung zum Besitzer
-    entry.group.rotation.y = Math.atan2(tx - entry.group.position.x, tz - entry.group.position.z);
+    this.petDiag.placed++;
+    this.petDiag.last = `${player.pet.species} an Figur #${player.id}`;
   }
 
   /**
@@ -1126,8 +1114,7 @@ class Renderer {
     if (d.seen === 0) return 'Kein Haustier in den Spielerdaten — der Server schickt keins.';
     if (d.loaded === 0 && d.placed > 0) return `pets.glb FEHLT — ${d.placed}x als Würfel gesetzt (${d.last})`;
     if (d.placed === 0) return `Haustier in den Daten (${d.seen}x), aber kein Objekt erzeugt.`;
-    const obj = this.petObjects ? this.petObjects.size : 0;
-    return `${d.loaded} Modelle, ${d.placed}x gesetzt, ${obj} sichtbar (${d.last})`;
+    return `${d.loaded} Modelle geladen, ${d.placed}x an Figur gehängt (${d.last})`;
   }
 
   /**
@@ -1188,10 +1175,12 @@ class Renderer {
     for (const p of this.net.players.values()) {
       if (p.connected === false) continue;
       seen.add(p.id);
-      this.syncPet(p, dtMs);
 
       const isSelf = p.id === this.net.myId;
       const entry = this.getOrCreateEntity(p.id, isSelf);
+      // NACH getOrCreateEntity: das Tier haengt an der Figurengruppe, die muss
+      // also erst existieren.
+      this.syncPetOnEntity(p, entry);
 
       const targetX = p.x * WORLD_SCALE;
       const targetZ = p.y * WORLD_SCALE;
