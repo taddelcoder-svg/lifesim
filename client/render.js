@@ -56,7 +56,27 @@ const CITYKIT_FILE = 'citykit.glb';
 const PET_FILE = 'pets.glb';
 
 // Wie weit hinter dem Besitzer das Tier laeuft (3D-Einheiten).
-const PET_FOLLOW_DISTANCE = 0.9;
+//
+// MUSS deutlich groesser sein als die Figur breit ist: CHARACTER_RADIUS ist
+// 0,35, die Figur also 0,7 breit. Die erste Fassung stand auf 0,9 - das Tier
+// sass damit praktisch im Koerper des Besitzers und war, weil die Kamera hinter
+// dem Spieler steht, komplett verdeckt. Bei Nacht sah man gar nichts mehr.
+const PET_FOLLOW_DISTANCE = 2.2;
+
+// Groesse relativ zur Figur (rund 1,5 Einheiten hoch). 0,35 ergab 0,56 - zu
+// klein, um bei Nacht aus der Verfolgerkamera erkennbar zu sein.
+const PET_SCALE = 0.6;
+
+// Namensschild ueber dem Tier, wie bei den Spielern. Nicht nur Zierde: es macht
+// sichtbar, DASS das Tier da ist, auch wenn es im Dunkeln oder hinter einer
+// Ecke steht.
+const PET_LABEL_HEIGHT = 1.2;
+
+// Obergrenze fuer den Rueckstand. Die Kamera steht 6 Einheiten hinter der
+// Figur; ohne Begrenzung faellt das Tier bei Sportwagentempo bis auf 5,8
+// zurueck und laeuft damit praktisch in die Kamera. Bei 3,5 bleibt es immer
+// im Bild zwischen Kamera und Spieler.
+const PET_MAX_LAG = 3.5;
 
 // Ersatzfarben, falls pets.glb fehlt oder nicht laedt. Ein unsichtbares
 // Haustier ist nicht von einem fehlenden Feature zu unterscheiden - ein
@@ -1049,7 +1069,7 @@ class Renderer {
     }
 
     let entry = existing;
-    if (!entry || entry.species !== player.pet.species) {
+    if (!entry || entry.species !== player.pet.species || entry.labelName !== player.pet.name) {
       if (entry) this.scene.remove(entry.group);
       const group = this.clonePet(player.pet.species);
       if (!group) return;
@@ -1059,8 +1079,13 @@ class Renderer {
       // erzeugtes Objekt steht am Weltursprung, und bei 5600 Einheiten
       // Kantenlaenge waere es sekundenlang irgendwo am Kartenrand unterwegs.
       group.position.set(player.x * WORLD_SCALE, 0, player.y * WORLD_SCALE + PET_FOLLOW_DISTANCE);
+
+      const label = this.createLabelSprite(`🐾 ${player.pet.name}`, [1.8, 0.45]);
+      label.position.y = PET_LABEL_HEIGHT;
+      group.add(label);
+
       this.scene.add(group);
-      entry = { group, species: player.pet.species };
+      entry = { group, species: player.pet.species, labelName: player.pet.name };
       this.petObjects.set(player.id, entry);
     }
 
@@ -1077,6 +1102,17 @@ class Renderer {
 
     entry.group.position.x += (goalX - entry.group.position.x) * blend;
     entry.group.position.z += (goalZ - entry.group.position.z) * blend;
+
+    // Zu weit zurueckgefallen? Dann direkt nachziehen. Das passiert nur bei
+    // hohem Tempo und ist dort auch richtig - ein Tier, das erst hinter der
+    // Kamera auftaucht, ist so gut wie keins.
+    const lagX = entry.group.position.x - tx;
+    const lagZ = entry.group.position.z - tz;
+    const lag = Math.hypot(lagX, lagZ);
+    if (lag > PET_MAX_LAG) {
+      entry.group.position.x = tx + (lagX / lag) * PET_MAX_LAG;
+      entry.group.position.z = tz + (lagZ / lag) * PET_MAX_LAG;
+    }
     // Blickrichtung zum Besitzer
     entry.group.rotation.y = Math.atan2(tx - entry.group.position.x, tz - entry.group.position.z);
   }
@@ -1106,9 +1142,18 @@ class Renderer {
 
     if (template) {
       const model = template.clone();
-      model.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+      model.traverse((o) => {
+        if (!o.isMesh) return;
+        o.castShadow = true;
+        // Material klonen und leicht selbstleuchtend machen: nachts liegt die
+        // Umgebungshelligkeit bei 0,25, ein kleines dunkles Objekt waere sonst
+        // schlicht unsichtbar. Ohne das Klonen wuerden alle Tiere derselben
+        // Art dasselbe Material teilen.
+        o.material = o.material.clone();
+        o.material.emissive = new THREE.Color(0x333333);
+      });
       group.add(model);
-      group.scale.setScalar(0.35);
+      group.scale.setScalar(PET_SCALE);
       return group;
     }
 
@@ -1121,10 +1166,13 @@ class Renderer {
         + 'Liegt die Datei im selben Ordner wie citybits.glb?'
       );
     }
-    const geo = new THREE.BoxGeometry(0.5, 0.5, 0.7);
-    const mat = new THREE.MeshStandardMaterial({ color: PET_FALLBACK_COLOURS[species] || 0xaaaaaa });
+    const geo = new THREE.BoxGeometry(0.6, 0.6, 0.85);
+    const mat = new THREE.MeshStandardMaterial({
+      color: PET_FALLBACK_COLOURS[species] || 0xaaaaaa,
+      emissive: new THREE.Color(0x333333),
+    });
     const box = new THREE.Mesh(geo, mat);
-    box.position.y = 0.25;
+    box.position.y = 0.3;
     box.castShadow = true;
     group.add(box);
     return group;
