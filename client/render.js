@@ -198,6 +198,11 @@ class Renderer {
     // Haustiere getrennt halten: modelTemplates enthaelt einzelne Meshes (die
     // Instanzierung greift auf .geometry zu), Haustiere sind ganze Teilbaeume.
     this.petTemplates = new Map();  // Modellname -> Vorlage zum Klonen
+
+    // Diagnose statt Konsolen-Logs: auf dem iPad ist die Browser-Konsole ohne
+    // angeschlossenen Mac nicht erreichbar. Diese Werte lassen sich im Spiel
+    // anzeigen und beantworten die Frage "woran liegt es" ohne Werkzeuge.
+    this.petDiag = { loaded: 0, placed: 0, seen: 0, last: '-' };
     this.modelsReady = false;
     this.facingById = new Map(); // playerId -> Bogenmass, Blickrichtung bei Stillstand beibehalten
 
@@ -647,6 +652,7 @@ class Renderer {
             this.petTemplates.set(child.name.slice('animal-'.length), child);
           }
         });
+        this.petDiag.loaded = this.petTemplates.size;
         console.log('Haustiermodelle geladen:', this.petTemplates.size);
       },
       undefined,
@@ -1032,6 +1038,8 @@ class Renderer {
     if (!this.petObjects) this.petObjects = new Map();
     const existing = this.petObjects.get(player.id);
 
+    if (player.pet) this.petDiag.seen++;
+
     if (!player.pet) {
       if (existing) {
         this.scene.remove(existing.group);
@@ -1045,7 +1053,8 @@ class Renderer {
       if (entry) this.scene.remove(entry.group);
       const group = this.clonePet(player.pet.species);
       if (!group) return;
-      console.log('Haustier eingesetzt:', player.pet.species, 'für Spieler', player.id);
+      this.petDiag.placed++;
+      this.petDiag.last = `${player.pet.species} für #${player.id}`;
       // Sofort an den Besitzer setzen, nicht erst hinblenden: ein frisch
       // erzeugtes Objekt steht am Weltursprung, und bei 5600 Einheiten
       // Kantenlaenge waere es sekundenlang irgendwo am Kartenrand unterwegs.
@@ -1070,6 +1079,19 @@ class Renderer {
     entry.group.position.z += (goalZ - entry.group.position.z) * blend;
     // Blickrichtung zum Besitzer
     entry.group.rotation.y = Math.atan2(tx - entry.group.position.x, tz - entry.group.position.z);
+  }
+
+  /**
+   * Kurzbericht zur Haustier-Anzeige, im Spiel abrufbar. Beantwortet in einer
+   * Zeile, an welcher Stelle die Kette reisst.
+   */
+  petReport() {
+    const d = this.petDiag;
+    if (d.seen === 0) return 'Kein Haustier in den Spielerdaten — der Server schickt keins.';
+    if (d.loaded === 0 && d.placed > 0) return `pets.glb FEHLT — ${d.placed}x als Würfel gesetzt (${d.last})`;
+    if (d.placed === 0) return `Haustier in den Daten (${d.seen}x), aber kein Objekt erzeugt.`;
+    const obj = this.petObjects ? this.petObjects.size : 0;
+    return `${d.loaded} Modelle, ${d.placed}x gesetzt, ${obj} sichtbar (${d.last})`;
   }
 
   /**
