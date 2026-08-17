@@ -108,6 +108,24 @@ function serializePublic(player) {
     // fuer die Preisanzeige von Kaution und Anwalt, und die Haftdauer haengt
     // sichtbar daran. Die Tatenliste bleibt privat.
     criminalRecordCount: (player.criminalRecord || []).length,
+    // Haustier gehoert in den OEFFENTLICHEN Zustand: der Renderer liest
+    // player.pet aus net.players (siehe syncPetEntities in client/render.js),
+    // und zwar fuer ALLE Spieler, nicht nur den eigenen. Solange dieses Feld
+    // hier fehlte, kannte der Server das Tier zwar, aber niemand sah es -
+    // auch der Besitzer nicht. Die petState-Nachricht speist nur das Menue,
+    // nicht die 3D-Darstellung.
+    //
+    // BEWUSST explizit null statt das Feld wegzulassen: net.js fuehrt
+    // eingehende statUpdate-Daten mit Object.assign(p, s) zusammen. Ein
+    // FEHLENDER Schluessel ueberschreibt dort nichts - ein weggelaufenes Tier
+    // bliebe also fuer immer im Bild stehen. null loescht dagegen zuverlaessig.
+    //
+    // Nur species und name: genau daraus baut der Renderer seinen Schluessel.
+    // Fuetterungszeitpunkt und Vernachlaessigungsfrist sind Privatsache des
+    // Besitzers und bleiben in petState.
+    pet: player.pet
+      ? { species: player.pet.species, name: player.pet.name }
+      : null,
     x: player.position.x,
     y: player.position.y,
     connected: player.connected,
