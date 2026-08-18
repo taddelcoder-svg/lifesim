@@ -69,14 +69,142 @@ function mat(color) {
   return new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.05 });
 }
 
+
 /**
- * Baut die komplette Figur.
+ * Kopfbedeckung als eigene Gruppe.
+ *
+ * Bewusst herausgeloest: sowohl die selbstgebaute Figur als auch die fertigen
+ * Kenney-Figuren sollen Huete tragen koennen. Bei den fertigen ist Kleidung in
+ * die Textur gemalt und unveraenderlich - Zubehoer aus echter Geometrie ist
+ * das Einzige, was sich dort noch anstecken laesst, und darum umso wichtiger.
+ *
+ * @param {number} kopfRadius  halbe Kopfbreite des Traegers, damit derselbe
+ *                             Hut auf den schmalen Kugelkopf der eigenen Figur
+ *                             UND auf den breiten Klotzkopf der Kenney-Figur passt
+ */
+function buildHatGroup(a, kopfRadius) {
+  const hutForm = slotShape(a, 'hat');
+  if (!hutForm) return null;
+
+  const R = kopfRadius;
+  const hutMat = mat(slotColor(a, 'hat', 0x2a2c30));
+  const hut = new THREE.Group();
+  hut.position.y = R * 0.55;
+
+  if (hutForm === 'cap') {
+    const krone = new THREE.Mesh(
+      new THREE.SphereGeometry(R * 1.05, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
+      hutMat,
+    );
+    krone.position.y = -R * 0.15;
+    hut.add(krone);
+    const schirm = new THREE.Mesh(new THREE.BoxGeometry(R * 1.15, R * 0.1, R * 0.7), hutMat);
+    schirm.position.set(0, -R * 0.15, R * 0.95);
+    hut.add(schirm);
+  } else if (hutForm === 'beanie') {
+    const muetze = new THREE.Mesh(
+      new THREE.SphereGeometry(R * 1.1, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.62),
+      hutMat,
+    );
+    muetze.position.y = -R * 0.23;
+    hut.add(muetze);
+    const bommel = new THREE.Mesh(new THREE.SphereGeometry(R * 0.23, 8, 6), hutMat);
+    bommel.position.y = R * 0.55;
+    hut.add(bommel);
+  } else if (hutForm === 'helm') {
+    const schale = new THREE.Mesh(
+      new THREE.SphereGeometry(R * 1.12, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
+      hutMat,
+    );
+    schale.position.y = -R * 0.19;
+    hut.add(schale);
+    const rand = new THREE.Mesh(new THREE.TorusGeometry(R * 1.1, R * 0.085, 6, 16), hutMat);
+    rand.rotation.x = Math.PI / 2;
+    rand.position.y = -R * 0.19;
+    hut.add(rand);
+  } else if (hutForm === 'zylinder') {
+    const rohr = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.85, R * 0.85, R * 1.15, 14), hutMat);
+    rohr.position.y = R * 0.46;
+    hut.add(rohr);
+    const krempe = new THREE.Mesh(new THREE.CylinderGeometry(R * 1.45, R * 1.45, R * 0.1, 16), hutMat);
+    krempe.position.y = -R * 0.11;
+    hut.add(krempe);
+  } else if (hutForm === 'krone') {
+    const goldMat = new THREE.MeshStandardMaterial({
+      color: slotColor(a, 'hat', 0xf0c020), metalness: 0.75, roughness: 0.3, side: THREE.DoubleSide,
+    });
+    const reif = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.92, R * 0.92, R * 0.38, 12, 1, true), goldMat);
+    reif.position.y = R * 0.08;
+    hut.add(reif);
+    for (let i = 0; i < 6; i++) {
+      const w = (i / 6) * Math.PI * 2;
+      const zacke = new THREE.Mesh(new THREE.ConeGeometry(R * 0.13, R * 0.42, 4), goldMat);
+      zacke.position.set(Math.sin(w) * R * 0.9, R * 0.46, Math.cos(w) * R * 0.9);
+      hut.add(zacke);
+    }
+  }
+
+  hut.traverse((c) => { if (c.isMesh) c.castShadow = true; });
+  return hut;
+}
+
+/** Brille als eigene Gruppe, Masse relativ zum Kopf des Traegers. */
+function buildGlassesGroup(a, kopfRadius) {
+  const form = slotShape(a, 'glasses');
+  if (!form) return null;
+
+  const R = kopfRadius;
+  const brilleMat = form === 'sonne'
+    ? new THREE.MeshStandardMaterial({ color: slotColor(a, 'glasses', 0x141518), metalness: 0.5, roughness: 0.25 })
+    : mat(slotColor(a, 'glasses', 0x2a2c30));
+  const brille = new THREE.Group();
+
+  for (const seite of [-1, 1]) {
+    const glas = form === 'rund'
+      ? new THREE.Mesh(new THREE.TorusGeometry(R * 0.21, R * 0.046, 6, 14), brilleMat)
+      : new THREE.Mesh(new THREE.BoxGeometry(R * 0.4, R * 0.27, R * 0.06), brilleMat);
+    glas.position.set(seite * R * 0.38, 0, R * 0.08);
+    brille.add(glas);
+  }
+  const steg = new THREE.Mesh(new THREE.BoxGeometry(R * 0.35, R * 0.046, R * 0.046), brilleMat);
+  steg.position.z = R * 0.08;
+  brille.add(steg);
+
+  return brille;
+}
+
+/** Rucksack als eigene Gruppe, Masse relativ zur Rumpfbreite. */
+function buildBackGroup(a, breite, hoehe, tiefe) {
+  if (slotShape(a, 'back') !== 'rucksack') return null;
+
+  const rucksackMat = mat(slotColor(a, 'back', 0x6a6f78));
+  const gruppe = new THREE.Group();
+
+  const rucksack = new THREE.Mesh(
+    new THREE.BoxGeometry(breite * 0.78, hoehe * 0.78, tiefe * 0.6),
+    rucksackMat,
+  );
+  rucksack.position.z = -(tiefe / 2 + tiefe * 0.3);
+  rucksack.castShadow = true;
+  gruppe.add(rucksack);
+
+  for (const seite of [-1, 1]) {
+    const riemen = new THREE.Mesh(new THREE.BoxGeometry(breite * 0.11, hoehe * 0.72, tiefe * 0.08), rucksackMat);
+    riemen.position.set(seite * breite * 0.28, 0, tiefe / 2 + 0.005);
+    gruppe.add(riemen);
+  }
+
+  return gruppe;
+}
+
+/**
+ * Baut die selbst zusammengestellte Figur aus Grundformen.
  *
  * @param {Object} appearance  getragene Teile je Platz (aus serializePublic)
  * @param {Object} tint        Rueckfallfarben, wenn der Katalog fehlt
- * @returns {Object} { group, parts, materials }
+ * @returns {Object} { group, parts, bodyMat, headMat }
  */
-function buildCharacter(appearance, tint) {
+function buildSimpleCharacter(appearance, tint) {
   const group = new THREE.Group();
   const a = appearance || {};
   const rueck = tint || { body: 0x4a7cff, head: 0xe0b48c };
@@ -276,108 +404,20 @@ function buildCharacter(appearance, tint) {
     }
   }
 
-  // --- Kopfbedeckung ---------------------------------------------------
-  const hutForm = slotShape(a, 'hat');
-  if (hutForm) {
-    const hutMat = mat(slotColor(a, 'hat', 0x2a2c30));
-    const hut = new THREE.Group();
-    hut.position.y = FIG_HEAD_RADIUS * 0.55;
+  // --- Zubehoer --------------------------------------------------------
+  const hut = buildHatGroup(a, FIG_HEAD_RADIUS);
+  if (hut) kopf.add(hut);
 
-    if (hutForm === 'cap') {
-      const krone = new THREE.Mesh(
-        new THREE.SphereGeometry(FIG_HEAD_RADIUS * 1.05, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
-        hutMat,
-      );
-      krone.position.y = -0.04;
-      hut.add(krone);
-      const schirm = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.025, 0.18), hutMat);
-      schirm.position.set(0, -0.04, FIG_HEAD_RADIUS * 0.95);
-      hut.add(schirm);
-    } else if (hutForm === 'beanie') {
-      const muetze = new THREE.Mesh(
-        new THREE.SphereGeometry(FIG_HEAD_RADIUS * 1.1, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.62),
-        hutMat,
-      );
-      muetze.position.y = -0.06;
-      hut.add(muetze);
-      const bommel = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), hutMat);
-      bommel.position.y = FIG_HEAD_RADIUS * 0.55;
-      hut.add(bommel);
-    } else if (hutForm === 'helm') {
-      const schale = new THREE.Mesh(
-        new THREE.SphereGeometry(FIG_HEAD_RADIUS * 1.12, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
-        hutMat,
-      );
-      schale.position.y = -0.05;
-      hut.add(schale);
-      const rand = new THREE.Mesh(new THREE.TorusGeometry(FIG_HEAD_RADIUS * 1.1, 0.022, 6, 16), hutMat);
-      rand.rotation.x = Math.PI / 2;
-      rand.position.y = -0.05;
-      hut.add(rand);
-    } else if (hutForm === 'zylinder') {
-      const rohr = new THREE.Mesh(new THREE.CylinderGeometry(FIG_HEAD_RADIUS * 0.85, FIG_HEAD_RADIUS * 0.85, 0.3, 14), hutMat);
-      rohr.position.y = 0.12;
-      hut.add(rohr);
-      const krempe = new THREE.Mesh(new THREE.CylinderGeometry(FIG_HEAD_RADIUS * 1.45, FIG_HEAD_RADIUS * 1.45, 0.025, 16), hutMat);
-      krempe.position.y = -0.03;
-      hut.add(krempe);
-    } else if (hutForm === 'krone') {
-      const reif = new THREE.Mesh(new THREE.CylinderGeometry(FIG_HEAD_RADIUS * 0.92, FIG_HEAD_RADIUS * 0.92, 0.1, 12, 1, true),
-        new THREE.MeshStandardMaterial({ color: slotColor(a, 'hat', 0xf0c020), metalness: 0.75, roughness: 0.3, side: THREE.DoubleSide }));
-      reif.position.y = 0.02;
-      hut.add(reif);
-      for (let i = 0; i < 6; i++) {
-        const w = (i / 6) * Math.PI * 2;
-        const zacke = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.11, 4),
-          new THREE.MeshStandardMaterial({ color: slotColor(a, 'hat', 0xf0c020), metalness: 0.75, roughness: 0.3 }));
-        zacke.position.set(Math.sin(w) * FIG_HEAD_RADIUS * 0.9, 0.12, Math.cos(w) * FIG_HEAD_RADIUS * 0.9);
-        hut.add(zacke);
-      }
-    }
-
-    hut.traverse((c) => { if (c.isMesh) c.castShadow = true; });
-    kopf.add(hut);
-  }
-
-  // --- Brille ----------------------------------------------------------
-  const brilleForm = slotShape(a, 'glasses');
-  if (brilleForm) {
-    const brilleMat = brilleForm === 'sonne'
-      ? new THREE.MeshStandardMaterial({ color: slotColor(a, 'glasses', 0x141518), metalness: 0.5, roughness: 0.25 })
-      : mat(slotColor(a, 'glasses', 0x2a2c30));
-    const brille = new THREE.Group();
+  const brille = buildGlassesGroup(a, FIG_HEAD_RADIUS);
+  if (brille) {
     brille.position.set(0, 0.05, FIG_HEAD_RADIUS - 0.02);
-
-    for (const seite of [-1, 1]) {
-      const glas = brilleForm === 'rund'
-        ? new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.012, 6, 14), brilleMat)
-        : new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.07, 0.015), brilleMat);
-      glas.position.set(seite * 0.1, 0, 0.02);
-      brille.add(glas);
-    }
-    const steg = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.012, 0.012), brilleMat);
-    steg.position.z = 0.02;
-    brille.add(steg);
-
     kopf.add(brille);
   }
 
-  // --- Rücken ----------------------------------------------------------
-  if (slotShape(a, 'back') === 'rucksack') {
-    const rucksackMat = mat(slotColor(a, 'back', 0x6a6f78));
-    const rucksack = new THREE.Mesh(
-      new THREE.BoxGeometry(FIG_TORSO_WIDTH * 0.78, FIG_TORSO_HEIGHT * 0.78, 0.16),
-      rucksackMat,
-    );
-    rucksack.position.set(0, FIG_LEG_HEIGHT + FIG_TORSO_HEIGHT * 0.55, -(FIG_TORSO_DEPTH * dicke / 2 + 0.08));
-    rucksack.castShadow = true;
+  const rucksack = buildBackGroup(a, FIG_TORSO_WIDTH, FIG_TORSO_HEIGHT, FIG_TORSO_DEPTH * dicke);
+  if (rucksack) {
+    rucksack.position.y = FIG_LEG_HEIGHT + FIG_TORSO_HEIGHT * 0.55;
     group.add(rucksack);
-
-    for (const seite of [-1, 1]) {
-      const riemen = new THREE.Mesh(new THREE.BoxGeometry(0.05, FIG_TORSO_HEIGHT * 0.72, 0.02), rucksackMat);
-      riemen.position.set(seite * 0.13, FIG_LEG_HEIGHT + FIG_TORSO_HEIGHT * 0.55, FIG_TORSO_DEPTH * dicke / 2 + 0.005);
-      group.add(riemen);
-    }
   }
 
   return {
@@ -391,10 +431,135 @@ function buildCharacter(appearance, tint) {
   };
 }
 
+
+
+/**
+ * Baut eine fertige Figur aus dem Kenney-Pack.
+ *
+ * Diese 18 Figuren sind KOMPLETTE Charaktere - Haut, Frisur und Kleidung sind
+ * in eine Textur gemalt und lassen sich nicht einzeln tauschen. Deshalb blendet
+ * der Laden bei ihnen die Kleiderauswahl aus. Was bleibt, ist Zubehoer aus
+ * echter Geometrie: Hut, Brille und Rucksack werden hier angesteckt.
+ *
+ * Die Anbaupunkte werden GEMESSEN statt fest eingetragen. Der Klotzkopf dieser
+ * Figuren ist deutlich breiter als der Kugelkopf der eigenen Figur, und feste
+ * Werte haetten entweder dort oder hier danebengelegen.
+ */
+function buildBlockyCharacter(appearance, modelName, kitTemplates) {
+  const roh = cloneKitModel(kitTemplates, modelName);
+  if (!roh) return null;
+
+  const group = new THREE.Group();
+  group.add(roh);
+
+  // Die benannten Teile heraussuchen. Kenney liefert head, torso, arm-left,
+  // arm-right, leg-left und leg-right als eigene Knoten - genau die Gliederung,
+  // die eine Laufanimation spaeter braucht.
+  const teile = {};
+  roh.traverse((c) => { if (c.name) teile[c.name] = c; });
+
+  const kopf = teile.head || null;
+  const rumpf = teile.torso || null;
+  const arme = [teile['arm-left'], teile['arm-right']].filter(Boolean);
+  const beine = [teile['leg-left'], teile['leg-right']].filter(Boolean);
+
+  let kopfMat = null;
+  let rumpfMat = null;
+  if (kopf) kopf.traverse((c) => { if (c.isMesh && !kopfMat) kopfMat = c.material; });
+  if (rumpf) rumpf.traverse((c) => { if (c.isMesh && !rumpfMat) rumpfMat = c.material; });
+
+  // --- Zubehoer anstecken ---
+  if (kopf) {
+    const kopfBox = new THREE.Box3().setFromObject(kopf);
+    const kopfMass = new THREE.Vector3();
+    kopfBox.getSize(kopfMass);
+    const R = Math.max(kopfMass.x, kopfMass.z) / 2;
+
+    // Der Hut haengt AM Kopfknoten, nicht an der Figur: dreht sich der Kopf
+    // spaeter mit einer Animation, dreht der Hut mit. Andersherum wuerde er
+    // im Gesicht stehen bleiben.
+    const hut = buildHatGroup(appearance, R);
+    if (hut) {
+      // In den lokalen Raum des Kopfes umrechnen. Ohne diese Umrechnung
+      // landet der Hut um den Versatz des Kopfes daneben - bei dieser Figur
+      // immerhin zwei Drittel ihrer Hoehe.
+      kopf.updateMatrixWorld(true);
+      const obenWelt = new THREE.Vector3(
+        (kopfBox.min.x + kopfBox.max.x) / 2,
+        kopfBox.max.y,
+        (kopfBox.min.z + kopfBox.max.z) / 2,
+      );
+      hut.position.copy(kopf.worldToLocal(obenWelt.clone()));
+      kopf.add(hut);
+    }
+
+    const brille = buildGlassesGroup(appearance, R);
+    if (brille) {
+      kopf.updateMatrixWorld(true);
+      const vornWelt = new THREE.Vector3(
+        (kopfBox.min.x + kopfBox.max.x) / 2,
+        kopfBox.min.y + kopfMass.y * 0.62,
+        kopfBox.max.z,
+      );
+      brille.position.copy(kopf.worldToLocal(vornWelt.clone()));
+      kopf.add(brille);
+    }
+  }
+
+  if (rumpf) {
+    const rumpfBox = new THREE.Box3().setFromObject(rumpf);
+    const rumpfMass = new THREE.Vector3();
+    rumpfBox.getSize(rumpfMass);
+
+    const rucksack = buildBackGroup(appearance, rumpfMass.x, rumpfMass.y, rumpfMass.z);
+    if (rucksack) {
+      rumpf.updateMatrixWorld(true);
+      const mitteWelt = new THREE.Vector3(
+        (rumpfBox.min.x + rumpfBox.max.x) / 2,
+        rumpfBox.min.y + rumpfMass.y * 0.55,
+        (rumpfBox.min.z + rumpfBox.max.z) / 2,
+      );
+      rucksack.position.copy(rumpf.worldToLocal(mitteWelt.clone()));
+      rumpf.add(rucksack);
+    }
+  }
+
+  return {
+    group,
+    parts: { beine, arme, kopf, rumpf },
+    // Fuer die Gefaengnis-Faerbung. Bei dieser Figur wird die Textur getoent,
+    // nicht eine Flaeche umgefaerbt - das Ergebnis ist ein grauer Schleier
+    // ueber dem Charakter statt eines einfarbigen Kloetzchens.
+    bodyMat: rumpfMat || mat(0xffffff),
+    headMat: kopfMat || mat(0xffffff),
+    blocky: true,
+  };
+}
+
+/**
+ * Verteiler: fertige Figur aus dem Pack, sonst die selbstgebaute.
+ *
+ * Faellt bewusst auf die selbstgebaute Figur zurueck, wenn das Buendel noch
+ * nicht geladen ist. Beim Spielstart dauert das einen Moment - ohne Rueckfall
+ * waere die Figur in dieser Zeit unsichtbar, und ein unsichtbarer Spieler ist
+ * von einem Verbindungsfehler nicht zu unterscheiden.
+ */
+function buildCharacter(appearance, tint, kitTemplates) {
+  const figurTeil = clothingInfo(appearance && appearance.figur);
+  const modell = figurTeil && figurTeil.model;
+
+  if (modell && kitTemplates) {
+    const fertig = buildBlockyCharacter(appearance, modell, kitTemplates);
+    if (fertig) return fertig;
+  }
+
+  return buildSimpleCharacter(appearance, tint);
+}
+
 /** Aussehen zu einem Vergleichsschluessel, um unnoetiges Neubauen zu sparen. */
 function appearanceKey(appearance) {
   if (!appearance) return '-';
-  return ['skin', 'hair', 'shirt', 'pants', 'shoes', 'hat', 'glasses', 'back']
+  return ['figur', 'skin', 'hair', 'shirt', 'pants', 'shoes', 'hat', 'glasses', 'back']
     .map((s) => appearance[s] || '')
     .join('|');
 }
@@ -424,7 +589,20 @@ function renderWardrobeSection(container, net, escapeHtml) {
   kopf.innerHTML = `Stilpunkte: <b>${st.style}</b> — Gekauftes wird sofort angezogen.`;
   container.appendChild(kopf);
 
+  // Wird eine fertige Figur getragen, sind Haut, Frisur und Kleidung in ihre
+  // Textur gemalt. Das MUSS dastehen - sonst wirkt der halbe verschwundene
+  // Laden wie ein Fehler statt wie eine Folge der eigenen Wahl.
+  if (st.simpleFigure === false) {
+    const hinweis = document.createElement('div');
+    hinweis.className = 'market-item-detail';
+    hinweis.innerHTML = 'Fertige Figuren bringen Haut, Frisur und Kleidung fest mit. '
+      + 'Für freie Kleiderwahl zurück auf <b>Eigene Figur</b> wechseln — '
+      + 'Gekauftes bleibt im Schrank.';
+    container.appendChild(hinweis);
+  }
+
   for (const slot of st.slots) {
+    if (slot.hidden) continue;
     const teile = st.items.filter((i) => i.slot === slot.id);
     if (teile.length === 0) continue;
 
