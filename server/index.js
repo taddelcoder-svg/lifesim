@@ -21,6 +21,7 @@ const {
 } = require('./game');
 const { serializePublic } = require('./player');
 const { EMPLOYEE_WAGE_PER_TICK } = require('./economy');
+const appearance = require('./appearance');
 
 const PORT = process.env.PORT || 3000;
 
@@ -189,6 +190,11 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'newsState', ...world.buildNewsState() });
       send(ws, { type: 'blackmarketState', ...world.buildBlackmarketState(result.player.id) });
       send(ws, { type: 'raceState', ...world.buildRaceState() });
+      // Beim Beitritt mitschicken, nicht erst beim Oeffnen des Ladens: der
+      // Client braucht Form und Farbe JEDES Teils, um auch die Kleidung der
+      // ANDEREN Spieler zeichnen zu koennen - und die stehen von der ersten
+      // Sekunde an im Bild.
+      send(ws, { type: 'wardrobeState', ...appearance.buildWardrobeState(result.player) });
       send(ws, { type: 'petState', ...world.buildPetState(result.player.id) });
       send(ws, { type: 'gangState', ...world.buildGangState(result.player.id) });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
@@ -623,6 +629,38 @@ wss.on('connection', (ws) => {
       } else {
         send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
       }
+      return;
+    }
+
+    // --- Kleiderschrank -------------------------------------------------
+    // Bewusst hier statt in game.js: das Aussehen beruehrt keine Spiellogik,
+    // sondern nur Felder am Spielerobjekt. Ein eigener Zweig hier haelt
+    // game.js (ueber 4000 Zeilen) frei von einem weiteren System.
+    if (['buyClothing', 'equipClothing', 'unequipSlot'].includes(msg.type) && ws.playerId != null) {
+      const player = world.players.get(ws.playerId);
+      if (!player) return;
+
+      let result;
+      if (msg.type === 'buyClothing') result = appearance.buyItem(player, msg.itemId);
+      else if (msg.type === 'equipClothing') result = appearance.equipItem(player, msg.itemId);
+      else result = appearance.unequipSlot(player, msg.slot);
+
+      if (result.ok) {
+        // Zwei Nachrichten mit verschiedenen Empfaengern, und das ist der
+        // Kern der Sache: der Kleiderschrank geht NUR an den Besitzer (er
+        // verraet, was jemand besitzt und wie viel Bargeld er hat), das
+        // Aussehen dagegen an ALLE - sonst saehe die neue Jacke niemand.
+        send(ws, { type: 'wardrobeState', ...appearance.buildWardrobeState(player) });
+        broadcast({ type: 'statUpdate', players: [serializePublic(player)] });
+      } else {
+        send(ws, { type: 'actionError', action: msg.type, reason: result.reason });
+      }
+      return;
+    }
+
+    if (msg.type === 'requestWardrobe' && ws.playerId != null) {
+      const player = world.players.get(ws.playerId);
+      if (player) send(ws, { type: 'wardrobeState', ...appearance.buildWardrobeState(player) });
       return;
     }
 
