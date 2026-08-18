@@ -101,11 +101,26 @@ const CORE_SIZE = 2800;
 // Bezirke bekommen eigene Gebaeudesaetze. Damit erkennt man am Haeuserbild, wo
 // man ist - und, da die Bandenquadranten ueber dem Kern liegen, auch den
 // Unterschied zwischen Altstadt und Neubaugebiet.
+// Jetzt aus den Buendeln: 21 Wohnhaeuser und 20 Fabrikhallen statt je sechs
+// Platzhaltern. Die Namen mit Bindestrich stammen aus den neuen Dateien, die
+// mit Unterstrich aus citykit.glb - beide liegen im selben Verzeichnis, der
+// Renderer sieht also keinen Unterschied.
 const DISTRICT_MODELS = {
-  core: null, // null = die bestehenden KayKit-Gebaeude
-  commercial: ['com_a', 'com_b', 'com_c', 'com_d', 'com_e', 'com_f'],
-  suburban:   ['sub_a', 'sub_b', 'sub_c', 'sub_d', 'sub_e', 'sub_f'],
-  industrial: ['ind_a', 'ind_b', 'ind_c', 'ind_d', 'ind_e', 'ind_f'],
+  core: null, // null = die bestehenden KayKit-Gebaeude, die Altstadt bleibt
+  commercial: [
+    'ind-building-c', 'ind-building-l', 'ind-building-q', 'ind-building-r',
+    'sub-building-type-b', 'sub-building-type-d', 'sub-building-type-n',
+  ],
+  suburban: [
+    'sub-building-type-a', 'sub-building-type-c', 'sub-building-type-e',
+    'sub-building-type-f', 'sub-building-type-j', 'sub-building-type-k',
+    'sub-building-type-o', 'sub-building-type-r', 'sub-building-type-s',
+    'sub-building-type-t', 'sub-building-type-u',
+  ],
+  industrial: [
+    'ind-building-a', 'ind-building-b', 'ind-building-e', 'ind-building-f',
+    'ind-building-g', 'ind-building-m', 'ind-building-n', 'ind-building-t',
+  ],
 };
 
 /** Welcher Bezirk liegt an dieser Weltposition? */
@@ -122,19 +137,28 @@ function districtAt(x, y) {
 const VEHICLE_MODEL_YAW_OFFSET = Math.PI;
 
 const VEHICLE_MODEL_BY_TYPE = {
-  scooter: 'car_hatchback',
-  compact: 'car_taxi',
-  sedan: 'car_sedan',
-  sports: 'car_stationwagon',
+  scooter: 'car-hatchback-sports',
+  compact: 'car-taxi',
+  sedan: 'car-sedan',
+  sports: 'car-sedan-sports',
 };
 
-// Gewuenschte Laenge im Spiel je Fahrzeugtyp (3D-Einheiten). Zum Vergleich:
-// die Spielfigur ist etwa 1.3 Einheiten hoch.
+// Fruehere Fassung: hier standen Ziellaengen in 3D-Einheiten, auf die jedes
+// Fahrzeug beim Klonen gestreckt wurde. Das ist mit den Buendeln hinfaellig -
+// deren Massstab ist bereits eingerechnet. Die Werte waren ausserdem rund ein
+// Fuenftel zu klein: eine Limousine stand auf 2.8 Einheiten, was bei einer
+// 1.3 Einheiten hohen Figur einem 3.8-m-Auto entspraeche. Jetzt sind es 3.3
+// Einheiten und damit die 4.5 m, die ein echter Wagen hat.
+//
+// null heisst ausdruecklich "nicht skalieren". Die Eintraege bleiben stehen,
+// damit klar ist, dass die Typen bekannt sind und der Wert nicht vergessen
+// wurde - und damit ein einzelner Typ bei Bedarf wieder eine feste Laenge
+// bekommen kann.
 const VEHICLE_MODEL_LENGTH = {
-  scooter: 1.6,
-  compact: 2.2,
-  sedan: 2.8,
-  sports: 3.0,
+  scooter: null,
+  compact: null,
+  sedan: null,
+  sports: null,
 };
 
 const BUILDING_MODEL_NAMES = [
@@ -156,6 +180,22 @@ const PROP_SCALE = {
 
 const STREETLIGHT_SPACING = 400; // Server-Einheiten zwischen zwei Laternen
 const PROP_EDGE_OFFSET = 56;     // Abstand von der Strassenmitte zum Gehweg
+
+// Strassenbaeume stehen weiter draussen als alles andere: eine Krone ist bis
+// zu 6 Einheiten breit, ein Laternenmast keine halbe. Bei gleichem Abstand
+// staende jede Laterne im Baum.
+const TREE_SPACING = 520;
+const TREE_EDGE_OFFSET = 76;
+
+// Vier Arten im Wechsel. Eine einzige Art ueber die ganze Stadt saehe aus wie
+// ein Kopierfehler; mehr als vier kosten je einen weiteren Zeichenaufruf,
+// ohne dass man den Unterschied noch bemerkt.
+const STREET_TREE_MODELS = [
+  'nat-Tree_1_B_Color1',
+  'nat-Tree_2_C_Color1',
+  'nat-Tree_3_B_Color1',
+  'nat-Tree_4_B_Color1',
+];
 
 
 /** Mischanteil bildratenunabhaengig machen, damit es bei 30fps genauso schnell wirkt wie bei 120fps. */
@@ -225,6 +265,12 @@ class Renderer {
     // Haustiere getrennt halten: modelTemplates enthaelt einzelne Meshes (die
     // Instanzierung greift auf .geometry zu), Haustiere sind ganze Teilbaeume.
     this.petTemplates = new Map();  // Modellname -> Vorlage zum Klonen
+
+    // Mehrteilige Modelle aus den Buendeln (Fahrzeuge, Zug, Fahrrad). Gleiche
+    // Ueberlegung wie bei den Haustieren: ein Kenney-Auto besteht aus
+    // Karosserie plus vier Raedern als eigene Netze und laesst sich nicht als
+    // Einzelnetz ablegen, ohne die Raeder zu verlieren.
+    this.kitTemplates = new Map();
 
     // Diagnose statt Konsolen-Logs: auf dem iPad ist die Browser-Konsole ohne
     // angeschlossenen Mac nicht erreichbar. Diese Werte lassen sich im Spiel
@@ -663,6 +709,19 @@ class Renderer {
     }
     const loader = new THREE.GLTFLoader();
 
+    // Die sechs Modellbuendel mit gemeinsamem Massstab (siehe kits.js). Sie
+    // fuellen dieselben modelTemplates wie die alten Dateien, ihre Modelle
+    // sind also ueberall dort verwendbar, wo bisher schon ein Name stand.
+    if (typeof loadKitBundles === 'function') {
+      loadKitBundles(loader, this.modelTemplates, this.kitTemplates, (datei, bilanz) => {
+        this.modelsReady = this.modelTemplates.size > 0;
+        console.log(`Buendel ${datei} geladen - Einzelnetze: ${bilanz.netze}, mehrteilig: ${bilanz.baeume}`);
+        this.rebuildWithModels();
+      });
+    } else {
+      console.warn('kits.js nicht geladen - die neuen Modellbuendel fehlen.');
+    }
+
     // Das Stadtkit wird ZUSAETZLICH geladen und scheitert leise: fehlt die
     // Datei, bleibt die Altstadt vollstaendig und die neuen Bezirke fallen auf
     // die Ersatzquader zurueck - besser als eine schwarze Karte.
@@ -741,7 +800,13 @@ class Renderer {
    */
   cloneModel(name, targetLength) {
     const template = this.modelTemplates.get(name);
-    if (!template) return null;
+
+    // Mehrteilige Buendel-Modelle (Fahrzeuge) liegen woanders und tragen
+    // ihren Massstab schon in sich - targetLength wird fuer sie bewusst
+    // ignoriert, sonst waere die ganze Vereinheitlichung wieder hin.
+    // Gibt selbst null zurueck, wenn es den Namen auch dort nicht gibt - der
+    // Aufrufer faellt dann wie bisher auf die Quader-Darstellung zurueck.
+    if (!template) return cloneKitModel(this.kitTemplates, name);
 
     const mesh = template.clone();
     // Material MITKLONEN: sonst teilen sich alle Kopien dasselbe Material, und
@@ -834,6 +899,31 @@ class Renderer {
         const x = cx + side * (PROP_EDGE_OFFSET + 14);
         if (x < 20 || x > worldSize - 20) continue;
         add(name, x, y, side > 0 ? -Math.PI / 2 : Math.PI / 2);
+      }
+    }
+
+    // Strassenbaeume entlang beider Achsen, abwechselnd links und rechts.
+    // Deterministisch wie alles hier: gleicher Baum an gleicher Stelle bei
+    // jedem Client und nach jedem Neuladen, ohne dass der Server etwas
+    // schicken muss. Die Drehung in Achtelschritten sorgt dafuer, dass auch
+    // zwei Baeume derselben Art nebeneinander nicht wie Zwillinge wirken.
+    let baum = 0;
+    for (const cx of verticals) {
+      for (let y = TREE_SPACING / 2; y < worldSize; y += TREE_SPACING) {
+        baum++;
+        const seite = baum % 2 === 0 ? 1 : -1;
+        const x = cx + seite * TREE_EDGE_OFFSET;
+        if (x < 40 || x > worldSize - 40) continue;
+        add(STREET_TREE_MODELS[baum % STREET_TREE_MODELS.length], x, y, (baum % 8) * (Math.PI / 4));
+      }
+    }
+    for (const cy of horizontals) {
+      for (let x = TREE_SPACING / 2; x < worldSize; x += TREE_SPACING) {
+        baum++;
+        const seite = baum % 2 === 0 ? 1 : -1;
+        const y = cy + seite * TREE_EDGE_OFFSET;
+        if (y < 40 || y > worldSize - 40) continue;
+        add(STREET_TREE_MODELS[baum % STREET_TREE_MODELS.length], x, y, (baum % 8) * (Math.PI / 4));
       }
     }
 
@@ -1377,7 +1467,11 @@ class Renderer {
     const cfg = dims[vehicle.typeId] || dims.compact;
 
     const modelName = VEHICLE_MODEL_BY_TYPE[vehicle.typeId];
-    const targetLength = VEHICLE_MODEL_LENGTH[vehicle.typeId] || cfg.d;
+    // Bewusst auf undefined pruefen statt auf Wahrheitswert: null heisst hier
+    // "nicht skalieren, der Massstab steckt im Modell". Ein "|| cfg.d" wuerde
+    // genau diesen Fall in die Quader-Ersatzgroesse umbiegen.
+    const gesetzt = VEHICLE_MODEL_LENGTH[vehicle.typeId];
+    const targetLength = gesetzt === undefined ? cfg.d : gesetzt;
     const model = modelName ? this.cloneModel(modelName, targetLength) : null;
 
     let labelHeight;
