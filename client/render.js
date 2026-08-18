@@ -1058,32 +1058,42 @@ class Renderer {
     requestAnimationFrame((t) => this.loop(t));
   }
 
-  /** Baut eine Spielfigur aus Grundformen: Zylinder (Koerper) + Kugel (Kopf) + Kegel (Blickrichtung). */
-  createEntity(isSelf, playerId) {
-    const group = new THREE.Group();
+  /**
+   * Baut eine Spielfigur: gegliederte Figur aus wardrobe.js, dazu Namensschild.
+   *
+   * Die frueheren Grundformen (ein Zylinder, eine Kugel, ein Kegel) stecken
+   * jetzt in buildCharacter(). Fehlt wardrobe.js, faellt diese Funktion auf
+   * die alte Darstellung zurueck - eine unsichtbare Figur waere sonst von
+   * einem Verbindungsfehler nicht zu unterscheiden.
+   */
+  createEntity(isSelf, playerId, appearance) {
     const colors = colorPairForPlayer(isSelf, playerId);
 
-    const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
-    const bodyMat = new THREE.MeshStandardMaterial({ color: colors.body });
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = CHARACTER_BODY_HEIGHT / 2;
-    body.castShadow = true;
-    group.add(body);
+    let group;
+    let bodyMat;
+    let headMat;
 
-    const headGeo = new THREE.SphereGeometry(CHARACTER_HEAD_RADIUS, 14, 10);
-    const headMat = new THREE.MeshStandardMaterial({ color: colors.head });
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS;
-    head.castShadow = true;
-    group.add(head);
+    if (typeof buildCharacter === 'function') {
+      const figur = buildCharacter(appearance, colors);
+      group = figur.group;
+      bodyMat = figur.bodyMat;
+      headMat = figur.headMat;
+    } else {
+      group = new THREE.Group();
+      const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
+      bodyMat = new THREE.MeshStandardMaterial({ color: colors.body });
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.y = CHARACTER_BODY_HEIGHT / 2;
+      body.castShadow = true;
+      group.add(body);
 
-    // Kegel als "Nase" - liegt auf lokaler +Z-Achse und zeigt so die Blickrichtung der Figur
-    const noseGeo = new THREE.ConeGeometry(0.1, 0.22, 8);
-    const noseMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
-    const nose = new THREE.Mesh(noseGeo, noseMat);
-    nose.rotation.x = Math.PI / 2;
-    nose.position.set(0, CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS, CHARACTER_HEAD_RADIUS + 0.1);
-    group.add(nose);
+      const headGeo = new THREE.SphereGeometry(CHARACTER_HEAD_RADIUS, 14, 10);
+      headMat = new THREE.MeshStandardMaterial({ color: colors.head });
+      const head = new THREE.Mesh(headGeo, headMat);
+      head.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS;
+      head.castShadow = true;
+      group.add(head);
+    }
 
     const label = this.createLabelSprite('');
     label.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS * 2 + 0.4;
@@ -1092,7 +1102,13 @@ class Renderer {
     this.scene.add(group);
     return {
       group, label, lastLabelText: '', bodyMat, headMat, isJailedVisual: false,
-      normalBodyColor: colors.body, normalHeadColor: colors.head,
+      // Die Rueckfallfarben merken sich, worauf die Gefaengnis-Faerbung
+      // zuruecksetzt. Bei angezogener Kleidung ist das deren echte Farbe,
+      // nicht mehr die Spielerfarbe.
+      normalBodyColor: bodyMat.color.getHex(),
+      normalHeadColor: headMat.color.getHex(),
+      appearanceKey: typeof appearanceKey === 'function' ? appearanceKey(appearance) : '-',
+      isSelf,
     };
   }
 
@@ -1132,10 +1148,27 @@ class Renderer {
     sprite.userData.texture.needsUpdate = true;
   }
 
-  getOrCreateEntity(id, isSelf) {
+  getOrCreateEntity(id, isSelf, appearance) {
     let entry = this.entities.get(id);
+
+    // Kleidungswechsel: die Figur wird komplett neu gebaut statt Teile
+    // nachtraeglich umzufaerben. Das ist der einfachere Weg und kostet nichts,
+    // weil er nur bei einer tatsaechlichen Aenderung laeuft - der Vergleich
+    // ueber den Schluessel verhindert ein Neubauen in jedem Bild.
+    const key = typeof appearanceKey === 'function' ? appearanceKey(appearance) : '-';
+    if (entry && entry.appearanceKey !== key) {
+      const alteDrehung = entry.group.rotation.y;
+      const altePosition = entry.group.position.clone();
+      this.scene.remove(entry.group);
+      entry = this.createEntity(entry.isSelf, id, appearance);
+      entry.group.rotation.y = alteDrehung;
+      entry.group.position.copy(altePosition);
+      this.entities.set(id, entry);
+      return entry;
+    }
+
     if (!entry) {
-      entry = this.createEntity(isSelf, id);
+      entry = this.createEntity(isSelf, id, appearance);
       this.entities.set(id, entry);
     }
     return entry;
@@ -1323,7 +1356,7 @@ class Renderer {
       seen.add(p.id);
 
       const isSelf = p.id === this.net.myId;
-      const entry = this.getOrCreateEntity(p.id, isSelf);
+      const entry = this.getOrCreateEntity(p.id, isSelf, p.appearance);
 
       const targetX = p.x * WORLD_SCALE;
       const targetZ = p.y * WORLD_SCALE;
