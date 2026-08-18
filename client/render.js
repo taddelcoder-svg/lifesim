@@ -717,6 +717,13 @@ class Renderer {
         this.modelsReady = this.modelTemplates.size > 0;
         console.log(`Buendel ${datei} geladen - Einzelnetze: ${bilanz.netze}, mehrteilig: ${bilanz.baeume}`);
         this.rebuildWithModels();
+
+        // Figuren, die vor dem Laden des Buendels entstanden sind, stehen noch
+        // als Grundformen da. Ihr Vergleichsschluessel wird zurueckgesetzt,
+        // damit der naechste Bilddurchlauf sie mit dem echten Modell neu baut.
+        if (datei === 'characters.glb') {
+          for (const entry of this.entities.values()) entry.appearanceKey = '\u0000neu';
+        }
       });
     } else {
       console.warn('kits.js nicht geladen - die neuen Modellbuendel fehlen.');
@@ -1074,7 +1081,7 @@ class Renderer {
     let headMat;
 
     if (typeof buildCharacter === 'function') {
-      const figur = buildCharacter(appearance, colors);
+      const figur = buildCharacter(appearance, colors, this.kitTemplates);
       group = figur.group;
       bodyMat = figur.bodyMat;
       headMat = figur.headMat;
