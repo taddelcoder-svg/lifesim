@@ -484,6 +484,9 @@
   </div>
 
   <div id="marketPanel" style="display:none;">
+    <h4>👕 Kleiderschrank</h4>
+    <div id="wardrobeBox"></div>
+
     <h4>🐾 Haustier</h4>
     <div id="petBox"></div>
 
@@ -562,6 +565,7 @@
   <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
   <script src="net.js"></script>
   <script src="kits.js"></script>
+  <script src="wardrobe.js"></script>
   <script src="render.js"></script>
   <script>
     const canvas = document.getElementById('gameCanvas');
@@ -1011,6 +1015,7 @@
     function renderMarketPanel() {
       if (!net) return;
 
+      renderWardrobeSection(wardrobeBoxEl, net, escapeHtml);
       renderPetSection();
       renderWellbeingSection();
       renderRaceSection();
@@ -1260,6 +1265,12 @@
     });
 
     if (net) {
+      // Nach jedem Kauf oder Kleidungswechsel schickt der Server einen neuen
+      // Kleiderschrank. Ohne diesen Rueckruf blieben die Knoepfe auf dem alten
+      // Stand stehen - gerade gekaufte Teile stuenden weiter mit Preis da.
+      net.onWardrobeChanged = () => {
+        if (marketPanel.style.display !== 'none') renderMarketPanel();
+      };
       net.onEconomyState = () => {
         // Firmenschilder neu setzen: eine neue oder geschlossene Firma aendert,
         // welche Industriegebaeude beschriftet sind.
@@ -2299,6 +2310,8 @@
     // ---------------------------------------------------------------------
     // Haustier
     // ---------------------------------------------------------------------
+    const wardrobeBoxEl = document.getElementById('wardrobeBox');
+
     const petBoxEl = document.getElementById('petBox');
 
     function renderPetSection() {
