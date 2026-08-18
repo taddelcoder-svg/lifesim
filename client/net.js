@@ -92,6 +92,9 @@ class NetClient {
 
     // Haustiere
     this.petState = { species: [], pet: null };
+    // Kleiderschrank. Kommt beim Beitritt mit, damit die Kleidung ANDERER
+    // Spieler von der ersten Sekunde an richtig gezeichnet werden kann.
+    this.wardrobeState = null;
     this.onPetState = null;
     this.onPetAction = null;
     this.onPetRanAway = null;
@@ -592,6 +595,15 @@ class NetClient {
 
       case 'politicsAction': {
         if (this.onPoliticsAction) this.onPoliticsAction(msg);
+        break;
+      }
+
+      case 'wardrobeState': {
+        this.wardrobeState = msg;
+        // Den Katalog an die Figurenbauer weiterreichen: nur dort stehen
+        // Form und Farbe jedes Teils, und ohne sie waeren alle Spieler grau.
+        if (typeof updateClothingCatalog === 'function') updateClothingCatalog(msg.items);
+        if (this.onWardrobeChanged) this.onWardrobeChanged();
         break;
       }
 
@@ -1192,6 +1204,22 @@ class NetClient {
 
   setTaxRate(rate) {
     this.send({ type: 'setTaxRate', rate });
+  }
+
+  buyClothing(itemId) {
+    this.send({ type: 'buyClothing', itemId });
+  }
+
+  equipClothing(itemId) {
+    this.send({ type: 'equipClothing', itemId });
+  }
+
+  unequipSlot(slot) {
+    this.send({ type: 'unequipSlot', slot });
+  }
+
+  requestWardrobe() {
+    this.send({ type: 'requestWardrobe' });
   }
 
   buyPet(species, name) {
