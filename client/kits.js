@@ -29,6 +29,7 @@ const KIT_FILES = [
   'transit.glb',    // tr-   : Bus, Zug, Fahrrad, Ampel, Schilder, Huetchen
   'nature.glb',     // nat-  : 20 Baeume, 22 Bueschen, Gras
   'furniture.glb',  // furn- : 53 Moebel fuer Innenraeume
+  'characters.glb', // char- : 18 fertige Spielfiguren (Kenney Blocky Characters)
 ];
 
 /**
