@@ -11,6 +11,7 @@ const STARTING_SMARTS = 50;
 const STARTING_LOOKS = 50;
 const STARTING_AGE = 18;
 const { SPAWN_POSITION, WORLD_SIZE } = require('./world');
+const appearance = require('./appearance');
 
 // Abgeleitet statt erneut hingeschrieben: die Weltgroesse steht ausschliesslich
 // in world.js. Vorher war die 2000 hier ein zweites Mal notiert, verbunden nur
@@ -50,6 +51,11 @@ function createPlayer(name, token) {
     courseProgress: 0,     // gesammelte Lern-Ticks im laufenden Kurs
     criminalRecord: [],
     assets: [],
+    // Aussehen und Garderobe. appearance ist das, was getragen wird, wardrobe
+    // die Liste der besessenen Teile. Definition und Preise liegen in
+    // appearance.js - hier stehen bewusst keine Bezeichner fest verdrahtet.
+    appearance: appearance.createAppearance(),
+    wardrobe: appearance.createWardrobe(),
     position: { x: SPAWN_POSITION.x, y: SPAWN_POSITION.y },
     velocity: { x: 0, y: 0 },
     inputDir: { x: 0, y: 0 }, // gewuenschte Bewegungsrichtung, velocity naehert sich dem an
@@ -123,6 +129,15 @@ function serializePublic(player) {
     // Nur species und name: genau daraus baut der Renderer seinen Schluessel.
     // Fuetterungszeitpunkt und Vernachlaessigungsfrist sind Privatsache des
     // Besitzers und bleiben in petState.
+    // Aussehen gehoert - wie das Haustier - in den OEFFENTLICHEN Zustand.
+    // Kleidung, die nur der Traeger sieht, waere keine Kleidung. Die Garderobe
+    // (was jemand BESITZT) bleibt dagegen privat und wird nur an den Besitzer
+    // selbst geschickt.
+    //
+    // sanitizeAppearance auch hier: alte Weltzustaende koennen Spieler ohne
+    // dieses Feld enthalten, und ein fehlendes Aussehen wuerde beim Zeichnen
+    // die ganze Figur verschlucken.
+    appearance: appearance.sanitizeAppearance(player.appearance),
     pet: player.pet
       ? { species: player.pet.species, name: player.pet.name }
       : null,
