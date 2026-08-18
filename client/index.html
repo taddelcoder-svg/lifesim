@@ -243,6 +243,70 @@
 
   .market-tab { display: none; }
   .market-tab.active { display: block; }
+
+  /* ---------------------------------------------------------------------
+     Kleiderschrank.
+
+     Mit 68 Teilen als volle Zeilen mit eigenem Knopf war der Laden auf dem
+     iPad unbenutzbar - allein die 19 Figuren fuellten mehrere Bildschirme.
+     Deshalb zwei Ebenen: Plaetze als Chips, Teile als Kacheln.
+     --------------------------------------------------------------------- */
+  .wd-head {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 12px; color: #9aa0ab; padding-bottom: 6px;
+  }
+  .wd-head b { color: #e8e8e8; }
+
+  .wd-chips {
+    display: flex; gap: 4px; overflow-x: auto; padding-bottom: 8px;
+    scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .wd-chips::-webkit-scrollbar { display: none; }
+  .wd-chip {
+    flex: 0 0 auto; padding: 5px 9px; border: 1px solid #3a3f4b;
+    border-radius: 12px; background: #2a2f3a; color: #b8bec9;
+    font-family: system-ui, sans-serif; font-size: 11px; font-weight: 600;
+    cursor: pointer; white-space: nowrap;
+  }
+  .wd-chip.active { background: #3a6ceb; border-color: #4a7cff; color: #fff; }
+
+  .wd-note {
+    font-size: 11px; color: #d8c88f; line-height: 1.4;
+    background: #2c2a22; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px;
+  }
+
+  .wd-remove {
+    width: 100%; padding: 6px; margin-bottom: 8px;
+    border: 1px solid #6a3a3a; border-radius: 6px;
+    background: #33262a; color: #e0a0a0;
+    font-family: system-ui, sans-serif; font-size: 12px; cursor: pointer;
+  }
+
+  /* Zwei Spalten: bei 340px Panelbreite bleiben je rund 150px - genug fuer
+     "Bogenschützin" in einer Zeile, und die Kachel bleibt als Tippziel gross
+     genug. Drei Spalten waeren zu schmal fuer die laengeren Namen. */
+  .wd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .wd-tile {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+    padding: 8px; border: 1px solid #3a3f4b; border-radius: 8px;
+    background: #2a2f3a; color: #e8e8e8; text-align: left;
+    font-family: system-ui, sans-serif; cursor: pointer; min-height: 46px;
+  }
+  .wd-tile .wd-name { font-size: 12px; font-weight: 600; line-height: 1.25; }
+  .wd-tile .wd-meta { font-size: 10px; color: #9aa0ab; }
+  .wd-dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 3px;
+    border: 1px solid rgba(255,255,255,.35); margin-right: 5px;
+  }
+  /* Besessenes hebt sich ab, Getragenes noch deutlicher. Nicht Bezahlbares
+     wird blass - der Preis bleibt lesbar, aber es ist klar, dass nichts
+     passiert, wenn man drauftippt. */
+  .wd-tile.owned { border-color: #4a5a7a; }
+  .wd-tile.worn {
+    border-color: #4a7cff; background: #26355a; cursor: default;
+  }
+  .wd-tile.worn .wd-meta { color: #9ec4ff; }
+  .wd-tile.broke { opacity: .45; cursor: default; }
   .market-item {
     display: flex; justify-content: space-between; align-items: center; gap: 8px;
     padding: 8px 0; border-bottom: 1px solid #2a2f3a;
