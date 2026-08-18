@@ -571,6 +571,33 @@ function appearanceKey(appearance) {
  * Baut den Kleiderschrank in einen Container. Nach Plaetzen gruppiert, weil
  * eine Liste aus 50 Teilen ohne Gliederung auf einem Telefon unbrauchbar ist.
  */
+
+// Welcher Platz im Laden gerade offen ist. Modulweite Variable, damit der
+// Laden nach jedem Kauf wieder an derselben Stelle aufgeht - der Server
+// schickt danach einen neuen Kleiderschrank, und ohne dieses Merken spraenge
+// die Ansicht jedes Mal zurueck auf "Figur".
+let offenerPlatz = 'figur';
+
+/** Hex-Zahl zu CSS-Farbe. Gibt null zurueck, wenn es keine Farbe gibt. */
+function cssFarbe(wert) {
+  if (typeof wert !== 'number') return null;
+  return '#' + (wert >>> 0).toString(16).padStart(6, '0');
+}
+
+/**
+ * ============================================================
+ *  Der Laden
+ * ============================================================
+ *
+ * Zwei Ebenen statt einer langen Liste: oben eine Zeile mit den Plaetzen,
+ * darunter nur die Teile DIESES Platzes als Kacheln.
+ *
+ * Der Grund: mit 68 Teilen in einer Spalte, jedes als volle Zeile mit eigenem
+ * Knopf, war der Kleiderschrank auf dem iPad unbenutzbar - allein die 19
+ * Figuren fuellten mehrere Bildschirme. Kacheln zeigen etwa zehn Teile auf
+ * einmal, und die ganze Kachel ist der Knopf, statt daneben noch einen zu
+ * haben.
+ */
 function renderWardrobeSection(container, net, escapeHtml) {
   if (!container || !net) return;
   const st = net.wardrobeState;
@@ -584,78 +611,96 @@ function renderWardrobeSection(container, net, escapeHtml) {
     return;
   }
 
+  const sichtbar = st.slots.filter((s) => !s.hidden);
+
+  // Der gemerkte Platz kann verschwunden sein - etwa "Oberteil", nachdem eine
+  // fertige Figur angezogen wurde. Dann auf den ersten vorhandenen zurueck.
+  if (!sichtbar.some((s) => s.id === offenerPlatz)) {
+    offenerPlatz = sichtbar.length > 0 ? sichtbar[0].id : 'figur';
+  }
+
+  // --- Kopfzeile: Stilpunkte und Bargeld ---
   const kopf = document.createElement('div');
-  kopf.className = 'market-item-detail';
-  kopf.innerHTML = `Stilpunkte: <b>${st.style}</b> — Gekauftes wird sofort angezogen.`;
+  kopf.className = 'wd-head';
+  kopf.innerHTML = `<span>Stil <b>${st.style}</b></span><span>$${st.cash}</span>`;
   container.appendChild(kopf);
 
-  // Wird eine fertige Figur getragen, sind Haut, Frisur und Kleidung in ihre
-  // Textur gemalt. Das MUSS dastehen - sonst wirkt der halbe verschwundene
-  // Laden wie ein Fehler statt wie eine Folge der eigenen Wahl.
+  // --- Platzwahl ---
+  const chips = document.createElement('div');
+  chips.className = 'wd-chips';
+  for (const slot of sichtbar) {
+    const getragen = st.appearance[slot.id];
+    const chip = document.createElement('button');
+    chip.className = 'wd-chip' + (slot.id === offenerPlatz ? ' active' : '');
+    // Leere Zubehoerplaetze bekommen einen Punkt statt eines Hakens: man soll
+    // auf einen Blick sehen, wo noch nichts sitzt.
+    chip.textContent = slot.label + (getragen ? '' : ' ·');
+    chip.addEventListener('click', () => {
+      offenerPlatz = slot.id;
+      renderWardrobeSection(container, net, escapeHtml);
+    });
+    chips.appendChild(chip);
+  }
+  container.appendChild(chips);
+
+  // --- Hinweis bei fertiger Figur ---
   if (st.simpleFigure === false) {
     const hinweis = document.createElement('div');
-    hinweis.className = 'market-item-detail';
+    hinweis.className = 'wd-note';
     hinweis.innerHTML = 'Fertige Figuren bringen Haut, Frisur und Kleidung fest mit. '
-      + 'Für freie Kleiderwahl zurück auf <b>Eigene Figur</b> wechseln — '
-      + 'Gekauftes bleibt im Schrank.';
+      + 'Für freie Kleiderwahl zurück auf <b>Eigene Figur</b> — Gekauftes bleibt im Schrank.';
     container.appendChild(hinweis);
   }
 
-  for (const slot of st.slots) {
-    if (slot.hidden) continue;
-    const teile = st.items.filter((i) => i.slot === slot.id);
-    if (teile.length === 0) continue;
+  const platz = sichtbar.find((s) => s.id === offenerPlatz);
+  const teile = st.items.filter((i) => i.slot === offenerPlatz);
 
-    const titel = document.createElement('div');
-    titel.className = 'market-item-name';
-    titel.style.marginTop = '8px';
-    titel.textContent = slot.label;
-    container.appendChild(titel);
-
-    // Ablegen nur bei Accessoires anbieten. Ein "Ablegen" bei der Hose waere
-    // ein Knopf, der immer eine Fehlermeldung erzeugt.
-    if (slot.optional && st.appearance[slot.id]) {
-      const abRow = document.createElement('div');
-      abRow.className = 'market-item';
-      abRow.innerHTML = '<div class="market-item-detail">Wird gerade getragen</div>';
-      const abBtn = document.createElement('button');
-      abBtn.className = 'market-btn-small danger';
-      abBtn.textContent = 'Ablegen';
-      abBtn.addEventListener('click', () => net.unequipSlot(slot.id));
-      abRow.appendChild(abBtn);
-      container.appendChild(abRow);
-    }
-
-    for (const teil of teile) {
-      const row = document.createElement('div');
-      row.className = 'market-item';
-
-      const farbe = '#' + (teil.color >>> 0).toString(16).padStart(6, '0');
-      const stil = teil.style > 0 ? ` · ${teil.style} Stil` : '';
-      row.innerHTML =
-        `<div class="market-item-name">` +
-        `<span style="display:inline-block;width:11px;height:11px;border-radius:3px;` +
-        `background:${farbe};border:1px solid rgba(255,255,255,.35);margin-right:6px;"></span>` +
-        `${escapeHtml(teil.name)}</div>` +
-        `<div class="market-item-detail">${teil.owned ? 'im Schrank' : `$${teil.price}`}${stil}</div>`;
-
-      const btn = document.createElement('button');
-      btn.className = 'market-btn-small';
-
-      if (teil.worn) {
-        btn.textContent = 'getragen';
-        btn.disabled = true;
-      } else if (teil.owned) {
-        btn.textContent = 'Anziehen';
-        btn.addEventListener('click', () => net.equipClothing(teil.id));
-      } else {
-        btn.textContent = `Kaufen $${teil.price}`;
-        btn.disabled = st.cash < teil.price;
-        btn.addEventListener('click', () => net.buyClothing(teil.id));
-      }
-
-      row.appendChild(btn);
-      container.appendChild(row);
-    }
+  // --- Ablegen, nur bei Zubehoer und nur wenn etwas sitzt ---
+  if (platz && platz.optional && st.appearance[offenerPlatz]) {
+    const ab = document.createElement('button');
+    ab.className = 'wd-remove';
+    ab.textContent = 'Ablegen';
+    ab.addEventListener('click', () => net.unequipSlot(offenerPlatz));
+    container.appendChild(ab);
   }
+
+  // --- Kacheln ---
+  const grid = document.createElement('div');
+  grid.className = 'wd-grid';
+
+  for (const teil of teile) {
+    const kachel = document.createElement('button');
+    kachel.className = 'wd-tile';
+    if (teil.worn) kachel.classList.add('worn');
+    else if (teil.owned) kachel.classList.add('owned');
+    else if (st.cash < teil.price) kachel.classList.add('broke');
+
+    // Farbtupfer nur, wo es wirklich eine Farbe gibt. Bei den Figuren steckt
+    // das Aussehen in einer Textur - dort stand vorher ein schwarzes Kaestchen,
+    // das nichts bedeutete und wie ein Fehler aussah.
+    const farbe = teil.slot === 'figur' ? null : cssFarbe(teil.color);
+    const punkt = farbe
+      ? `<span class="wd-dot" style="background:${farbe}"></span>`
+      : '';
+
+    let status;
+    if (teil.worn) status = 'getragen';
+    else if (teil.owned) status = 'anziehen';
+    else status = '$' + teil.price;
+
+    kachel.innerHTML =
+      `<span class="wd-name">${punkt}${escapeHtml(teil.name)}</span>` +
+      `<span class="wd-meta">${status}${teil.style > 0 ? ` · ${teil.style} Stil` : ''}</span>`;
+
+    if (!teil.worn) {
+      kachel.addEventListener('click', () => {
+        if (teil.owned) net.equipClothing(teil.id);
+        else if (st.cash >= teil.price) net.buyClothing(teil.id);
+      });
+    }
+
+    grid.appendChild(kachel);
+  }
+
+  container.appendChild(grid);
 }
