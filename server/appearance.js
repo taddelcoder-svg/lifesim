@@ -49,7 +49,7 @@ const CATALOG = [
   // --- Figur: entweder selbst zusammengestellt oder eine fertige aus dem
   //     Kenney-Pack. Die fertigen sind komplette Charaktere mit gemalter
   //     Kleidung - deshalb schliessen sie die Einzelauswahl aus.
-  { id: 'figur-einfach', slot: 'figur', name: 'Eigene Figur (frei zusammenstellbar)', price: 0, model: null, style: 0 },
+  { id: 'figur-einfach', slot: 'figur', name: 'Eigene Figur', price: 0, model: null, style: 0 },
   { id: 'figur-a', slot: 'figur', name: 'Zwerg', price: 180, model: 'char-character-a', style: 4 },
   { id: 'figur-b', slot: 'figur', name: 'Bäuerin', price: 120, model: 'char-character-b', style: 3 },
   { id: 'figur-c', slot: 'figur', name: 'Ritter', price: 260, model: 'char-character-c', style: 6 },
