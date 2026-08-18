@@ -10,10 +10,21 @@
 
 // Die acht Plaetze am Koerper. skin/hair/shirt/pants/shoes sind IMMER belegt,
 // die drei Accessoire-Plaetze duerfen leer (null) bleiben.
-const SLOTS = ['skin', 'hair', 'shirt', 'pants', 'shoes', 'hat', 'glasses', 'back'];
-const REQUIRED_SLOTS = ['skin', 'hair', 'shirt', 'pants', 'shoes'];
+const SLOTS = ['figur', 'skin', 'hair', 'shirt', 'pants', 'shoes', 'hat', 'glasses', 'back'];
+const REQUIRED_SLOTS = ['figur', 'skin', 'hair', 'shirt', 'pants', 'shoes'];
+
+// Diese Plaetze wirken NUR auf die selbstgebaute Figur. Bei einer fertigen
+// Figur aus dem Kenney-Pack sind Haut, Frisur und Kleidung in die Textur
+// gemalt und lassen sich nicht einzeln tauschen - der Laden blendet sie dann
+// aus, statt Knoepfe anzubieten, die sichtbar nichts bewirken.
+const SIMPLE_ONLY_SLOTS = ['skin', 'hair', 'shirt', 'pants', 'shoes'];
+
+// Die Kennung der selbstgebauten Figur. Steht sie im Platz 'figur', baut der
+// Client die gegliederte Figur aus Grundformen mit voller Einzelauswahl.
+const SIMPLE_FIGURE = 'figur-einfach';
 
 const SLOT_LABELS = {
+  figur: 'Figur',
   skin: 'Hautton',
   hair: 'Frisur',
   shirt: 'Oberteil',
@@ -35,6 +46,29 @@ const SLOT_LABELS = {
  * Spielwerte - sie geben dem Kaufen aber ein Ziel ausser "sieht anders aus".
  */
 const CATALOG = [
+  // --- Figur: entweder selbst zusammengestellt oder eine fertige aus dem
+  //     Kenney-Pack. Die fertigen sind komplette Charaktere mit gemalter
+  //     Kleidung - deshalb schliessen sie die Einzelauswahl aus.
+  { id: 'figur-einfach', slot: 'figur', name: 'Eigene Figur (frei zusammenstellbar)', price: 0, model: null, style: 0 },
+  { id: 'figur-a', slot: 'figur', name: 'Zwerg', price: 180, model: 'char-character-a', style: 4 },
+  { id: 'figur-b', slot: 'figur', name: 'Bäuerin', price: 120, model: 'char-character-b', style: 3 },
+  { id: 'figur-c', slot: 'figur', name: 'Ritter', price: 260, model: 'char-character-c', style: 6 },
+  { id: 'figur-d', slot: 'figur', name: 'Räuber', price: 200, model: 'char-character-d', style: 5 },
+  { id: 'figur-e', slot: 'figur', name: 'Bogenschützin', price: 220, model: 'char-character-e', style: 5 },
+  { id: 'figur-f', slot: 'figur', name: 'Magier', price: 280, model: 'char-character-f', style: 7 },
+  { id: 'figur-g', slot: 'figur', name: 'Wache', price: 190, model: 'char-character-g', style: 4 },
+  { id: 'figur-h', slot: 'figur', name: 'Händlerin', price: 150, model: 'char-character-h', style: 3 },
+  { id: 'figur-i', slot: 'figur', name: 'Mönch', price: 160, model: 'char-character-i', style: 4 },
+  { id: 'figur-j', slot: 'figur', name: 'Pirat', price: 240, model: 'char-character-j', style: 6 },
+  { id: 'figur-k', slot: 'figur', name: 'Söldnerin', price: 250, model: 'char-character-k', style: 6 },
+  { id: 'figur-l', slot: 'figur', name: 'Ork', price: 300, model: 'char-character-l', style: 7 },
+  { id: 'figur-m', slot: 'figur', name: 'Skelett', price: 340, model: 'char-character-m', style: 8 },
+  { id: 'figur-n', slot: 'figur', name: 'Barbar', price: 270, model: 'char-character-n', style: 6 },
+  { id: 'figur-o', slot: 'figur', name: 'Heilerin', price: 210, model: 'char-character-o', style: 5 },
+  { id: 'figur-p', slot: 'figur', name: 'Späher', price: 170, model: 'char-character-p', style: 4 },
+  { id: 'figur-q', slot: 'figur', name: 'Königin', price: 420, model: 'char-character-q', style: 10 },
+  { id: 'figur-r', slot: 'figur', name: 'Nachtwache', price: 290, model: 'char-character-r', style: 7 },
+
   // --- Hautton: immer kostenlos. Aussehen darf nichts kosten, sonst waere
   //     die eigene Erscheinung an Spielfortschritt geknuepft.
   { id: 'skin-1', slot: 'skin', name: 'Sehr hell', price: 0, color: 0xf2d5b8, style: 0 },
@@ -110,6 +144,7 @@ const BY_ID = new Map(CATALOG.map((i) => [i.id, i]));
 const STARTER_ITEMS = CATALOG.filter((i) => i.price === 0).map((i) => i.id);
 
 const DEFAULT_APPEARANCE = {
+  figur: SIMPLE_FIGURE,
   skin: 'skin-2',
   hair: 'hair-kurz-braun',
   shirt: 'shirt-tee-blau',
@@ -226,8 +261,19 @@ function styleScore(appearance) {
  */
 function buildWardrobeState(player) {
   const appearance = sanitizeAppearance(player.appearance);
+  const einfach = appearance.figur === SIMPLE_FIGURE;
   return {
-    slots: SLOTS.map((id) => ({ id, label: SLOT_LABELS[id], optional: !REQUIRED_SLOTS.includes(id) })),
+    // "hidden" statt die Plaetze wegzulassen: der Client soll erklaeren
+    // KOENNEN, warum die Kleiderauswahl gerade fehlt. Ein spurlos
+    // verschwundener Abschnitt wirkt wie ein Fehler.
+    slots: SLOTS
+      .map((id) => ({
+        id,
+        label: SLOT_LABELS[id],
+        optional: !REQUIRED_SLOTS.includes(id),
+        hidden: !einfach && SIMPLE_ONLY_SLOTS.includes(id),
+      })),
+    simpleFigure: einfach,
     items: CATALOG.map((i) => ({
       id: i.id,
       slot: i.slot,
@@ -238,6 +284,9 @@ function buildWardrobeState(player) {
       // Form MUSS mit: der Client baut daraus die Figur und braucht sie auch
       // fuer fremde Spieler, von denen er nur die Bezeichner der Teile kennt.
       shape: i.shape || null,
+      // Modellname im Buendel characters.glb, oder null fuer die selbstgebaute
+      // Figur. Der Client entscheidet daran, welchen Weg er nimmt.
+      model: i.model || null,
       owned: owns(player, i.id),
       worn: appearance[i.slot] === i.id,
     })),
