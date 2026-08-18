@@ -196,6 +196,53 @@
   }
   #marketPanel h4 { margin: 14px 0 8px 0; font-size: 14px; }
   #marketPanel h4:first-child { margin-top: 0; }
+
+  /* ---------------------------------------------------------------------
+     Reiterleiste im Marktpanel.
+
+     position:sticky statt fixed: das Panel scrollt selbst, und die Leiste
+     soll INNERHALB davon oben kleben. fixed wuerde sie aus dem Panel loesen
+     und beim Verschieben des Fensters danebenlegen.
+     --------------------------------------------------------------------- */
+  #marketTabs {
+    /* top:0 in Verbindung mit dem negativen oberen Rand: die Leiste startet
+       damit genau am oberen Rand des scrollenden Bereichs und bleibt dort.
+       Mit top:-14px waere sie erst 14px weit mitgescrollt und haette beim
+       Andocken eine sichtbare Luecke hinterlassen. */
+    position: sticky; top: 0; z-index: 2;
+    display: flex; gap: 4px; overflow-x: auto; margin: -14px -14px 10px -14px;
+    padding: 10px 14px 8px 14px; background: #22262f;
+    border-bottom: 1px solid #3a3f4b;
+    /* Auf dem iPad soll die Leiste waagerecht wischbar sein, ohne dass eine
+       Scrollleiste Platz frisst. */
+    scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  #marketTabs::-webkit-scrollbar { display: none; }
+  #marketTabs button {
+    flex: 0 0 auto; padding: 7px 11px; border: 1px solid #3a3f4b;
+    border-radius: 7px; background: #2a2f3a; color: #b8bec9;
+    font-family: system-ui, sans-serif; font-size: 12px; font-weight: 600;
+    cursor: pointer; white-space: nowrap; position: relative;
+    /* 34px hoch: knapp unter der ueblichen Empfehlung fuer Tippziele, aber
+       die Leiste soll auf einem Telefon nicht ein Sechstel des Panels
+       einnehmen. Die Trefferflaeche ist durch das Padding breit genug. */
+    min-height: 34px;
+  }
+  #marketTabs button.active {
+    background: #3a6ceb; border-color: #4a7cff; color: #ffffff;
+  }
+  /* Zaehler fuer offene Angebote. Ueber ::after statt eines eigenen Elements,
+     damit die Reiterleiste im Markup schlank bleibt. */
+  #marketTabs button.has-badge::after {
+    content: attr(data-badge);
+    position: absolute; top: -5px; right: -5px;
+    min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 8px; background: #d94a4a; color: #fff;
+    font-size: 10px; line-height: 16px; text-align: center;
+  }
+
+  .market-tab { display: none; }
+  .market-tab.active { display: block; }
   .market-item {
     display: flex; justify-content: space-between; align-items: center; gap: 8px;
     padding: 8px 0; border-bottom: 1px solid #2a2f3a;
@@ -484,64 +531,84 @@
   </div>
 
   <div id="marketPanel" style="display:none;">
-    <h4>👕 Kleiderschrank</h4>
-    <div id="wardrobeBox"></div>
-
-    <h4>🐾 Haustier</h4>
-    <div id="petBox"></div>
-
-    <h4>🏥 Gesundheit &amp; Freizeit</h4>
-    <div id="wellbeingActions"></div>
-
-    <h4>🏁 Rennen</h4>
-    <div id="raceBox"></div>
-
-    <h4>🕶️ Hinterhof</h4>
-    <div id="blackmarketBox"></div>
-
-    <h4>📈 Börse</h4>
-    <div id="marketBox"></div>
-
-    <h4>🗳️ Rathaus</h4>
-    <div id="politicsBox"></div>
-
-    <h4>⚖️ Rechtliches</h4>
-    <div id="legalActions"></div>
-
-    <h4>🚗 Autohaus</h4>
-    <div id="dealershipList"></div>
-
-    <h4>🏦 Bank</h4>
-    <div id="bankOverview"></div>
-    <div id="bankActions"></div>
-
-    <h4>💼 Beruf</h4>
-    <div id="jobStatus"></div>
-    <div id="jobList"></div>
-
-    <h4>🎓 Bildung</h4>
-    <div id="courseStatus"></div>
-    <div id="courseList"></div>
-
-    <h4>Immobilien</h4>
-    <div id="propertyList"></div>
-
-    <h4>🏪 Läden im Gewerbebezirk</h4>
-    <div id="shopList"></div>
-
-    <h4>🏡 Wohnhäuser in der Vorstadt</h4>
-    <div id="homeList"></div>
-
-    <h4>Meine Firmen</h4>
-    <div id="foundCompanyRow">
-      <input id="companyNameInput" type="text" placeholder="Firmenname" maxlength="30">
-      <button class="market-btn-small" id="foundCompanyBtn">Gründen ($500)</button>
+    <!-- Reiterleiste. Bleibt beim Scrollen oben stehen, sonst muesste man in
+         einem langen Reiter erst wieder hochscrollen, um zu wechseln. -->
+    <div id="marketTabs">
+      <button data-tab="ich" class="active">👤 Ich</button>
+      <button data-tab="geld">💰 Geld</button>
+      <button data-tab="besitz">🏠 Besitz</button>
+      <button data-tab="stadt">🏛️ Stadt</button>
+      <button data-tab="handel">📬 Angebote</button>
     </div>
-    <div id="companyList"></div>
-    <div id="employmentBox"></div>
 
-    <h4>Eingehende Angebote</h4>
-    <div id="tradeList"></div>
+    <div class="market-tab active" data-tab="ich">
+      <h4>👕 Kleiderschrank</h4>
+      <div id="wardrobeBox"></div>
+
+      <h4>🏥 Gesundheit &amp; Freizeit</h4>
+      <div id="wellbeingActions"></div>
+
+      <h4>🐾 Haustier</h4>
+      <div id="petBox"></div>
+    </div>
+
+    <div class="market-tab" data-tab="geld">
+      <h4>🏦 Bank</h4>
+      <div id="bankOverview"></div>
+      <div id="bankActions"></div>
+
+      <h4>📈 Börse</h4>
+      <div id="marketBox"></div>
+
+      <h4>💼 Beruf</h4>
+      <div id="jobStatus"></div>
+      <div id="jobList"></div>
+
+      <h4>🎓 Bildung</h4>
+      <div id="courseStatus"></div>
+      <div id="courseList"></div>
+    </div>
+
+    <div class="market-tab" data-tab="besitz">
+      <h4>🏢 Immobilien</h4>
+      <div id="propertyList"></div>
+
+      <h4>🏪 Läden im Gewerbebezirk</h4>
+      <div id="shopList"></div>
+
+      <h4>🏡 Wohnhäuser in der Vorstadt</h4>
+      <div id="homeList"></div>
+
+      <h4>🚗 Autohaus</h4>
+      <div id="dealershipList"></div>
+
+      <h4>🏭 Meine Firmen</h4>
+      <div id="foundCompanyRow">
+        <input type="text" id="companyNameInput" placeholder="Firmenname" maxlength="24">
+        <button class="market-btn-small" id="foundCompanyBtn">Gründen ($500)</button>
+      </div>
+      <div id="companyList"></div>
+      <div id="employmentBox"></div>
+    </div>
+
+    <div class="market-tab" data-tab="stadt">
+      <h4>🗳️ Rathaus</h4>
+      <div id="politicsBox"></div>
+
+      <h4>⚖️ Rechtliches</h4>
+      <div id="legalActions"></div>
+
+      <h4>🏁 Rennen</h4>
+      <div id="raceBox"></div>
+
+      <h4>🕶️ Hinterhof</h4>
+      <div id="blackmarketBox"></div>
+    </div>
+
+    <div class="market-tab" data-tab="handel">
+      <h4>📬 Eingehende Angebote</h4>
+      <div id="tradeList"></div>
+    </div>
   </div>
   <div id="actionToast"></div>
 
@@ -1012,22 +1079,19 @@
       }
     }
 
-    function renderMarketPanel() {
-      if (!net) return;
+    // ---------------------------------------------------------------------
+    // Marktpanel, nach Reitern getrennt
+    //
+    // Vorher lagen 17 Abschnitte in EINER Scrollspalte - vom Kleiderschrank
+    // bis zu den Handelsangeboten musste man an allem vorbei. Jetzt gibt es
+    // fuenf Reiter, und gezeichnet wird NUR der sichtbare. Das ist nicht nur
+    // uebersichtlicher: bisher baute jede Wertaenderung alle 17 Abschnitte neu
+    // auf, auch die unsichtbaren.
+    // ---------------------------------------------------------------------
 
-      renderWardrobeSection(wardrobeBoxEl, net, escapeHtml);
-      renderPetSection();
-      renderWellbeingSection();
-      renderRaceSection();
-      renderBlackmarketSection();
-      renderMarketSection();
-      renderPoliticsSection();
-      renderLegalSection();
-      renderDealershipSection();
-      renderBankSection();
-      renderJobSection();
-      renderCourseSection();
+    let activeMarketTab = "ich";
 
+    function renderPropertySection() {
       // Immobilien und Läden. Die Zeilen werden gleich aufgebaut - beide sind
       // serverseitig dasselbe - aber in getrennte Listen gehängt.
       propertyListEl.innerHTML = '';
@@ -1154,6 +1218,9 @@
         el.appendChild(empty);
       }
 
+    }
+
+    function renderCompanySection() {
       // Firmen (nur eigene)
       companyListEl.innerHTML = '';
       const myCompanies = [...net.companies.values()].filter((c) => c.ownerId === net.myId);
@@ -1226,6 +1293,10 @@
 
       renderEmploymentBox();
 
+      renderEmploymentBox();
+    }
+
+    function renderTradeSection() {
       // Eingehende Handelsangebote
       tradeListEl.innerHTML = '';
       if (net.incomingTrades.size === 0) {
@@ -1256,6 +1327,69 @@
         row.appendChild(btnGroup);
         tradeListEl.appendChild(row);
       }
+    }
+
+    function renderMarketPanel() {
+      if (!net) return;
+
+      const t = activeMarketTab;
+      if (t === "ich") {
+        renderWardrobeSection(wardrobeBoxEl, net, escapeHtml);
+        renderWellbeingSection();
+        renderPetSection();
+      } else if (t === "geld") {
+        renderBankSection();
+        renderMarketSection();
+        renderJobSection();
+        renderCourseSection();
+      } else if (t === "besitz") {
+        renderPropertySection();
+        renderDealershipSection();
+        renderCompanySection();
+      } else if (t === "stadt") {
+        renderPoliticsSection();
+        renderLegalSection();
+        renderRaceSection();
+        renderBlackmarketSection();
+      } else if (t === "handel") {
+        renderTradeSection();
+      }
+
+      updateMarketTabBadge();
+    }
+
+    /**
+     * Zaehler am Reiter "Angebote".
+     *
+     * Der wichtigste Teil der Reiter-Umstellung: ein Handelsangebot in einem
+     * zugeklappten Reiter waere sonst unsichtbar, bis man zufaellig
+     * hineinschaut. Vorher stand es wenigstens irgendwo in der langen Liste.
+     */
+    function updateMarketTabBadge() {
+      const btn = document.querySelector('#marketTabs [data-tab="handel"]');
+      if (!btn || !net) return;
+      const anzahl = net.incomingTrades ? net.incomingTrades.size : 0;
+      btn.classList.toggle("has-badge", anzahl > 0);
+      btn.dataset.badge = anzahl > 0 ? String(anzahl) : "";
+    }
+
+    function setMarketTab(name) {
+      activeMarketTab = name;
+      for (const el of document.querySelectorAll("#marketTabs button")) {
+        el.classList.toggle("active", el.dataset.tab === name);
+      }
+      for (const el of document.querySelectorAll(".market-tab")) {
+        el.classList.toggle("active", el.dataset.tab === name);
+      }
+      // Beim Wechsel nach oben: sonst landet man mitten im neuen Reiter,
+      // weil die Scrollposition des alten stehen bleibt.
+      const panel = document.getElementById("marketPanel");
+      if (panel) panel.scrollTop = 0;
+      renderMarketPanel();
+    }
+
+    for (const el of document.querySelectorAll("#marketTabs button")) {
+      el.addEventListener("click", () => setMarketTab(el.dataset.tab));
     }
 
     foundCompanyBtn.addEventListener('click', () => {
