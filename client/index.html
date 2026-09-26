@@ -83,6 +83,8 @@
     width: 100%;
   }
   #joinBox button:hover { background: #3a6ceb; }
+  #joinHinweis { font-size: 12px; opacity: .7; margin: 8px 0 0; }
+  #joinHinweis a { color: inherit; }
   #joinMsg { color: #ff8080; min-height: 1.2em; font-size: 13px; margin-top: 10px; margin-bottom: 0; }
   canvas { display: block; touch-action: none; }
 
@@ -504,6 +506,7 @@
       <input id="nameInput" type="text" placeholder="Name" maxlength="20" autocomplete="off">
       <button id="joinBtn">Verbinden</button>
       <p id="joinMsg"></p>
+      <p id="joinHinweis">Nimm am besten einen Spitznamen. · <a href="datenschutz" target="_blank" rel="noopener">Datenschutz</a></p>
     </div>
   </div>
 
@@ -692,8 +695,8 @@
     max-width:min(80vw, 320px); background:#3a1a1a; color:#ffb0b0; font-size:11px; padding:8px 10px;
     border-radius:6px; z-index:30; font-family:monospace; white-space:pre-wrap;"></div>
 
-  <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
-  <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="vendor/three.min.js"></script>
+  <script src="vendor/GLTFLoader.js"></script>
   <script src="net.js"></script>
   <script src="kits.js"></script>
   <script src="wardrobe.js"></script>

@@ -22,10 +22,17 @@ const {
 const { serializePublic } = require('./player');
 const { EMPLOYEE_WAGE_PER_TICK } = require('./economy');
 const appearance = require('./appearance');
+const zugang = require('./zugang')({ titel: 'LifeSim' });
 
 const PORT = process.env.PORT || 3000;
 
 const app = express();
+// Passwortschutz fuer Familie und Freunde - vor allem anderen, damit ohne
+// Passwort weder das Spiel noch die Modelle ausgeliefert werden.
+app.use((req, res, next) => {
+  if (!zugang.pruefen(req, res)) next();
+});
+app.get('/datenschutz', (req, res) => res.sendFile(path.join(__dirname, '..', 'client', 'datenschutz.html')));
 // WICHTIG: Caching bewusst komplett deaktiviert, solange aktiv am Client entwickelt
 // wird. Ohne das kann der Browser (oder ein Zwischenspeicher) veraltete JS/HTML-Dateien
 // behalten, obwohl auf GitHub/Render laengst eine neue Version liegt - das fuehrt zu
@@ -40,7 +47,7 @@ app.use(express.static(path.join(__dirname, '..', 'client'), {
 }));
 
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ server, verifyClient: ({ req }) => zugang.hatZugang(req) });
 
 const world = new GameWorld();
 const playerConnections = new Map(); // playerId -> ws, fuer gezielte Nachrichten (z.B. Event-Angebote)
