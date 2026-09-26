@@ -22,6 +22,7 @@ const {
 const { serializePublic } = require('./player');
 const { EMPLOYEE_WAGE_PER_TICK } = require('./economy');
 const appearance = require('./appearance');
+const achievements = require('./achievements');
 const zugang = require('./zugang')({ titel: 'LifeSim' });
 
 const PORT = process.env.PORT || 3000;
@@ -32,17 +33,19 @@ const app = express();
 app.use((req, res, next) => {
   if (!zugang.pruefen(req, res)) next();
 });
+app.get('/healthz', (req, res) => res.type('text').send('ok'));
 app.get('/datenschutz', (req, res) => res.sendFile(path.join(__dirname, '..', 'client', 'datenschutz.html')));
-// WICHTIG: Caching bewusst komplett deaktiviert, solange aktiv am Client entwickelt
-// wird. Ohne das kann der Browser (oder ein Zwischenspeicher) veraltete JS/HTML-Dateien
-// behalten, obwohl auf GitHub/Render laengst eine neue Version liegt - das fuehrt zu
-// verwirrenden "aber ich hab doch die Datei ersetzt"-Situationen. Sobald das Spiel
-// stabiler ist, kann man hier wieder normales Caching aktivieren (bessere Ladezeiten).
+// Caching mit Nachfrage: "no-cache" heisst NICHT "nicht speichern", sondern
+// "vor jeder Verwendung beim Server nachfragen". Der Browser behaelt die Datei
+// und schickt ihr ETag mit; hat sie sich nicht geaendert, antwortet der Server
+// nur mit 304 ohne Inhalt. Damit bleibt der fruehere Vorteil (nach einem Deploy
+// ist sofort die neue Version da) erhalten, aber die rund 8 MB Modelle werden
+// nicht bei jedem Neuladen erneut uebertragen.
 app.use(express.static(path.join(__dirname, '..', 'client'), {
-  etag: false,
-  lastModified: false,
+  etag: true,
+  lastModified: true,
   setHeaders: (res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Cache-Control', 'no-cache');
   },
 }));
 
@@ -204,6 +207,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'wardrobeState', ...appearance.buildWardrobeState(result.player) });
       send(ws, { type: 'petState', ...world.buildPetState(result.player.id) });
       send(ws, { type: 'gangState', ...world.buildGangState(result.player.id) });
+      send(ws, { type: 'achievementsState', ...achievements.buildState(result.player, world) });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
@@ -213,6 +217,12 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'input' && ws.playerId != null) {
       world.applyInput(ws.playerId, msg);
+      return;
+    }
+
+    if (msg.type === 'requestAchievements' && ws.playerId != null) {
+      const player = world.players.get(ws.playerId);
+      if (player) send(ws, { type: 'achievementsState', ...achievements.buildState(player, world) });
       return;
     }
 
@@ -1238,13 +1248,46 @@ setInterval(() => {
   }
 
   broadcast({ type: 'statUpdate', players: world.buildFullPublicState() });
+
+  // Fortschrittsbalken der Lebensziele (Vermoegen, Alter) aendern sich mit
+  // jedem Zyklus - einmal pro slowTick reicht dafuer voellig.
+  for (const player of world.players.values()) {
+    if (player.connected) sendToPlayer(player.id, { type: 'achievementsState', ...achievements.buildState(player, world) });
+  }
 }, SLOW_TICK_MS);
+
+/**
+ * Lebensziele pruefen. Im Sekundentakt statt im slowTick, damit die Meldung
+ * direkt nach der Tat kommt ("Erster Job!") und nicht bis zu zehn Sekunden
+ * spaeter, wenn man schon woanders hinschaut.
+ */
+function checkAchievements() {
+  for (const player of world.players.values()) {
+    if (!player.connected || player.pendingReincarnation) continue;
+    const unlocked = achievements.checkPlayer(player, world);
+    if (unlocked.length === 0) continue;
+    for (const def of unlocked) {
+      sendToPlayer(player.id, {
+        type: 'achievementUnlocked',
+        id: def.id, icon: def.icon, title: def.title, reward: def.reward || {},
+      });
+    }
+    // Bei aelteren Spielstaenden fallen beim ersten Pruefen viele Ziele auf
+    // einmal - die sollen nicht die ganze Stadtzeitung fluten.
+    if (unlocked.length <= 2) {
+      for (const def of unlocked) announce('life', `${player.name} hat das Lebensziel „${def.title}“ erreicht ${def.icon}`);
+    }
+    broadcast({ type: 'statUpdate', players: [serializePublic(player)] });
+    sendToPlayer(player.id, { type: 'achievementsState', ...achievements.buildState(player, world) });
+  }
+}
 
 // EVENT_TICK: neue Lebensereignisse auswürfeln, abgelaufene mit Standardwahl auflösen,
 // naechstes aus der Warteschlange nachruecken - eigener, schnellerer Takt als slowTick,
 // damit Countdown-Anzeigen im Client nicht spuerbar nachhinken.
 setInterval(() => {
   world.rollEventsForConnectedPlayers();
+  checkAchievements();
 
   const expired = world.checkExpiredEvents();
   for (const { player, instance, choiceLabel, effects } of expired) {

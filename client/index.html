@@ -3,7 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Lebenssimulation - Phase 1</title>
+<title>LifeSim</title>
+<meta name="theme-color" content="#0d1119">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="robots" content="noindex, nofollow">
 <style>
   html, body {
     margin: 0;
@@ -492,6 +495,7 @@
   .leaderboard-row:last-child { border-bottom: none; }
   .leaderboard-rank { color: #6a7080; width: 22px; }
 </style>
+<link rel="stylesheet" href="hud.css">
 </head>
 <body>
   <div id="loadingScreen">
@@ -502,9 +506,12 @@
 
   <div id="joinOverlay">
     <div id="joinBox">
+      <div class="join-logo">🏙️</div>
+      <h1>LifeSim</h1>
+      <p class="join-tag">Dein Leben. Deine Stadt. Deine Entscheidungen.</p>
       <h2>Neues Leben beginnen</h2>
       <input id="nameInput" type="text" placeholder="Name" maxlength="20" autocomplete="off">
-      <button id="joinBtn">Verbinden</button>
+      <button id="joinBtn">Leben beginnen</button>
       <p id="joinMsg"></p>
       <p id="joinHinweis">Nimm am besten einen Spitznamen. · <a href="datenschutz" target="_blank" rel="noopener">Datenschutz</a></p>
     </div>
@@ -2981,6 +2988,17 @@
         showToast(`${msg.name} auf Stufe ${msg.level} ausgebaut ($${msg.cost}).`);
         if (marketPanel.style.display !== 'none') renderMarketPanel();
       };
+    }
+  </script>
+  <script src="hud.js"></script>
+  <script>
+    // Das HUD zuletzt: es haengt sich an die Knoepfe und Funktionen von oben.
+    if (net && typeof GameHud !== 'undefined') {
+      try {
+        window.gameHud = new GameHud(net, renderer);
+      } catch (err) {
+        showDebugError('Oberfläche konnte nicht aufgebaut werden: ' + err.message);
+      }
     }
   </script>
 </body>

@@ -1,0 +1,318 @@
+/* =========================================================================
+   client/hud.css
+   Oberflaeche ueber der 3D-Welt: Statuskarte, Ziel, Minimap, Karte,
+   Ortsknopf, Lebensziele, Joystick. Wird NACH dem Stil in index.html
+   geladen und ueberschreibt dort gezielt einige Regeln (Panels, Knoepfe).
+   ========================================================================= */
+
+:root {
+  --glass: rgba(16, 20, 30, 0.72);
+  --glass-strong: rgba(16, 20, 30, 0.9);
+  --line: rgba(255, 255, 255, 0.1);
+  --text: #eef1f6;
+  --muted: #9aa3b2;
+  --accent: #5b8cff;
+  --gold: #ffd35a;
+  --good: #6fdc8c;
+  --bad: #ff7b7b;
+  --radius: 14px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ---- Statuskarte oben links ------------------------------------------- */
+#hud {
+  background: var(--glass) !important;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius) !important;
+  padding: 10px 12px !important;
+  width: 250px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+  font-family: var(--font) !important;
+  line-height: 1.3 !important;
+}
+.hud-top { display: flex; align-items: center; gap: 10px; }
+.hud-avatar {
+  width: 36px; height: 36px; border-radius: 50%; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #5b8cff, #9a6bff);
+  font-weight: 700; font-size: 16px; color: #fff;
+}
+.hud-name { font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hud-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hud-money { display: flex; gap: 10px; margin: 8px 0 6px; font-size: 14px; font-weight: 700; flex-wrap: wrap; }
+.hud-money .cash { color: #9df0b0; }
+.hud-money .bank { color: #a9c4ff; }
+.hud-money .debt { color: var(--bad); }
+.hud-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 10px; }
+.hud-bar { font-size: 11px; color: var(--muted); }
+.hud-bar .row { display: flex; justify-content: space-between; margin-bottom: 2px; }
+.hud-bar .row b { color: var(--text); font-weight: 600; }
+.hud-bar .track { height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+.hud-bar .fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+.hud-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.hud-chip {
+  font-size: 11px; padding: 3px 7px; border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08); color: #d8dde6; white-space: nowrap;
+}
+.hud-chip.warn { background: rgba(255, 90, 90, 0.22); color: #ffb3b3; }
+.hud-chip.good { background: rgba(111, 220, 140, 0.18); color: #b6f3c6; }
+.hud-bar.low .fill { animation: hudPulse 1s ease-in-out infinite; }
+@keyframes hudPulse { 50% { opacity: 0.35; } }
+
+/* ---- Naechstes Ziel ---------------------------------------------------- */
+#goalCard {
+  position: fixed; z-index: 10;
+  left: max(10px, env(safe-area-inset-left));
+  width: 250px; box-sizing: border-box;
+  background: var(--glass); border: 1px solid var(--line);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border-radius: var(--radius); padding: 9px 12px;
+  color: var(--text); font-family: var(--font); cursor: pointer;
+  display: none;
+}
+#goalCard .goal-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--gold); font-weight: 700; }
+#goalCard .goal-title { font-size: 14px; font-weight: 700; margin: 2px 0; }
+#goalCard .goal-desc { font-size: 12px; color: #c6ccd6; line-height: 1.35; }
+#goalCard .goal-meta { font-size: 11px; color: var(--muted); margin-top: 5px; display: flex; justify-content: space-between; gap: 6px; }
+#goalCard .goal-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.1); margin-top: 6px; overflow: hidden; }
+#goalCard .goal-fill { height: 100%; background: var(--gold); }
+
+/* ---- Werkzeugleiste oben rechts ---------------------------------------- */
+#topBar {
+  position: fixed; z-index: 16;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(10px, env(safe-area-inset-right));
+  display: flex; gap: 6px;
+}
+#topBar button {
+  position: static !important;
+  background: var(--glass) !important; color: var(--text) !important;
+  border: 1px solid var(--line) !important; border-radius: 12px !important;
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  padding: 8px 11px !important; font: 600 13px var(--font) !important;
+  cursor: pointer; position: relative !important;
+  top: auto !important; right: auto !important; left: auto !important; bottom: auto !important;
+}
+#topBar button:hover { background: var(--glass-strong) !important; }
+#topBar button.active { border-color: var(--accent) !important; box-shadow: 0 0 0 1px var(--accent) inset; }
+#topBar .badge {
+  position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px;
+  border-radius: 8px; background: #e0484f; color: #fff; font-size: 10px;
+  line-height: 16px; text-align: center; padding: 0 4px; display: none;
+}
+
+/* ---- Minimap ----------------------------------------------------------- */
+#minimap {
+  position: fixed; z-index: 9;
+  top: calc(max(10px, env(safe-area-inset-top)) + 48px);
+  right: max(10px, env(safe-area-inset-right));
+  width: 168px; height: 168px; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  cursor: pointer; background: #4d6e36;
+}
+#minimapNorth {
+  position: fixed; z-index: 9; pointer-events: none;
+  width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
+  background: #e0484f; color: #fff; font: 700 10px/18px var(--font); text-align: center;
+}
+
+/* ---- Grosse Karte ------------------------------------------------------ */
+#mapOverlay {
+  position: fixed; inset: 0; z-index: 26; display: none;
+  background: rgba(8, 10, 16, 0.82);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  align-items: center; justify-content: center; flex-direction: column;
+  font-family: var(--font); color: var(--text);
+}
+#mapOverlay.open { display: flex; }
+#mapCanvas { border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); cursor: crosshair; touch-action: none; }
+#mapHint { font-size: 13px; color: var(--muted); margin-top: 10px; text-align: center; padding: 0 16px; }
+#mapClose {
+  position: absolute; top: max(14px, env(safe-area-inset-top)); right: max(14px, env(safe-area-inset-right));
+  background: var(--glass-strong); color: var(--text); border: 1px solid var(--line);
+  border-radius: 12px; padding: 8px 14px; font: 600 14px var(--font); cursor: pointer;
+}
+
+/* ---- Ortsknopf --------------------------------------------------------- */
+#placePrompt {
+  position: fixed; z-index: 11; left: 50%; transform: translateX(-50%);
+  bottom: calc(max(20px, env(safe-area-inset-bottom)) + 150px);
+  display: none; align-items: center; gap: 10px;
+  background: var(--glass-strong); border: 1px solid rgba(255, 211, 90, 0.5);
+  border-radius: 16px; padding: 8px 8px 8px 14px; color: var(--text);
+  font-family: var(--font); box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+  animation: promptIn 0.25s ease;
+}
+#placePrompt.show { display: flex; }
+#placePrompt .pp-name { font-weight: 700; font-size: 14px; }
+#placePrompt .pp-sub { font-size: 11px; color: var(--muted); }
+#placePrompt button {
+  background: var(--gold); color: #2a2206; border: none; border-radius: 11px;
+  padding: 9px 14px; font: 700 13px var(--font); cursor: pointer; white-space: nowrap;
+}
+#placePrompt kbd {
+  display: inline-block; background: rgba(0,0,0,0.2); border-radius: 4px;
+  padding: 0 5px; margin-right: 4px; font: 700 11px var(--font);
+}
+@keyframes promptIn { from { opacity: 0; transform: translate(-50%, 10px); } }
+
+/* ---- Hinweis zur Steuerung (Desktop) ----------------------------------- */
+#controlsHint {
+  position: fixed; z-index: 9; left: 50%; transform: translateX(-50%);
+  bottom: max(10px, env(safe-area-inset-bottom));
+  font: 12px var(--font); color: rgba(255,255,255,0.85);
+  background: rgba(10, 14, 22, 0.5); padding: 6px 12px; border-radius: 10px;
+  pointer-events: none; transition: opacity 1s; white-space: nowrap;
+}
+#controlsHint kbd { background: rgba(255,255,255,0.15); border-radius: 4px; padding: 0 5px; font: 600 11px var(--font); }
+
+/* ---- Lebensziele-Panel ------------------------------------------------- */
+#goalsPanel {
+  position: fixed; z-index: 15; display: none;
+  top: calc(max(10px, env(safe-area-inset-top)) + 48px);
+  right: max(10px, env(safe-area-inset-right));
+  width: min(360px, calc(100vw - 20px)); max-height: 72vh; overflow-y: auto;
+  background: var(--glass-strong); border: 1px solid var(--line);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-radius: 16px; padding: 14px; color: var(--text); font-family: var(--font);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.45); touch-action: pan-y; box-sizing: border-box;
+}
+#goalsPanel h4 { margin: 0 0 4px; font-size: 15px; }
+#goalsPanel .gp-sum { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+#goalsPanel .gp-total { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.1); overflow: hidden; margin-bottom: 12px; }
+#goalsPanel .gp-total > div { height: 100%; background: linear-gradient(90deg, #ffd35a, #ff9f43); }
+.gp-item {
+  display: flex; gap: 10px; align-items: flex-start; padding: 9px 8px;
+  border-radius: 10px; margin-bottom: 4px; background: rgba(255,255,255,0.04);
+}
+.gp-item.done { opacity: 0.6; }
+.gp-item.next { background: rgba(255, 211, 90, 0.12); outline: 1px solid rgba(255, 211, 90, 0.4); }
+.gp-icon { font-size: 22px; width: 28px; text-align: center; flex: 0 0 auto; }
+.gp-body { flex: 1; min-width: 0; }
+.gp-title { font-weight: 700; font-size: 13px; }
+.gp-desc { font-size: 12px; color: #c6ccd6; line-height: 1.35; margin-top: 1px; }
+.gp-reward { font-size: 11px; color: var(--gold); margin-top: 3px; }
+.gp-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.1); margin-top: 5px; overflow: hidden; }
+.gp-track > div { height: 100%; background: var(--gold); }
+.gp-go {
+  flex: 0 0 auto; align-self: center; background: rgba(91,140,255,0.2); color: #cfdcff;
+  border: 1px solid rgba(91,140,255,0.5); border-radius: 9px; padding: 5px 8px;
+  font: 600 11px var(--font); cursor: pointer;
+}
+.gp-check { color: var(--good); font-weight: 700; align-self: center; }
+
+/* ---- Erfolgsmeldung ---------------------------------------------------- */
+#achievementPop {
+  position: fixed; z-index: 40; left: 50%; top: 18%;
+  transform: translate(-50%, -20px) scale(0.9); opacity: 0; pointer-events: none;
+  background: linear-gradient(135deg, rgba(40, 32, 8, 0.95), rgba(24, 20, 10, 0.95));
+  border: 1px solid rgba(255, 211, 90, 0.7); border-radius: 18px;
+  padding: 14px 22px; color: var(--text); font-family: var(--font); text-align: center;
+  box-shadow: 0 0 0 4px rgba(255, 211, 90, 0.12), 0 20px 50px rgba(0,0,0,0.5);
+  transition: opacity 0.35s ease, transform 0.35s cubic-bezier(.2,1.4,.4,1);
+  min-width: 240px;
+}
+#achievementPop.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
+#achievementPop .ap-kicker { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold); font-weight: 700; }
+#achievementPop .ap-icon { font-size: 40px; margin: 4px 0; }
+#achievementPop .ap-title { font-size: 18px; font-weight: 800; }
+#achievementPop .ap-reward { font-size: 13px; color: #ffe7a3; margin-top: 4px; }
+
+/* ---- Joystick (nur Touch) --------------------------------------------- */
+#joystick {
+  position: fixed; z-index: 10; display: none;
+  left: max(24px, env(safe-area-inset-left));
+  bottom: max(24px, env(safe-area-inset-bottom));
+  width: 136px; height: 136px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.06), rgba(255,255,255,0.14));
+  border: 2px solid rgba(255, 255, 255, 0.28); touch-action: none;
+}
+#joystickKnob {
+  position: absolute; left: 50%; top: 50%; width: 56px; height: 56px;
+  margin: -28px 0 0 -28px; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.55); box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  pointer-events: none;
+}
+body.touch #joystick { display: block; }
+body.touch #touchControls { display: none !important; }
+body:not(.touch) #touchControls { display: none !important; }
+body.touch #controlsHint { display: none; }
+
+/* ---- Bestehende Elemente auffrischen ----------------------------------- */
+#marketPanel, #socialPanel {
+  top: calc(max(10px, env(safe-area-inset-top)) + 48px) !important;
+  background: var(--glass-strong) !important;
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border: 1px solid var(--line) !important; border-radius: 16px !important;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.45);
+  max-height: 72vh !important;
+}
+#marketTabs { background: transparent !important; border-bottom-color: var(--line) !important; }
+#eventBanner {
+  background: var(--glass-strong) !important; border: 1px solid rgba(91,140,255,0.45) !important;
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-radius: 16px !important; font-family: var(--font) !important;
+}
+#eventChoices button { border-radius: 10px !important; font-weight: 600; }
+#actionToast {
+  bottom: calc(max(20px, env(safe-area-inset-bottom)) + 96px) !important;
+  background: var(--glass-strong) !important; border: 1px solid var(--line) !important;
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border-radius: 14px !important; padding: 10px 16px !important;
+  font: 500 14px var(--font) !important; box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+  max-width: min(90vw, 460px); text-align: center;
+}
+#stealBtn, #vehicleBtn {
+  box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+  border: 2px solid rgba(255,255,255,0.35) !important;
+}
+
+/* Beitritt und Laden */
+#joinOverlay, #loadingScreen {
+  background:
+    radial-gradient(ellipse at 20% 10%, rgba(91,140,255,0.35), transparent 55%),
+    radial-gradient(ellipse at 90% 90%, rgba(255,160,67,0.25), transparent 50%),
+    #0d1119 !important;
+}
+#joinBox {
+  background: rgba(22, 27, 38, 0.9) !important; border: 1px solid var(--line);
+  border-radius: 20px !important; padding: 30px 32px !important;
+  box-shadow: 0 30px 80px rgba(0,0,0,0.5); width: min(340px, 86vw); box-sizing: border-box;
+  font-family: var(--font) !important;
+}
+#joinBox .join-logo { font-size: 44px; line-height: 1; margin-bottom: 6px; }
+#joinBox h1 { margin: 0; font-size: 28px; letter-spacing: -0.02em; }
+#joinBox .join-tag { color: var(--muted); font-size: 14px; margin: 4px 0 18px; }
+#joinBox input { border-radius: 12px !important; padding: 12px 14px !important; font-size: 16px !important; }
+#joinBox button {
+  border-radius: 12px !important; padding: 12px !important; font-size: 15px !important; font-weight: 700;
+  background: linear-gradient(135deg, #5b8cff, #7a5bff) !important;
+}
+#joinBox h2 { display: none; }
+
+/* ---- Kleine Bildschirme ------------------------------------------------ */
+@media (max-width: 700px) {
+  #hud { width: 200px; padding: 8px 10px !important; }
+  .hud-avatar { width: 30px; height: 30px; font-size: 14px; }
+  .hud-bars { grid-template-columns: 1fr 1fr; }
+  #goalCard { width: 200px; }
+  #goalCard .goal-desc { display: none; }
+  #minimap { width: 120px; height: 120px; }
+  #topBar button { padding: 7px 9px !important; font-size: 12px !important; }
+  #topBar button .lbl { display: none; }
+}
+@media (max-width: 520px) {
+  #hud { top: calc(max(10px, env(safe-area-inset-top)) + 50px) !important; width: 186px; }
+  .hud-chips .hud-chip:last-child { display: none; }
+  #goalCard { width: 186px; }
+  #minimap { width: 112px; height: 112px; top: calc(max(10px, env(safe-area-inset-top)) + 50px); }
+  #eventBanner { top: auto !important; bottom: calc(max(20px, env(safe-area-inset-bottom)) + 170px); }
+  #placePrompt { bottom: calc(max(20px, env(safe-area-inset-bottom)) + 170px); }
+}
+@media (max-height: 520px) {
+  #goalCard { display: none !important; }
+  #minimap { width: 110px; height: 110px; }
+}

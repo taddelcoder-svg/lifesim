@@ -1,8 +1,8 @@
 {
-  "name": "lifesim-mvp",
-  "version": "0.1.0",
+  "name": "lifesim",
+  "version": "1.0.0",
   "private": true,
-  "description": "Multiplayer-Lebenssimulation - Phase 1: Server-Fundament & Tick-Loop",
+  "description": "LifeSim - Multiplayer-Lebenssimulation im Browser",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js"

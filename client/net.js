@@ -27,6 +27,7 @@ const MAX_FRAME_DT_MS = 100;   // Deckel gegen Zeitspruenge nach Hintergrund-Tab
 // MUSS mit COLLISION_PASSES in server/world.js uebereinstimmen.
 const COLLISION_PASSES = 4;
 const RECONNECT_DELAY_MS = 2000;
+const ARROW_KEYS = { ArrowUp: 'w', ArrowLeft: 'a', ArrowDown: 's', ArrowRight: 'd' };
 
 class NetClient {
   constructor() {
@@ -197,8 +198,17 @@ class NetClient {
     this.onCourseDropped = null;
     this.onCourseCompleted = null;
 
-    window.addEventListener('keydown', (e) => this.setKey(e.key, true));
+    // Nicht in Eingabefeldern: sonst laeuft die Figur los, waehrend man im
+    // Chat "was geht" tippt.
+    const imFeld = (e) => {
+      const t = e.target;
+      return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+    };
+    window.addEventListener('keydown', (e) => { if (!imFeld(e)) this.setKey(e.key, true); });
     window.addEventListener('keyup', (e) => this.setKey(e.key, false));
+    this.achievements = null;
+    this.onAchievementsState = null;
+    this.onAchievementUnlocked = null;
 
     // WICHTIG gegen "laeuft endlos weiter": Verliert das Fenster den Fokus oder
     // wechselt man den Tab/die App, waehrend eine Taste gedrueckt ist, kommt das
@@ -211,7 +221,9 @@ class NetClient {
   }
 
   setKey(key, val) {
-    const k = key.toLowerCase();
+    // Pfeiltasten zusaetzlich zu WASD. Der Server kennt nur w/a/s/d, deshalb
+    // wird hier uebersetzt statt dort neue Tasten einzufuehren.
+    const k = ARROW_KEYS[key] || String(key).toLowerCase();
     if (k in this.keys) this.keys[k] = val;
   }
 
@@ -262,6 +274,17 @@ class NetClient {
         this.localPlayer = this.players.get(this.myId);
         this.myFriends = msg.friends || [];
         if (this.onWelcome) this.onWelcome();
+        break;
+      }
+
+      case 'achievementsState': {
+        this.achievements = msg.list || [];
+        if (this.onAchievementsState) this.onAchievementsState(msg);
+        break;
+      }
+
+      case 'achievementUnlocked': {
+        if (this.onAchievementUnlocked) this.onAchievementUnlocked(msg);
         break;
       }
 
@@ -958,6 +981,10 @@ class NetClient {
       keys: keysSnapshot,
       cameraYaw: this.cameraYaw,
     }));
+  }
+
+  requestAchievements() {
+    this.send({ type: 'requestAchievements' });
   }
 
   /** Wird von der Oberflaeche aufgerufen, wenn der Spieler die Kamera per Wischgeste dreht. */

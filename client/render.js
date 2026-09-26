@@ -19,6 +19,56 @@
 const WORLD_SCALE = 0.05;  // 1 Server-Einheit * 0.05 = 1 3D-Einheit (menschliche Groessenordnung)
 const WORLD_SIZE_3D = WORLD_WIDTH * WORLD_SCALE;
 
+// --- Farbraum -------------------------------------------------------------
+// Der Renderer gibt jetzt in sRGB aus (siehe Konstruktor). Das ist der Grund,
+// warum die Texturen der Modelle endlich so hell und klar aussehen wie gedacht
+// - vorher wurden sie linear ausgegeben und wirkten dunkel und uebersaettigt.
+//
+// Alle Hex-Farben im Code (0x4a7cff usw.) sind aber sRGB-Werte, wie man sie aus
+// CSS kennt. r128 kennt noch keine automatische Farbverwaltung, also wird sie
+// hier an der einzigen Stelle nachgeruestet, durch die jede Hex-Farbe laeuft:
+// setHex (auch der Konstruktor und .set(zahl) landen dort). getHex rechnet
+// symmetrisch zurueck, damit gemerkte Farben beim Wiedersetzen nicht doppelt
+// umgerechnet werden. Modelle laden ihre Farben ueber fromArray/setRGB und
+// sind davon nicht betroffen - dort liegen sie laut glTF-Norm bereits linear.
+(function farbraumNachruesten() {
+  if (THREE.Color.prototype._srgbPatched) return;
+  const setHex = THREE.Color.prototype.setHex;
+  const getHex = THREE.Color.prototype.getHex;
+  THREE.Color.prototype.setHex = function (hex) {
+    setHex.call(this, hex);
+    return this.convertSRGBToLinear();
+  };
+  THREE.Color.prototype.getHex = function () {
+    return getHex.call(this.clone().convertLinearToSRGB());
+  };
+  THREE.Color.prototype._srgbPatched = true;
+})();
+
+// Sichtweite am Tag in 3D-Einheiten. Alles dahinter liegt im Nebel und wird
+// gar nicht erst gezeichnet (siehe updateCulling) - vorher gingen bei jedem
+// Bild ueber eine Million Dreiecke der GANZEN Stadt durch die Grafikkarte,
+// und fuer die Schatten nochmal.
+const VIEW_DISTANCE = 150;
+const CHUNK_SIZE_3D = 64; // Kantenlaenge der Stadtkacheln fuer das Ausblenden
+
+// Kamera: frei zoombar (Mausrad, Pinch, +/-), Grenzen hier.
+const CAMERA_MIN_DISTANCE = 3;
+const CAMERA_MAX_DISTANCE = 16;
+const CAMERA_MIN_PITCH = 0.12; // Bogenmass ueber der Waagerechten
+const CAMERA_MAX_PITCH = 1.2;
+
+// Schatten folgen der Figur: ein kleiner, scharfer Ausschnitt statt eines
+// verwaschenen ueber die ganze Karte (vorher 336 Einheiten auf 1024 Pixel).
+const SHADOW_EXTENT = 38;
+
+// Himmelsfarben je Tageszeit: [oben, Horizont, Sonne/Licht]
+const SKY_DAY = { top: 0x3f7fd6, horizon: 0xcfe3f2, sun: 0xfff1d6, ground: 0x6b7a4a };
+const SKY_NIGHT = { top: 0x040915, horizon: 0x1a2440, sun: 0x9fb4ff, ground: 0x10141c };
+const SKY_DUSK = { top: 0x34437a, horizon: 0xf2a263, sun: 0xffb27a, ground: 0x4a3e3a };
+const SKY_RAIN = { top: 0x59636f, horizon: 0x9aa4ae, sun: 0xdfe6ee, ground: 0x4e5648 };
+const SKY_FOG = { top: 0x9ba5ae, horizon: 0xc2c8cd, sun: 0xe8ecef, ground: 0x6a7068 };
+
 const CHARACTER_RADIUS = 0.35;
 const CHARACTER_BODY_HEIGHT = 1.0;
 const CHARACTER_HEAD_RADIUS = 0.28;
@@ -26,7 +76,6 @@ const CHARACTER_HEAD_RADIUS = 0.28;
 const CAMERA_DISTANCE = 6;
 const CAMERA_HEIGHT = 3;
 const CAMERA_LOOK_HEIGHT = 1.3;
-const CAMERA_SMOOTH = 0.12; // 0..1 - hoeher = Kamera folgt schneller/ruckartiger
 
 const FACING_MIN_SPEED = 1; // px/s, darunter wird die letzte Blickrichtung beibehalten (kein Zittern im Stand)
 
@@ -244,17 +293,43 @@ class Renderer {
     this.hud = document.getElementById('hud');
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x1a1d23);
-    this.scene.fog = new THREE.Fog(0x1a1d23, 45, 130);
+    // Kein einfarbiger Hintergrund mehr: den Himmel zeichnet eine Kuppel
+    // (buildSky), der Nebel bekommt deren Horizontfarbe - so verschwimmt die
+    // Stadt in der Ferne mit dem Himmel statt vor einer grauen Wand zu enden.
+    this.scene.fog = new THREE.Fog(SKY_DAY.horizon, 60, VIEW_DISTANCE);
 
-    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 300);
+    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 900);
     this.camera.position.set(WORLD_SIZE_3D / 2, CAMERA_HEIGHT, WORLD_SIZE_3D / 2 + CAMERA_DISTANCE);
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.outputEncoding = THREE.sRGBEncoding;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    // Stadtkacheln, die ausserhalb der Sichtweite ausgeblendet werden, und die
+    // Teilmenge davon, die der Kamera im Weg stehen kann (Gebaeude, Baeume).
+    this.cullChunks = [];
+    this.occluderChunks = [];
+    this.fogFar = VIEW_DISTANCE;
+    this.nightFactor = 0;
+    this.weather = 'clear';
+
+    // Kamera: Abstand und Neigung sind vom Spieler einstellbar, der
+    // tatsaechliche Abstand kann durch Hindernisse kuerzer sein.
+    this.camZoom = CAMERA_DISTANCE + 1.5;
+    this.camPitch = 0.3;
+    this.camActualDistance = this.camZoom;
+    this.raycaster = new THREE.Raycaster();
+    this.frameCount = 0;
+    this.labelSprites = new Set(); // alle Beschriftungen, fuer das Ausblenden nach Entfernung
+
+    // Durchsicht: gemeinsame Werte fuer alle Materialien, die zwischen Kamera
+    // und Figur durchsichtig werden (siehe applyCameraFade).
+    this.fadeUniforms = { uFadeFocus: { value: new THREE.Vector3() } };
 
     this.entities = new Map();  // playerId -> { group, headMat, bodyMat, label, lastLabelText }
     this.copEntities = new Map(); // copId -> { group }
@@ -293,38 +368,577 @@ class Renderer {
   buildStaticScene() {
     // Als Feld merken: Tageszeit und Wetter aendern Helligkeit und Farbe,
     // dafuer muss man die Lichtquellen spaeter noch erreichen koennen.
-    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
-    this.ambientLight = ambient;
-    this.scene.add(ambient);
+    // Himmelslicht statt flachem Umgebungslicht: von oben kommt Himmelsblau,
+    // von unten der Widerschein des Bodens. Dadurch haben Flaechen, die nicht
+    // in der Sonne liegen, trotzdem Form statt einheitlichem Grau.
+    const hemi = new THREE.HemisphereLight(SKY_DAY.top, SKY_DAY.ground, 0.75);
+    this.ambientLight = hemi;
+    this.scene.add(hemi);
 
-    const sun = new THREE.DirectionalLight(0xffffff, 0.75);
+    const sun = new THREE.DirectionalLight(SKY_DAY.sun, 1.6);
     this.sunLight = sun;
-    sun.position.set(WORLD_SIZE_3D * 0.3, 40, WORLD_SIZE_3D * 0.2);
+    // Richtung relativ zur Figur - die Position wird jedes Bild mitgefuehrt
+    // (updateSun), damit der scharfe Schattenausschnitt immer dort liegt, wo
+    // man hinschaut.
+    this.sunOffset = new THREE.Vector3(28, 55, 18);
+    sun.position.set(WORLD_SIZE_3D / 2 + 28, 55, WORLD_SIZE_3D / 2 + 18);
     sun.castShadow = true;
-    sun.shadow.mapSize.width = 1024;
-    sun.shadow.mapSize.height = 1024;
+    const hochwertig = !/iPhone|iPad|Android/i.test(navigator.userAgent);
+    sun.shadow.mapSize.width = hochwertig ? 2048 : 1024;
+    sun.shadow.mapSize.height = hochwertig ? 2048 : 1024;
     sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 150;
-    sun.shadow.camera.left = -WORLD_SIZE_3D * 0.6;
-    sun.shadow.camera.right = WORLD_SIZE_3D * 0.6;
-    sun.shadow.camera.top = WORLD_SIZE_3D * 0.6;
-    sun.shadow.camera.bottom = -WORLD_SIZE_3D * 0.6;
+    sun.shadow.camera.far = 140;
+    sun.shadow.camera.left = -SHADOW_EXTENT;
+    sun.shadow.camera.right = SHADOW_EXTENT;
+    sun.shadow.camera.top = SHADOW_EXTENT;
+    sun.shadow.camera.bottom = -SHADOW_EXTENT;
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.03;
     sun.target.position.set(WORLD_SIZE_3D / 2, 0, WORLD_SIZE_3D / 2);
     this.scene.add(sun.target);
     this.scene.add(sun);
 
-    const groundGeo = new THREE.PlaneGeometry(WORLD_SIZE_3D, WORLD_SIZE_3D);
-    const groundMat = new THREE.MeshStandardMaterial({ color: 0x21252d });
+    // Nachts eine sanfte Lichtquelle an der eigenen Figur - wie der Schein
+    // der Strassenlaternen, ohne hunderte echte Lichter (die kein Tablet
+    // durchhalten wuerde). Tagsueber auf 0.
+    this.playerGlow = new THREE.PointLight(0xffd9a0, 0, 14, 1.6);
+    this.scene.add(this.playerGlow);
+
+    // Boden: Wiese mit leichter Struktur statt dunklem Asphaltgrau. Die
+    // Strassen liegen darueber, die Wiese bleibt zwischen den Haeusern sichtbar.
+    const groundGeo = new THREE.PlaneGeometry(WORLD_SIZE_3D + 400, WORLD_SIZE_3D + 400);
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: this.makeGroundTexture(),
+      roughness: 1,
+    });
     const ground = new THREE.Mesh(groundGeo, groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(WORLD_SIZE_3D / 2, 0, WORLD_SIZE_3D / 2);
     ground.receiveShadow = true;
     this.scene.add(ground);
 
+    this.buildSky();
+    this.buildRain();
+
     // Kein Hilfsraster mehr: Die echten Strassen aus dem Server-Layout uebernehmen
     // jetzt die Orientierungsfunktion, zusaetzliche Rasterlinien wuerden nur stoeren.
 
     this.buildJailMarker();
+  }
+
+  /** Wiese: gruener Grund mit Sprenkeln, aus Code gemalt statt als Bilddatei. */
+  makeGroundTexture() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#5f8a3e';
+    ctx.fillRect(0, 0, 256, 256);
+    // Deterministischer Zufall, damit die Wiese bei jedem Laden gleich aussieht
+    let seed = 7;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    const toene = ['#557d37', '#6a9746', '#4f7433', '#739f4d', '#5a843b'];
+    for (let i = 0; i < 2600; i++) {
+      ctx.fillStyle = toene[i % toene.length];
+      const s = 1 + rnd() * 3;
+      ctx.fillRect(rnd() * 256, rnd() * 256, s, s);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set((WORLD_SIZE_3D + 400) / 10, (WORLD_SIZE_3D + 400) / 10);
+    tex.encoding = THREE.sRGBEncoding;
+    tex.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    return tex;
+  }
+
+  /**
+   * Himmelskuppel mit Farbverlauf, Sonne/Mond und Sternen. Eine grosse Kugel,
+   * von innen gesehen, die jedes Bild mit der Kamera mitwandert - so ist sie
+   * nie erreichbar und immer "unendlich weit" weg.
+   */
+  buildSky() {
+    const uniforms = {
+      topColor: { value: new THREE.Color(SKY_DAY.top) },
+      horizonColor: { value: new THREE.Color(SKY_DAY.horizon) },
+      groundColor: { value: new THREE.Color(SKY_DAY.ground) },
+      sunColor: { value: new THREE.Color(SKY_DAY.sun) },
+      sunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3).normalize() },
+      stars: { value: 0 },
+    };
+    const material = new THREE.ShaderMaterial({
+      uniforms,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 topColor; uniform vec3 horizonColor; uniform vec3 groundColor;
+        uniform vec3 sunColor; uniform vec3 sunDir; uniform float stars;
+        varying vec3 vDir;
+        float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453); }
+        void main() {
+          vec3 d = normalize(vDir);
+          float h = d.y;
+          vec3 col = mix(horizonColor, topColor, pow(clamp(h, 0.0, 1.0), 0.5));
+          col = mix(col, groundColor, smoothstep(0.0, -0.2, h));
+          float s = max(dot(d, normalize(sunDir)), 0.0);
+          col += sunColor * (pow(s, 1200.0) * 3.0 + pow(s, 16.0) * 0.18);
+          if (stars > 0.0 && h > 0.05) {
+            vec3 cell = floor(d * 220.0);
+            float st = step(0.9975, hash(cell));
+            col += vec3(st * stars * (0.6 + 0.4 * hash(cell + 1.0)));
+          }
+          gl_FragColor = vec4(col, 1.0);
+          #include <tonemapping_fragment>
+          #include <encodings_fragment>
+        }`,
+    });
+    this.sky = new THREE.Mesh(new THREE.SphereGeometry(800, 32, 16), material);
+    this.sky.renderOrder = -1;
+    this.sky.frustumCulled = false;
+    this.scene.add(this.sky);
+
+    // Aktuelle und Zielwerte der Umgebung. Der Server schickt Tageszeit und
+    // Wetter nur alle zehn Sekunden - ohne weiches Nachfuehren wuerde der
+    // Himmel sprunghaft umschalten.
+    this.envCurrent = null;
+    this.envTarget = this.computeEnvTarget({ phase: 'day', progress: 0.5, weather: 'clear' });
+  }
+
+  /** Regen als kurze Striche in einem Kasten um die Kamera. */
+  buildRain() {
+    const N = 1400;
+    const pos = new Float32Array(N * 6);
+    this.rainDrops = [];
+    for (let i = 0; i < N; i++) {
+      this.rainDrops.push({
+        x: (Math.random() - 0.5) * 40,
+        y: Math.random() * 30,
+        z: (Math.random() - 0.5) * 40,
+        v: 22 + Math.random() * 8,
+      });
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.LineBasicMaterial({ color: 0xdfe8f5, transparent: true, opacity: 0.75, fog: false, toneMapped: false });
+    this.rain = new THREE.LineSegments(geo, mat);
+    this.rain.frustumCulled = false;
+    this.rain.visible = false;
+    this.scene.add(this.rain);
+  }
+
+  updateRain(dtSec) {
+    if (!this.rain) return;
+    const on = this.weather === 'rain';
+    this.rain.visible = on;
+    if (!on) return;
+    const cx = this.camera.position.x;
+    const cy = this.camera.position.y;
+    const cz = this.camera.position.z;
+    const arr = this.rain.geometry.attributes.position.array;
+    const wind = 0.12;
+    for (let i = 0; i < this.rainDrops.length; i++) {
+      const d = this.rainDrops[i];
+      d.y -= d.v * dtSec;
+      d.x -= d.v * wind * dtSec;
+      if (d.y < -cy) { d.y += 30; d.x = (Math.random() - 0.5) * 40; d.z = (Math.random() - 0.5) * 40; }
+      const x = cx + d.x;
+      const y = cy + d.y - 8;
+      const z = cz + d.z;
+      const k = i * 6;
+      arr[k] = x; arr[k + 1] = y; arr[k + 2] = z;
+      arr[k + 3] = x + wind * 1.1; arr[k + 4] = y - 1.1; arr[k + 5] = z;
+    }
+    this.rain.geometry.attributes.position.needsUpdate = true;
+  }
+
+  /** Weicher, runder Lichtfleck - fuer Laternenschein und Wegmarke. */
+  makeGlowTexture() {
+    if (this._glowTex) return this._glowTex;
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.25, 'rgba(255,255,255,0.6)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+    this._glowTex = new THREE.CanvasTexture(c);
+    return this._glowTex;
+  }
+
+  /**
+   * Laternenschein: ein leuchtender Punkt am Mast und ein Lichtkegel auf dem
+   * Boden, beides nur nachts sichtbar. Echte Lichtquellen waeren bei ueber
+   * 400 Laternen fuer kein Tablet zu stemmen - das hier kostet zwei
+   * Zeichenaufrufe.
+   */
+  buildLampGlow(lamps) {
+    if (!lamps || lamps.length === 0) return;
+    const tex = this.makeGlowTexture();
+
+    const pos = new Float32Array(lamps.length * 3);
+    lamps.forEach((l, i) => {
+      // Der Kopf der Laterne haengt etwas zur Strasse hin (rotY zeigt dorthin).
+      pos[i * 3] = l.x * WORLD_SCALE + Math.sin(l.rotY || 0) * 0.55;
+      pos[i * 3 + 1] = 2.55;
+      pos[i * 3 + 2] = l.y * WORLD_SCALE + Math.cos(l.rotY || 0) * 0.55;
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({
+      map: tex, color: 0xffd08a, size: 2.4, sizeAttenuation: true,
+      transparent: true, opacity: 0, depthWrite: false,
+      blending: THREE.AdditiveBlending, fog: false,
+    });
+    const points = new THREE.Points(geo, mat);
+    points.frustumCulled = false;
+    this.scene.add(points);
+    this.cityMeshes.push(points);
+
+    const pool = new THREE.InstancedMesh(
+      new THREE.PlaneGeometry(7, 7).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({
+        map: tex, color: 0xffc070, transparent: true, opacity: 0,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      }),
+      lamps.length,
+    );
+    const m = new THREE.Matrix4();
+    lamps.forEach((l, i) => {
+      m.makeTranslation(l.x * WORLD_SCALE + Math.sin(l.rotY || 0) * 1.2, 0.06, l.y * WORLD_SCALE + Math.cos(l.rotY || 0) * 1.2);
+      pool.setMatrixAt(i, m);
+    });
+    pool.frustumCulled = false;
+    this.scene.add(pool);
+    this.cityMeshes.push(pool);
+
+    this.lampGlow = { points, pool };
+  }
+
+  /**
+   * Zielwerte fuer Himmel, Licht und Nebel aus Tageszeit und Wetter.
+   *
+   * `progress` (0..1) kommt vom Server und laeuft innerhalb der Phase durch.
+   * An den Phasengrenzen wird ueber die ersten und letzten 15% geblendet -
+   * genau dort liegt die Daemmerung mit ihrem orangen Horizont.
+   */
+  computeEnvTarget(env) {
+    const edge = 0.15;
+    const p = Math.min(1, Math.max(0, env.progress || 0));
+    let night;
+    if (env.phase === 'night') {
+      night = p < edge ? p / edge : (p > 1 - edge ? (1 - p) / edge : 1);
+    } else {
+      night = p < edge ? 1 - p / edge : (p > 1 - edge ? 1 - (1 - p) / edge : 0);
+    }
+    const fog = env.weather === 'fog';
+    const rain = env.weather === 'rain';
+    const base = rain ? SKY_RAIN : fog ? SKY_FOG : SKY_DAY;
+    const dusk = (1 - Math.abs(2 * night - 1)) * (rain || fog ? 0.3 : 0.85);
+
+    const mix = (key) => {
+      const c = new THREE.Color(base[key]).lerp(new THREE.Color(SKY_NIGHT[key]), night);
+      return c.lerp(new THREE.Color(SKY_DUSK[key]), dusk);
+    };
+
+    // Sonnenstand: im Tagesverlauf von Ost nach West, nachts der Mond.
+    const winkel = env.phase === 'night' ? 0.35 + p * 0.3 : 0.2 + p * 0.6;
+    const hoehe = Math.sin(winkel * Math.PI);
+    const sunDir = new THREE.Vector3(Math.cos(winkel * Math.PI) * 0.9, 0.25 + hoehe * 0.75, 0.35).normalize();
+
+    const damp = fog ? 0.7 : rain ? 0.8 : 1;
+    return {
+      top: mix('top'), horizon: mix('horizon'), ground: mix('ground'), sun: mix('sun'),
+      sunDir,
+      hemiI: (0.8 - night * 0.45) * damp,
+      sunI: (1.7 - night * 1.35) * damp,
+      fogNear: fog ? 12 : 60 - night * 25,
+      fogFar: fog ? 60 : VIEW_DISTANCE - night * 40,
+      night,
+      stars: rain || fog ? 0 : Math.max(0, night * 1.2 - 0.2),
+      exposure: 1.05 + night * 0.25,
+    };
+  }
+
+  /** Setzt Beleuchtung und Sichtweite nach Tageszeit und Wetter. */
+  applyEnvironment(env) {
+    if (!env || !this.sky) return;
+    this.weather = env.weather || 'clear';
+    this.envTarget = this.computeEnvTarget(env);
+    if (!this.envCurrent) this.envCurrent = this.cloneEnv(this.envTarget);
+  }
+
+  cloneEnv(e) {
+    return {
+      ...e,
+      top: e.top.clone(), horizon: e.horizon.clone(), ground: e.ground.clone(),
+      sun: e.sun.clone(), sunDir: e.sunDir.clone(),
+    };
+  }
+
+  /** Jedes Bild: Umgebung weich an das Ziel heranfuehren und anwenden. */
+  updateEnvironment(dtMs) {
+    if (!this.envTarget) return;
+    if (!this.envCurrent) this.envCurrent = this.cloneEnv(this.envTarget);
+    const c = this.envCurrent;
+    const t = this.envTarget;
+    const b = frameRateIndependentBlend(0.02, dtMs);
+    for (const k of ['top', 'horizon', 'ground', 'sun']) c[k].lerp(t[k], b);
+    c.sunDir.lerp(t.sunDir, b).normalize();
+    for (const k of ['hemiI', 'sunI', 'fogNear', 'fogFar', 'night', 'stars', 'exposure']) {
+      c[k] += (t[k] - c[k]) * b;
+    }
+
+    const u = this.sky.material.uniforms;
+    u.topColor.value.copy(c.top);
+    u.horizonColor.value.copy(c.horizon);
+    u.groundColor.value.copy(c.ground);
+    u.sunColor.value.copy(c.sun);
+    u.sunDir.value.copy(c.sunDir);
+    u.stars.value = c.stars;
+
+    this.scene.fog.color.copy(c.horizon);
+    this.scene.fog.near = c.fogNear;
+    this.scene.fog.far = c.fogFar;
+    this.fogFar = c.fogFar;
+
+    this.ambientLight.color.copy(c.top).lerp(new THREE.Color(0xffffff), 0.45);
+    this.ambientLight.groundColor.copy(c.ground);
+    this.ambientLight.intensity = c.hemiI;
+    this.sunLight.color.copy(c.sun);
+    this.sunLight.intensity = c.sunI;
+    this.sunOffset.copy(c.sunDir).multiplyScalar(65);
+    this.renderer.toneMappingExposure = c.exposure;
+    this.nightFactor = c.night;
+
+    this.playerGlow.intensity = c.night * 1.1;
+    if (this.lampGlow) {
+      this.lampGlow.points.material.opacity = Math.min(1, c.night * 1.3);
+      this.lampGlow.pool.material.opacity = c.night * 0.35;
+    }
+  }
+
+  /** Sonne und Schattenausschnitt folgen der eigenen Figur. */
+  updateSun(focus) {
+    const s = this.sunLight;
+    // Auf ganze Schatten-Texel runden, sonst flimmern die Schattenkanten beim
+    // Laufen, weil der Ausschnitt jedes Bild um Bruchteile verrutscht.
+    const texel = (SHADOW_EXTENT * 2) / s.shadow.mapSize.width;
+    const fx = Math.round(focus.x / texel) * texel;
+    const fz = Math.round(focus.z / texel) * texel;
+    s.target.position.set(fx, 0, fz);
+    s.position.set(fx + this.sunOffset.x, this.sunOffset.y, fz + this.sunOffset.z);
+    s.target.updateMatrixWorld();
+    this.playerGlow.position.set(focus.x, 3.2, focus.z);
+  }
+
+  /**
+   * Blendet Stadtkacheln aus, die komplett im Nebel liegen. Nur alle paar
+   * Bilder - die Figur bewegt sich in der Zeit kaum eine Einheit.
+   */
+  updateCulling(focus) {
+    const grenze = this.fogFar + 6;
+    for (const ch of this.cullChunks) {
+      const d = Math.hypot(ch.x - focus.x, ch.z - focus.z) - ch.r;
+      ch.obj.visible = d < grenze;
+      // Schatten nur fuer Kacheln, die den Schattenausschnitt beruehren -
+      // sonst rechnet die Grafikkarte die halbe Stadt ein zweites Mal durch.
+      if (ch.shadow) ch.obj.castShadow = d < SHADOW_EXTENT * 1.5;
+    }
+  }
+
+  /**
+   * Verteilt Platzierungen auf Kacheln und baut je Kachel eine InstancedMesh.
+   * Gibt eine Gruppe zurueck, die wie bisher EIN Objekt in cityMeshes ist.
+   * Mehr Zeichenaufrufe als vorher (eine Handvoll pro Modell), dafuer wird
+   * alles ausserhalb der Sichtweite gar nicht erst gezeichnet.
+   */
+  buildChunkedInstances(geometry, material, items, opts = {}) {
+    const chunks = new Map();
+    for (const it of items) {
+      const key = Math.floor(it.x / CHUNK_SIZE_3D) + ',' + Math.floor(it.z / CHUNK_SIZE_3D);
+      if (!chunks.has(key)) chunks.set(key, []);
+      chunks.get(key).push(it);
+    }
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    const modelR = geometry.boundingSphere.radius;
+
+    const group = new THREE.Group();
+    const matrix = new THREE.Matrix4();
+    const quat = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const scl = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+
+    if (opts.occluder || opts.fade) this.applyCameraFade(material);
+    for (const list of chunks.values()) {
+      const mesh = new THREE.InstancedMesh(geometry, material, list.length);
+      mesh.castShadow = opts.castShadow !== false;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
+      let minX = Infinity; let maxX = -Infinity; let minZ = Infinity; let maxZ = -Infinity; let maxS = 1;
+      list.forEach((p, idx) => {
+        pos.set(p.x, p.y || 0, p.z);
+        quat.setFromAxisAngle(up, p.rotY || 0);
+        scl.set(p.sx != null ? p.sx : 1, p.sy != null ? p.sy : 1, p.sz != null ? p.sz : 1);
+        matrix.compose(pos, quat, scl);
+        mesh.setMatrixAt(idx, matrix);
+        minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+        minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
+        maxS = Math.max(maxS, scl.x, scl.y, scl.z);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      group.add(mesh);
+      const entry = {
+        shadow: mesh.castShadow,
+        obj: mesh,
+        x: (minX + maxX) / 2,
+        z: (minZ + maxZ) / 2,
+        r: Math.hypot(maxX - minX, maxZ - minZ) / 2 + modelR * maxS,
+      };
+      this.cullChunks.push(entry);
+      if (opts.occluder) this.occluderChunks.push(entry);
+    }
+    return group;
+  }
+
+  /**
+   * Durchsicht fuer Gebaeude und Baeume: Was zwischen Kamera und Figur steht
+   * oder der Kamera zu nahe kommt, wird im Rastermuster ausgespart. So sieht
+   * man die eigene Figur auch hinter einem Baumstamm - wie in den meisten
+   * Third-Person-Spielen. Pro Instanz ginge das mit InstancedMesh nicht,
+   * deshalb im Shader pro Pixel.
+   *
+   * Nur der Farbdurchgang wird veraendert; die Schatten rechnet three.js mit
+   * einem eigenen Tiefenmaterial, sie bleiben also vollstaendig.
+   */
+  applyCameraFade(material) {
+    // WeakSet statt userData-Merker: material.clone() kopiert userData mit,
+    // aber NICHT onBeforeCompile - ein Klon saehe sonst faelschlich
+    // "schon erledigt" aus.
+    if (!this._fadePatched) this._fadePatched = new WeakSet();
+    if (!material || this._fadePatched.has(material)) return;
+    this._fadePatched.add(material);
+    const shared = this.fadeUniforms;
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uFadeFocus = shared.uFadeFocus;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vFadeWorld;')
+        .replace('#include <project_vertex>', [
+          '#include <project_vertex>',
+          'vec4 fadeWorld = vec4(transformed, 1.0);',
+          '#ifdef USE_INSTANCING',
+          'fadeWorld = instanceMatrix * fadeWorld;',
+          '#endif',
+          'vFadeWorld = (modelMatrix * fadeWorld).xyz;',
+        ].join('\n'));
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vFadeWorld;\nuniform vec3 uFadeFocus;')
+        .replace('#include <clipping_planes_fragment>', [
+          '#include <clipping_planes_fragment>',
+          '{',
+          '  vec3 seg = uFadeFocus - cameraPosition;',
+          '  float len = length(seg);',
+          '  vec3 dir = seg / max(len, 0.001);',
+          '  vec3 rel = vFadeWorld - cameraPosition;',
+          '  float t = dot(rel, dir);',
+          '  float quer = length(rel - dir * t);',
+          '  bool zwischen = t > 0.0 && t < len - 0.6 && quer < 1.6 + t * 0.12;',
+          '  bool nah = length(rel) < 2.2;',
+          '  if (zwischen || nah) {',
+          '    vec2 f = floor(gl_FragCoord.xy);',
+          '    if (mod(f.x + f.y, 2.0) < 1.0 || mod(f.y, 2.0) < 1.0) discard;',
+          '  }',
+          '}',
+        ].join('\n'));
+    };
+    material.needsUpdate = true;
+  }
+
+  /**
+   * Kamera nicht durch Waende: Strahl von der Figur zur
+   * gewuenschten Kameraposition, bei einem Treffer rueckt die Kamera davor.
+   * Geprueft wird nur, was in der Naehe steht.
+   */
+  cameraObstacleDistance(from, dir, maxDist) {
+    const nah = [];
+    for (const ch of this.occluderChunks) {
+      if (!ch.obj.visible) continue;
+      if (Math.hypot(ch.x - from.x, ch.z - from.z) - ch.r < maxDist + 2) nah.push(ch.obj);
+    }
+    if (this.placeModels) for (const m of this.placeModels) nah.push(m);
+    if (nah.length === 0) return maxDist;
+    this.raycaster.set(from, dir);
+    this.raycaster.far = maxDist;
+    const hits = this.raycaster.intersectObjects(nah, true);
+    return hits.length > 0 ? hits[0].distance : maxDist;
+  }
+
+  /** Beschriftungen nach Entfernung ein- und ausblenden, gegen Schilderwald. */
+  updateLabels(focus) {
+    for (const sprite of this.labelSprites) {
+      let root = sprite;
+      while (root.parent) root = root.parent;
+      if (root !== this.scene) { this.labelSprites.delete(sprite); continue; }
+      const max = sprite.userData.maxDist;
+      if (!max) continue;
+      sprite.getWorldPosition(this._tmpV || (this._tmpV = new THREE.Vector3()));
+      const d = Math.hypot(this._tmpV.x - focus.x, this._tmpV.z - focus.z);
+      const fade = Math.min(1, Math.max(0, (max - d) / (max * 0.25)));
+      sprite.material.opacity = fade;
+      sprite.visible = fade > 0.02 && sprite.userData.hidden !== true;
+    }
+  }
+
+  /**
+   * Wegmarke: eine Lichtsaeule ueber einem Ort, sichtbar ueber die Daecher
+   * hinweg. Zeigt dem Spieler, wohin es fuer das naechste Lebensziel geht.
+   * null blendet sie aus.
+   */
+  setGoalMarker(place) {
+    if (!this.goalMarker) {
+      const group = new THREE.Group();
+      const beam = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.9, 0.9, 70, 16, 1, true),
+        new THREE.MeshBasicMaterial({
+          color: 0xffd35a, transparent: true, opacity: 0.28,
+          depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false,
+        }),
+      );
+      beam.position.y = 35;
+      group.add(beam);
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(1.4, 2.0, 32).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: 0xffd35a, transparent: true, opacity: 0.8, depthWrite: false, side: THREE.DoubleSide }),
+      );
+      ring.position.y = 0.08;
+      group.add(ring);
+      group.userData.ring = ring;
+      group.visible = false;
+      this.scene.add(group);
+      this.goalMarker = group;
+    }
+    if (!place) { this.goalMarker.visible = false; this.goalMarkerPlace = null; return; }
+    this.goalMarkerPlace = place;
+    this.goalMarker.position.set(place.position.x * WORLD_SCALE, 0, place.position.y * WORLD_SCALE);
+    this.goalMarker.visible = true;
+  }
+
+  updateGoalMarker(now, focus) {
+    const g = this.goalMarker;
+    if (!g || !g.visible) return;
+    const s = 1 + Math.sin(now / 350) * 0.15;
+    g.userData.ring.scale.set(s, 1, s);
+    // Wer schon da ist, braucht keine Saeule mehr, die ihm die Sicht nimmt.
+    const d = Math.hypot(g.position.x - focus.x, g.position.z - focus.z);
+    g.children[0].material.opacity = d < 12 ? 0.06 : 0.28;
   }
 
   /** Sichtbarer Gefaengnis-Standort: einfacher Kaefig aus duennen Stangen, statt einer unsichtbaren Ecke. */
@@ -353,7 +967,7 @@ class Renderer {
       this.scene.add(bar);
     }
 
-    const label = this.createLabelSprite('🚔 Gefängnis');
+    const label = this.createLabelSprite('🚔 Gefängnis', null, 150);
     label.position.set(jx, 3, jz);
     this.scene.add(label);
   }
@@ -385,6 +999,7 @@ class Renderer {
       raceoffice: 0x7a3a2e,
     };
 
+    this.placeModels = [];
     for (const place of this.net.places) {
       const px = place.position.x * WORLD_SCALE;
       const pz = place.position.y * WORLD_SCALE;
@@ -419,8 +1034,10 @@ class Renderer {
 
       if (model) {
         model.position.set(px, 0, pz);
+        model.traverse((o) => { if (o.isMesh) this.applyCameraFade(o.material); });
         this.scene.add(model);
         this.cityMeshes.push(model);
+        this.placeModels.push(model);
         const box = new THREE.Box3().setFromObject(model);
         labelHeight = box.max.y + 0.5;
       } else {
@@ -441,53 +1058,10 @@ class Renderer {
       // Groesser als die Standardbeschriftung (2.2 x 0.55): die Namen sind laenger
       // ("🏛️ Gewerbeamt") und sollen aus der Entfernung noch lesbar sein, aus der
       // man einen Ort ueberhaupt erst als Ziel anlaeuft.
-      const label = this.createLabelSprite(`${place.icon} ${place.name}`, [3.4, 0.85]);
+      const label = this.createLabelSprite(`${place.icon} ${place.name}`, [3.4, 0.85], 400);
       label.position.set(px, labelHeight, pz);
       this.scene.add(label);
       this.cityMeshes.push(label);
-    }
-  }
-
-  /**
-   * Setzt Beleuchtung und Sichtweite nach Tageszeit und Wetter.
-   *
-   * `progress` (0..1) kommt vom Server und laeuft innerhalb der Phase durch -
-   * daraus wird ein weicher Uebergang statt eines harten Umschaltens. An den
-   * Phasengrenzen wird nur ueber die ersten und letzten 15% geblendet, sonst
-   * waere es dauerhaft daemmrig statt hell oder dunkel.
-   */
-  applyEnvironment(env) {
-    if (!env || !this.ambientLight || !this.sunLight) return;
-
-    const edge = 0.15;
-    const p = Math.min(1, Math.max(0, env.progress || 0));
-    // 0 = voller Tag, 1 = volle Nacht
-    let night;
-    if (env.phase === 'night') {
-      night = p < edge ? p / edge : (p > 1 - edge ? (1 - p) / edge : 1);
-    } else {
-      night = p < edge ? 1 - p / edge : (p > 1 - edge ? 1 - (1 - p) / edge : 0);
-    }
-
-    const fog = env.weather === 'fog';
-    const rain = env.weather === 'rain';
-
-    // Nebel und Regen daempfen zusaetzlich - sichtbar, aber nie so dunkel wie Nacht.
-    const damp = fog ? 0.75 : rain ? 0.85 : 1;
-
-    this.ambientLight.intensity = (0.6 - night * 0.35) * damp;
-    this.sunLight.intensity = (0.75 - night * 0.6) * damp;
-    // Nachts kuehler, bei Regen grauer.
-    this.sunLight.color.setHex(night > 0.5 ? 0x8899cc : rain ? 0xc8ccd0 : 0xffffff);
-
-    if (this.scene.fog) {
-      // Nebel zieht die Sichtweite deutlich zusammen, Nacht etwas.
-      const near = fog ? 15 : 45 - night * 15;
-      const far = fog ? 55 : 130 - night * 40;
-      this.scene.fog.near = near;
-      this.scene.fog.far = far;
-      this.scene.fog.color.setHex(night > 0.5 ? 0x0d1016 : fog ? 0x2a2e33 : 0x1a1d23);
-      if (this.renderer) this.renderer.setClearColor(this.scene.fog.color);
     }
   }
 
@@ -506,7 +1080,7 @@ class Renderer {
 
     for (const company of this.net.companies.values()) {
       if (!company.site) continue;
-      const label = this.createLabelSprite(`🏭 ${company.name}`, [3.0, 0.75]);
+      const label = this.createLabelSprite(`🏭 ${company.name}`, [3.0, 0.75], 90);
       label.position.set(company.site.x * WORLD_SCALE, 4.5, company.site.y * WORLD_SCALE);
       this.scene.add(label);
       this.companySigns.push(label);
@@ -518,6 +1092,9 @@ class Renderer {
     // Vorherigen Aufbau entfernen, falls das Layout erneut ankommt (Reconnect)
     for (const mesh of this.cityMeshes) this.scene.remove(mesh);
     this.cityMeshes = [];
+    this.cullChunks = [];
+    this.occluderChunks = [];
+    this.lampGlow = null;
 
     // Strassenkacheln aus dem Stadtkit. Nur wenn die Modelle da sind - sonst
     // bleiben die flachen Flaechen, damit die Karte nie leer ist.
@@ -606,11 +1183,10 @@ class Renderer {
     }
 
     for (const [name, list] of [['road_cross', crossings], ['road_straight', straights]]) {
-      const inst = this.createModelInstances(name, list);
+      // Kacheln werfen keinen Schatten - sie liegen flach, und bei ueber
+      // 1900 Stueck kostet die Schattenberechnung mehr, als sie zeigt.
+      const inst = this.createModelInstances(name, list, { castShadow: false });
       if (inst) {
-        // Kacheln werfen keinen Schatten - sie liegen flach, und bei ueber
-        // 1900 Stueck kostet die Schattenberechnung mehr, als sie zeigt.
-        inst.castShadow = false;
         this.scene.add(inst);
         this.cityMeshes.push(inst);
       }
@@ -666,7 +1242,7 @@ class Renderer {
 
     let instanced = 0;
     for (const [name, list] of byModel) {
-      const inst = this.createModelInstances(name, list);
+      const inst = this.createModelInstances(name, list, { occluder: true });
       if (inst) {
         this.scene.add(inst);
         this.cityMeshes.push(inst);
@@ -680,14 +1256,19 @@ class Renderer {
     // Stadtdeko - nur wenn die Modelle geladen sind, sonst bleibt die Stadt schlicht
     if (this.modelsReady) {
       let propCount = 0;
-      for (const [name, placements] of this.buildPropPlacements()) {
-        const inst = this.createPropInstances(name, placements);
+      const alleDeko = this.buildPropPlacements();
+      for (const [name, placements] of alleDeko) {
+        // Baeume werden durchsichtig, wenn sie im Bild stehen, ziehen die
+        // Kamera aber nicht heran - sonst springt sie beim Vorbeilaufen an
+        // jeder Baumreihe vor und zurueck. Laternen sind zu duenn, um zu stoeren.
+        const inst = this.createPropInstances(name, placements, { fade: STREET_TREE_MODELS.includes(name) });
         if (inst) {
           this.scene.add(inst);
           this.cityMeshes.push(inst);
           propCount += placements.length;
         }
       }
+      this.buildLampGlow(alleDeko.get('streetlight'));
       if (propCount > 0) console.log('Stadtdeko platziert:', propCount, 'Objekte');
     }
 
@@ -979,55 +1560,22 @@ class Renderer {
    * 1905 Strassenkacheln und 239 Gebaeude werden zu rund zwei Dutzend
    * Zeichenaufrufen statt ueber zweitausend Einzelobjekten.
    */
-  createModelInstances(name, placements) {
+  createModelInstances(name, placements, opts) {
     const entry = this.normalizedGeometry(name);
     if (!entry || placements.length === 0) return null;
-
-    const mesh = new THREE.InstancedMesh(entry.geometry, entry.material, placements.length);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-
-    const matrix = new THREE.Matrix4();
-    const quat = new THREE.Quaternion();
-    const pos = new THREE.Vector3();
-    const scl = new THREE.Vector3();
-    const up = new THREE.Vector3(0, 1, 0);
-
-    placements.forEach((p, idx) => {
-      pos.set(p.x, p.y || 0, p.z);
-      quat.setFromAxisAngle(up, p.rotY || 0);
-      scl.set(p.sx != null ? p.sx : 1, p.sy != null ? p.sy : 1, p.sz != null ? p.sz : 1);
-      matrix.compose(pos, quat, scl);
-      mesh.setMatrixAt(idx, matrix);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    return mesh;
+    return this.buildChunkedInstances(entry.geometry, entry.material, placements, opts);
   }
 
-  createPropInstances(name, placements) {
+  createPropInstances(name, placements, opts) {
     const template = this.modelTemplates.get(name);
     if (!template || placements.length === 0) return null;
 
     const scale = PROP_SCALE[name] || 1;
-    const mesh = new THREE.InstancedMesh(template.geometry, template.material, placements.length);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-
-    const matrix = new THREE.Matrix4();
-    const quat = new THREE.Quaternion();
-    const pos = new THREE.Vector3();
-    const scl = new THREE.Vector3(scale, scale, scale);
-    const up = new THREE.Vector3(0, 1, 0);
-
-    placements.forEach((p, idx) => {
-      pos.set(p.x * WORLD_SCALE, 0, p.y * WORLD_SCALE);
-      quat.setFromAxisAngle(up, p.rotY || 0);
-      matrix.compose(pos, quat, scl);
-      mesh.setMatrixAt(idx, matrix);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-
-    return mesh;
+    const items = placements.map((p) => ({
+      x: p.x * WORLD_SCALE, z: p.y * WORLD_SCALE, rotY: p.rotY || 0,
+      sx: scale, sy: scale, sz: scale,
+    }));
+    return this.buildChunkedInstances(template.geometry, template.material, items, opts);
   }
 
   onResize() {
@@ -1051,6 +1599,7 @@ class Renderer {
     // Interpolation in einem Frame komplett durchspringen.
     const dt = Math.min(rawDt, 100);
 
+    this.frameCount++;
     this.net.update(rawDt);
     this.syncEntities(dt);
     // NACH syncEntities: die Blickrichtungen (facingById) werden dort
@@ -1059,8 +1608,24 @@ class Renderer {
     this.syncBuildings();
     this.syncVehicles(dt);
     this.updateCamera(dt);
+
+    const me = this.entities.get(this.net.myId);
+    const focus = me ? me.group.position : this.smoothedCamTarget;
+    this.updateEnvironment(dt);
+    this.updateSun(focus);
+    if (this.frameCount % 10 === 1) {
+      this.updateCulling(focus);
+      this.updateLabels(focus);
+    }
+    this.updateRain(dt / 1000);
+    this.updateGoalMarker(now, focus);
+    this.sky.position.copy(this.camera.position);
+
     this.renderer.render(this.scene, this.camera);
-    this.updateHud();
+    // Das HUD ist DOM, kein WebGL - zehnmal pro Sekunde reicht voellig und
+    // spart dem Browser das staendige Neu-Layouten.
+    if (this.frameCount % 6 === 0) this.updateHud();
+    if (window.gameHud && this.frameCount % 2 === 0) window.gameHud.drawMinimap();
 
     requestAnimationFrame((t) => this.loop(t));
   }
@@ -1079,12 +1644,14 @@ class Renderer {
     let group;
     let bodyMat;
     let headMat;
+    let parts = null;
 
     if (typeof buildCharacter === 'function') {
       const figur = buildCharacter(appearance, colors, this.kitTemplates);
       group = figur.group;
       bodyMat = figur.bodyMat;
       headMat = figur.headMat;
+      parts = figur.parts || null;
     } else {
       group = new THREE.Group();
       const bodyGeo = new THREE.CylinderGeometry(CHARACTER_RADIUS, CHARACTER_RADIUS, CHARACTER_BODY_HEIGHT, 12);
@@ -1102,13 +1669,14 @@ class Renderer {
       group.add(head);
     }
 
-    const label = this.createLabelSprite('');
+    const label = this.createLabelSprite('', null, 80);
     label.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS * 2 + 0.4;
     group.add(label);
 
     this.scene.add(group);
     return {
       group, label, lastLabelText: '', bodyMat, headMat, isJailedVisual: false,
+      parts, walkPhase: 0, walkAmp: 0,
       // Die Rueckfallfarben merken sich, worauf die Gefaengnis-Faerbung
       // zuruecksetzt. Bei angezogener Kleidung ist das deren echte Farbe,
       // nicht mehr die Spielerfarbe.
@@ -1119,10 +1687,10 @@ class Renderer {
     };
   }
 
-  createLabelSprite(text, scale) {
+  createLabelSprite(text, scale, maxDist) {
     const canvasEl = document.createElement('canvas');
-    canvasEl.width = 256;
-    canvasEl.height = 64;
+    canvasEl.width = 512;
+    canvasEl.height = 128;
 
     // WICHTIG (Safari): Erst auf die Zeichenflaeche malen, DANN als Textur registrieren.
     // Umgekehrt wirft Safari einen InvalidStateError, weil eine noch komplett leere
@@ -1130,24 +1698,62 @@ class Renderer {
     this.paintCanvasText(canvasEl, text || ' ');
 
     const texture = new THREE.CanvasTexture(canvasEl);
-    const material = new THREE.SpriteMaterial({ map: texture, depthTest: false });
+    texture.encoding = THREE.sRGBEncoding;
+    texture.anisotropy = 4;
+    // toneMapped aus: Schrift soll exakt weiss bleiben und nicht von der
+    // Filmkurve gedaempft werden.
+    const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true, toneMapped: false });
     const sprite = new THREE.Sprite(material);
     const [sx, sy] = scale || [2.2, 0.55];
     sprite.scale.set(sx, sy, 1);
+    sprite.renderOrder = 10;
     sprite.userData.canvasEl = canvasEl;
     sprite.userData.texture = texture;
+    sprite.userData.maxDist = maxDist || 0;
+    this.labelSprites.add(sprite);
     return sprite;
   }
 
   /** Malt Text auf eine Zeichenflaeche - getrennt, damit es auch VOR der Texturerstellung nutzbar ist. */
   paintCanvasText(canvasEl, text) {
     const ctx = canvasEl.getContext('2d');
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    ctx.fillStyle = '#e8e8e8';
-    ctx.font = '28px system-ui, sans-serif';
+    const W = canvasEl.width;
+    const H = canvasEl.height;
+    ctx.clearRect(0, 0, W, H);
+    if (!text || !text.trim()) return;
+
+    // Schrift so gross wie moeglich, aber lange Namen passen noch hinein.
+    const schrift = (px) => `600 ${px}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    let size = 50;
+    ctx.font = schrift(size);
+    let w = ctx.measureText(text).width;
+    if (w > W - 60) {
+      size = Math.max(26, Math.floor(size * (W - 60) / w));
+      ctx.font = schrift(size);
+      w = ctx.measureText(text).width;
+    }
+
+    // Halbtransparente Pille hinter der Schrift: auf hellem Himmel und
+    // weissen Fassaden war die helle Schrift vorher kaum zu lesen.
+    const pw = Math.min(W - 4, w + 44);
+    const ph = size + 30;
+    const x = (W - pw) / 2;
+    const y = (H - ph) / 2;
+    const r = ph / 2;
+    ctx.fillStyle = 'rgba(14, 18, 28, 0.62)';
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + pw, y, x + pw, y + ph, r);
+    ctx.arcTo(x + pw, y + ph, x, y + ph, r);
+    ctx.arcTo(x, y + ph, x, y, r);
+    ctx.arcTo(x, y, x + pw, y, r);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, canvasEl.width / 2, canvasEl.height / 2);
+    ctx.fillText(text, W / 2, H / 2 + 2);
   }
 
   paintLabelSprite(sprite, text) {
@@ -1224,7 +1830,7 @@ class Renderer {
         if (!modell) continue;
         group.add(modell);
 
-        const label = this.createLabelSprite(`🐾 ${player.pet.name}`, [1.6, 0.4]);
+        const label = this.createLabelSprite(`🐾 ${player.pet.name}`, [1.6, 0.4], 35);
         label.position.y = PET_LABEL_HEIGHT;
         group.add(label);
 
@@ -1391,6 +1997,7 @@ class Renderer {
       if (speed > FACING_MIN_SPEED) {
         this.facingById.set(p.id, Math.atan2(p.vx, p.vy));
       }
+      this.animateWalk(entry, p.vehicleId == null ? speed : 0, dtMs);
       // Weich eindrehen statt sofort umzuschnappen
       const targetFacing = this.facingById.get(p.id) || 0;
       entry.group.rotation.y = lerpAngle(entry.group.rotation.y, targetFacing, facingBlend);
@@ -1418,6 +2025,36 @@ class Renderer {
     }
 
     this.syncCops(dtMs);
+  }
+
+  /**
+   * Laufanimation: Beine und Arme pendeln gegengleich, der Koerper wippt.
+   * Die Figuren aus wardrobe.js haengen ihre Glieder bereits an Huefte und
+   * Schulter auf - genau dafuer war das dort vorbereitet.
+   */
+  animateWalk(entry, speed, dtMs) {
+    const parts = entry.parts;
+    if (!parts) return;
+    const anteil = Math.min(1, speed / PLAYER_SPEED);
+    entry.walkAmp += (anteil - entry.walkAmp) * frameRateIndependentBlend(0.2, dtMs);
+    if (entry.walkAmp < 0.01 && anteil === 0) {
+      if (entry.walkPhase !== 0) {
+        entry.walkPhase = 0;
+        for (const b of parts.beine || []) b.rotation.x = 0;
+        for (const a of parts.arme || []) a.rotation.x = 0;
+        entry.group.position.y = 0;
+      }
+      return;
+    }
+    entry.walkPhase += (dtMs / 1000) * (6 + anteil * 5);
+    const swing = Math.sin(entry.walkPhase) * 0.7 * entry.walkAmp;
+    const beine = parts.beine || [];
+    const arme = parts.arme || [];
+    if (beine[0]) beine[0].rotation.x = swing;
+    if (beine[1]) beine[1].rotation.x = -swing;
+    if (arme[0]) arme[0].rotation.x = -swing * 0.8;
+    if (arme[1]) arme[1].rotation.x = swing * 0.8;
+    entry.group.position.y = Math.abs(Math.sin(entry.walkPhase)) * 0.05 * entry.walkAmp;
   }
 
   /** Erstellt ein Immobilien-Gebaeude: Quader, dessen Hoehe den Preis widerspiegelt. */
@@ -1452,7 +2089,7 @@ class Renderer {
       labelHeight = height + 0.6;
     }
 
-    const label = this.createLabelSprite(property.name);
+    const label = this.createLabelSprite(property.name, null, 70);
     label.position.y = labelHeight;
     group.add(label);
 
@@ -1535,7 +2172,7 @@ class Renderer {
       labelHeight = cfg.h + 0.9;
     }
 
-    const label = this.createLabelSprite('');
+    const label = this.createLabelSprite('', null, 45);
     label.position.y = labelHeight;
     group.add(label);
 
@@ -1623,7 +2260,7 @@ class Renderer {
     if (model) {
       model.rotation.y = VEHICLE_MODEL_YAW_OFFSET;
       group.add(model);
-      const label = this.createLabelSprite('Polizei');
+      const label = this.createLabelSprite('🚓 Polizei', null, 60);
       label.position.y = 1.6;
       group.add(label);
       this.scene.add(group);
@@ -1644,7 +2281,7 @@ class Renderer {
     head.castShadow = true;
     group.add(head);
 
-    const label = this.createLabelSprite('Polizei');
+    const label = this.createLabelSprite('🚓 Polizei', null, 60);
     label.position.y = CHARACTER_BODY_HEIGHT + CHARACTER_HEAD_RADIUS * 2 + 0.4;
     group.add(label);
 
@@ -1691,90 +2328,63 @@ class Renderer {
     }
   }
 
-  /** Kamera folgt sanft hinter der Blickrichtung der eigenen Figur (GTA-Stil). */
+  /** Kamera-Zoom: positiv = weiter weg. */
+  zoomCamera(delta) {
+    this.camZoom = Math.min(CAMERA_MAX_DISTANCE, Math.max(CAMERA_MIN_DISTANCE, this.camZoom + delta));
+  }
+
+  /** Kamera-Neigung: positiv = steiler von oben. */
+  tiltCamera(delta) {
+    this.camPitch = Math.min(CAMERA_MAX_PITCH, Math.max(CAMERA_MIN_PITCH, this.camPitch + delta));
+  }
+
+  /**
+   * Kamera hinter der eigenen Figur (GTA-Stil), mit einstellbarem Abstand und
+   * Neigung. Steht etwas zwischen Figur und Kamera (Hauswand, Baumkrone),
+   * rueckt die Kamera davor - schnell beim Heranruecken, langsam beim
+   * Zurueckgehen, damit sie hinter einem Baum nicht hin und her springt.
+   */
   updateCamera(dtMs) {
     const me = this.entities.get(this.net.myId);
     if (!me) return;
 
-    // WICHTIG: Die Kamera folgt jetzt der frei drehbaren cameraYaw (per Wischgeste
-    // gesteuert), NICHT mehr der Bewegungsrichtung. Die Figur selbst dreht sich
-    // weiterhin dahin, wohin sie tatsaechlich laeuft (siehe syncEntities) - das
-    // sind bewusst zwei getrennte Dinge, genau wie in GTA/Roblox.
+    // WICHTIG: Die Kamera folgt der frei drehbaren cameraYaw (per Wischgeste
+    // gesteuert), NICHT der Bewegungsrichtung. Die Figur selbst dreht sich
+    // dahin, wohin sie tatsaechlich laeuft (siehe syncEntities) - das sind
+    // bewusst zwei getrennte Dinge, genau wie in GTA/Roblox.
     const yaw = this.net.cameraYaw || 0;
-    const dirX = Math.sin(yaw);
-    const dirZ = Math.cos(yaw);
+    const horiz = Math.cos(this.camPitch);
+    const dir = new THREE.Vector3(-Math.sin(yaw) * horiz, Math.sin(this.camPitch), -Math.cos(yaw) * horiz);
 
-    const targetCamPos = new THREE.Vector3(
-      me.group.position.x - dirX * CAMERA_DISTANCE,
-      CAMERA_HEIGHT,
-      me.group.position.z - dirZ * CAMERA_DISTANCE
-    );
-    const targetLook = new THREE.Vector3(me.group.position.x, CAMERA_LOOK_HEIGHT, me.group.position.z);
+    // Im Auto etwas weiter weg: das Fahrzeug ist laenger als die Figur.
+    const imAuto = this.net.localPlayer && this.net.localPlayer.vehicleId != null;
+    const wunsch = this.camZoom + (imAuto ? 2.5 : 0);
 
     // Bildratenunabhaengig, damit sich die Kamera auf einem 120Hz-Display
     // nicht doppelt so schnell anfuehlt wie auf einem 60Hz-Display.
-    const blend = frameRateIndependentBlend(CAMERA_SMOOTH, dtMs);
-    this.smoothedCamPos.lerp(targetCamPos, blend);
-    this.smoothedCamTarget.lerp(targetLook, blend);
+    const targetLook = new THREE.Vector3(me.group.position.x, CAMERA_LOOK_HEIGHT, me.group.position.z);
+    // Beim Beitritt oder nach einem Teleport (Gefaengnis) hart umsetzen,
+    // statt quer ueber die Karte zu fliegen.
+    if (this.smoothedCamTarget.distanceTo(targetLook) > 20) this.smoothedCamTarget.copy(targetLook);
+    else this.smoothedCamTarget.lerp(targetLook, frameRateIndependentBlend(0.25, dtMs));
+
+    if (this.frameCount % 2 === 0 || this._camFree == null) {
+      this._camFree = this.cameraObstacleDistance(this.smoothedCamTarget, dir, wunsch);
+    }
+    const erlaubt = Math.max(1.2, Math.min(wunsch, this._camFree - 0.4));
+    const k = erlaubt < this.camActualDistance ? 0.5 : 0.05;
+    this.camActualDistance += (erlaubt - this.camActualDistance) * frameRateIndependentBlend(k, dtMs);
+
+    this.smoothedCamPos.copy(this.smoothedCamTarget).addScaledVector(dir, this.camActualDistance);
+    if (this.smoothedCamPos.y < 0.4) this.smoothedCamPos.y = 0.4;
+    this.fadeUniforms.uFadeFocus.value.set(me.group.position.x, 1.0, me.group.position.z);
 
     this.camera.position.copy(this.smoothedCamPos);
     this.camera.lookAt(this.smoothedCamTarget);
   }
 
+  /** Das HUD lebt in hud.js - hier nur der Takt. */
   updateHud() {
-    const me = this.net.localPlayer;
-    if (!me) return;
-    const online = [...this.net.players.values()].filter((p) => p.connected !== false).length;
-    const wantedText = me.wanted > 0 ? ` &nbsp;|&nbsp; Gesucht: ${'⭐'.repeat(Math.min(me.wanted, 5))}` : '';
-
-    // Berufstitel aus dem Katalog nachschlagen - der Server sendet nur ID + Stufe,
-    // die lesbaren Titel stehen im Katalog, der beim Beitritt mitkommt.
-    let jobText = 'arbeitslos';
-    if (me.job) {
-      const jobDef = this.net.jobCatalog.find((j) => j.id === me.job);
-      const level = jobDef ? jobDef.levels[me.jobLevel] : null;
-      jobText = level ? level.title : 'angestellt';
-    }
-
-    // Laufenden Kurs anzeigen, damit man den Fortschritt ohne Panel mitbekommt
-    let studyText = '';
-    if (me.enrolledCourse) {
-      const course = this.net.courseCatalog.find((c) => c.id === me.enrolledCourse);
-      const required = course ? (me.job ? course.durationTicks * 2 : course.durationTicks) : 0;
-      studyText = ` &nbsp;|&nbsp; 🎓 ${course ? course.name : 'Kurs'} ${me.courseProgress ?? 0}/${required}`;
-    }
-
-    // Faehrt der Spieler? Dann Fahrzeug statt "zu Fuss" anzeigen.
-    let travelText = '🚶 zu Fuß';
-    if (me.vehicleId != null) {
-      const v = this.net.vehicles.get(me.vehicleId);
-      const type = v ? this.net.vehicleCatalog.find((t) => t.id === v.typeId) : null;
-      travelText = '🚗 ' + (type ? type.name : 'Fahrzeug');
-    }
-
-    // Steht der Spieler auf der Platte eines Ortes? Dann sagen, dass hier etwas
-    // geht - sonst muesste man es durch Ausprobieren im Menue herausfinden.
-    // Tageszeit und Wetter im HUD: die Polizei verhaelt sich dadurch anders,
-    // das muss ablesbar sein und nicht nur zu erraten.
-    const env = this.net.environment || {};
-    const envIcon = env.phase === 'night' ? '🌙' : '☀️';
-    const weatherIcon = env.weather === 'rain' ? '🌧️' : env.weather === 'fog' ? '🌫️' : '';
-    const envText = `${envIcon}${weatherIcon ? ' ' + weatherIcon : ''}` +
-      (env.policeRangeMult != null && env.policeRangeMult < 1
-        ? ` <span style="color:#8fd8a0">Polizei sieht schlechter</span>` : '');
-
-    const place = this.net.currentPlace();
-    const placeText = place
-      ? `<br><span style="color:#8fd8a0">${place.icon} ${place.name} — hier verfügbar</span>`
-      : '';
-
-    this.hud.innerHTML =
-      `Name: ${me.name} &nbsp;|&nbsp; Alter: ${me.age} &nbsp;|&nbsp; Cash: $${me.cash ?? 0}` +
-      ((me.bank ?? 0) > 0 ? ` &nbsp;|&nbsp; 🏦 $${me.bank}` : '') +
-      ((me.debt ?? 0) > 0 ? ` &nbsp;|&nbsp; <span style="color:#e08080">Schulden $${me.debt}</span>` : '') +
-      `${wantedText}<br>` +
-      `❤️ ${Math.round(me.health ?? 100)} &nbsp; 😊 ${Math.round(me.happiness ?? 70)} &nbsp; 🧠 ${me.smarts ?? 50} &nbsp; ✨ ${me.looks ?? 50} &nbsp;|&nbsp; 💼 ${jobText}${studyText}<br>` +
-      `Spieler online: ${online} &nbsp;|&nbsp; ${travelText} &nbsp;|&nbsp; ${envText}` +
-      placeText;
+    if (window.gameHud) window.gameHud.update();
   }
 }

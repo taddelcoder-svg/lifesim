@@ -82,6 +82,7 @@ function createPlayer(name, token) {
     gangId: null,          // Mitgliedschaft in einer Bande (siehe gangs.js)
     spouseId: null,        // Ehepartner-ID, oder null
     pendingReincarnation: null, // gesetzt bei Tod: { heirChildId } - Spieler wartet auf Weiterleben-Aktion
+    achievements: {},      // erreichte Lebensziele: id -> Zeitstempel (siehe achievements.js)
     ws: null, // Laufzeitreferenz, wird niemals serialisiert
   };
 }
