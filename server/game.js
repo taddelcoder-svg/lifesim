@@ -233,7 +233,7 @@ const {
   dealershipSlot,
 } = require('./vehicles');
 
-const MAX_PLAYERS = 20;
+const MAX_PLAYERS = 40;
 const FAST_TICK_MS = 50; // Positionen / Kollision (Phase 4) / Kampf
 const SLOW_TICK_MS = 10000; // Alterung / Wirtschaft
 const EVENT_TICK_MS = 1000; // Lebensereignisse: Ablauf pruefen, neue anbieten
