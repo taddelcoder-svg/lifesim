@@ -45,6 +45,22 @@
     border-radius: 6px;
     pointer-events: none;
   }
+  /* Olympiade: Leiste mit Restzeit und Endkarte */
+  #olympLeiste {
+    display: none; position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 25;
+    background: rgba(20, 24, 32, 0.88); color: #ffd35c; font: 600 15px system-ui, sans-serif;
+    padding: 6px 14px; border-radius: 99px; pointer-events: none; white-space: nowrap; max-width: calc(100% - 24px);
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  #olympEnde {
+    display: none; position: fixed; inset: 0; z-index: 40; background: rgba(10, 10, 14, 0.8);
+    align-items: center; justify-content: center; padding: 16px;
+  }
+  #olympEnde > div { background: #22262f; color: #e8e8e8; font-family: system-ui, sans-serif; text-align: center; padding: 24px 28px; border-radius: 10px; max-width: 380px; }
+  #olympEnde h2 { margin: 0 0 8px; color: #ffd35c; }
+  #olympEnde button { display: block; width: 100%; margin-top: 10px; padding: 10px; border-radius: 6px; border: 0; font: 600 15px system-ui, sans-serif; cursor: pointer; }
+  #olympZurueck { background: #ffd35c; color: #22262f; }
+  #olympWeiter { background: #3a3f4b; color: #e8e8e8; }
   #joinOverlay {
     position: fixed;
     inset: 0;
@@ -517,6 +533,15 @@
     </div>
   </div>
 
+  <div id="olympLeiste" role="status"></div>
+  <div id="olympEnde" role="dialog" aria-labelledby="olympEndeTitel">
+    <div>
+      <h2 id="olympEndeTitel">🏅 Zeit um!</h2>
+      <p id="olympEndeText"></p>
+      <button id="olympZurueck">Zurück zur Olympiade</button>
+      <button id="olympWeiter">Noch ein bisschen weiterspielen</button>
+    </div>
+  </div>
   <div id="hud"></div>
   <div id="eventBanner" style="display:none;">
     <h3 id="eventTitle"></h3>
@@ -807,8 +832,59 @@
         joinMsg.textContent =
           reason === 'lobby_full'
             ? 'Diese Welt ist voll (max. 20 Spieler). Bitte später erneut versuchen.'
-            : 'Verbindung fehlgeschlagen.';
+            : reason === 'olymp_ticket'
+              ? 'Das Olympia-Ticket ist ungültig oder abgelaufen. Geh zurück zur Olympiade.'
+              : 'Verbindung fehlgeschlagen.';
+        if (reason === 'olymp_ticket') { try { sessionStorage.removeItem('lifesim_olymp'); } catch (e) {} }
       };
+
+      // Olympiade: Mit ?olymp=... im Link startet der Vermoegens-Sprint mit frischer Figur.
+      // Die Leiste oben zeigt Restzeit und dazugewonnenes Vermoegen, am Ende gibt es den Weg zurueck.
+      (function olympiaStarten() {
+        let ticket = new URLSearchParams(location.search).get('olymp');
+        try {
+          if (ticket) sessionStorage.setItem('lifesim_olymp', ticket);
+          else ticket = sessionStorage.getItem('lifesim_olymp');
+        } catch (e) {}
+        if (!ticket) return;
+        history.replaceState(null, '', location.pathname);
+        let info = {};
+        try { info = JSON.parse(decodeURIComponent(escape(atob(ticket.split('.')[0].replace(/-/g, '+').replace(/_/g, '/'))))); } catch (e) {}
+        const leiste = document.getElementById('olympLeiste');
+        const ende = document.getElementById('olympEnde');
+        let zurueck = info.z || '/';
+        let restBis = 0, zuletzt = null;
+        const zeit = ms => { const s = Math.ceil(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+        function zeichnen() {
+          if (!zuletzt || zuletzt.type !== 'olympStand') return;
+          leiste.textContent = `🏅 Vermögens-Sprint · ${zeit(Math.max(0, restBis - Date.now()))} · ${zuletzt.text}`;
+        }
+        setInterval(zeichnen, 500);
+        net.olympTicket = ticket;
+        net.token = null;
+        net.onOlympStand = (m) => {
+          zuletzt = m;
+          if (m.info && m.info.zurueck) zurueck = m.info.zurueck;
+          leiste.style.display = 'block';
+          if (m.type === 'olympEnde') {
+            leiste.textContent = `🏅 Zeit um! ${m.text}`;
+            if (ende.style.display !== 'flex') {
+              document.getElementById('olympEndeText').textContent = `Du hast in der Zeit ${m.text.replace('Vermögen', 'Vermögen dazugewonnen')}. Das zählt jetzt für die Olympiade.`;
+              ende.style.display = 'flex';
+            }
+            return;
+          }
+          restBis = Date.now() + m.restMs;
+          zeichnen();
+        };
+        document.getElementById('olympZurueck').onclick = () => {
+          try { sessionStorage.removeItem('lifesim_olymp'); } catch (e) {}
+          location.href = zurueck;
+        };
+        document.getElementById('olympWeiter').onclick = () => { ende.style.display = 'none'; };
+        nameInput.value = info.n || 'Spieler';
+        joinBtn.click();
+      })();
       net.onConnectionLost = () => {
         // Nur anzeigen, wenn das Spiel bereits lief - beim ersten Verbindungsversuch
         // uebernimmt stattdessen onJoinError die Rueckmeldung.

@@ -204,4 +204,4 @@ function buildState(player, world) {
   };
 }
 
-module.exports = { ACHIEVEMENTS, BY_ID, checkPlayer, buildState };
+module.exports = { ACHIEVEMENTS, BY_ID, checkPlayer, buildState, netWorth };

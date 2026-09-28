@@ -34,6 +34,9 @@ class NetClient {
     this.ws = null;
     this.myId = null;
     this.token = localStorage.getItem('lifesim_token') || null;
+    // Olympiade: Ticket statt eigenem Token (die normale Figur bleibt unangetastet)
+    this.olympTicket = null;
+    this.onOlympStand = null;
     this.players = new Map(); // id -> { id, name, age, x, y, vx, vy, ...stats }
     this.localPlayer = null;
     this.inputSeq = 0;
@@ -238,7 +241,9 @@ class NetClient {
     this.ws = new WebSocket(`${protocol}://${location.host}`);
 
     this.ws.addEventListener('open', () => {
-      this.ws.send(JSON.stringify({ type: 'join', name, token: this.token }));
+      this.ws.send(JSON.stringify(this.olympTicket
+        ? { type: 'join', name, olymp: this.olympTicket }
+        : { type: 'join', name, token: this.token }));
     });
 
     this.ws.addEventListener('message', (event) => {
@@ -265,7 +270,7 @@ class NetClient {
       case 'welcome': {
         this.myId = msg.id;
         this.token = msg.token;
-        localStorage.setItem('lifesim_token', this.token);
+        if (!this.olympTicket) localStorage.setItem('lifesim_token', this.token);
         this.players.clear();
         this.pendingInputs = [];
         for (const p of msg.players) {
@@ -285,6 +290,12 @@ class NetClient {
 
       case 'achievementUnlocked': {
         if (this.onAchievementUnlocked) this.onAchievementUnlocked(msg);
+        break;
+      }
+
+      case 'olympStand':
+      case 'olympEnde': {
+        if (this.onOlympStand) this.onOlympStand(msg);
         break;
       }
 

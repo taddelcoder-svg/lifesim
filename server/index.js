@@ -24,6 +24,8 @@ const { EMPLOYEE_WAGE_PER_TICK } = require('./economy');
 const appearance = require('./appearance');
 const achievements = require('./achievements');
 const zugang = require('./zugang')({ titel: 'LifeSim' });
+const olymp = require('./olymp')({ spiel: 'lifesim' });
+const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
 
@@ -64,6 +66,57 @@ function send(ws, msg) {
 function sendToPlayer(playerId, msg) {
   send(playerConnections.get(playerId), msg);
 }
+
+/* ---------- Olympiade: Vermoegens-Sprint ----------
+   Jeder Olympia-Spieler startet mit einer frischen Figur. Gewertet wird, wie viel
+   Vermoegen (Bargeld + Bank - Schulden + Aktien + Immobilien) nach Ablauf der Zeit
+   dazugekommen ist. Die Uhr laeuft pro Spieler ab seinem ersten Beitritt. */
+const olympSprints = new Map(); // "lauf:spieler" -> { t, playerId, start, ende, startWert, wert, gemeldet }
+function olympVermoegen(player) {
+  return achievements.netWorth(player, world);
+}
+function olympBeitritt(player, t) {
+  const key = t.l + ':' + t.s;
+  let sp = olympSprints.get(key);
+  if (!sp) {
+    const minuten = Math.max(1, Math.min(30, Number(t.c.minuten) || 8));
+    sp = { t, playerId: player.id, start: Date.now(), ende: Date.now() + minuten * 60000, startWert: olympVermoegen(player), wert: 0, gemeldet: false };
+    olympSprints.set(key, sp);
+    olymp.da(t, t.s);
+  } else if (sp.playerId !== player.id) {
+    // Figur ist nach langer Trennung neu entstanden: ab ihrem Startwert weiterzaehlen
+    sp.startWert = olympVermoegen(player) - sp.wert;
+    sp.playerId = player.id;
+  }
+  olympStandSenden(sp);
+}
+function olympText(wert) {
+  const betrag = Math.round(wert).toLocaleString('de-DE');
+  return `${wert >= 0 ? '+' : ''}${betrag} € Vermögen`;
+}
+function olympStandSenden(sp) {
+  sendToPlayer(sp.playerId, {
+    type: sp.gemeldet ? 'olympEnde' : 'olympStand',
+    restMs: Math.max(0, sp.ende - Date.now()), wert: Math.round(sp.wert), text: olympText(sp.wert),
+    info: olymp.fuerBrowser(sp.t),
+  });
+}
+setInterval(() => {
+  const jetzt = Date.now();
+  for (const [key, sp] of olympSprints) {
+    if (sp.gemeldet) {
+      if (jetzt - sp.ende > 3 * 3600000) olympSprints.delete(key);
+      continue;
+    }
+    const player = world.players.get(sp.playerId);
+    if (player) sp.wert = olympVermoegen(player) - sp.startWert;
+    if (jetzt >= sp.ende) {
+      sp.gemeldet = true;
+      olymp.wertMelden(sp.t, sp.t.s, Math.round(sp.wert), olympText(sp.wert));
+    }
+    olympStandSenden(sp);
+  }
+}, 2000);
 
 function buildEventOfferMessage(instance) {
   return {
@@ -165,7 +218,19 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'join') {
-      const result = world.joinPlayer(msg.name, msg.token, ws);
+      // Olympiade: mit Ticket gibt es eine frische Figur fuer den Vermoegens-Sprint.
+      // Das Token wird aus Lauf und Spieler abgeleitet, damit ein Neuladen dieselbe Figur zurueckbringt.
+      let olympTicket = null, joinName = msg.name, joinToken = msg.token;
+      if (msg.olymp) {
+        olympTicket = olymp.ticketPruefen(msg.olymp);
+        if (!olympTicket) {
+          send(ws, { type: 'joinError', reason: 'olymp_ticket' });
+          return;
+        }
+        joinName = olympTicket.n;
+        joinToken = 'olymp-' + crypto.createHash('sha256').update(olympTicket.l + ':' + olympTicket.s).digest('hex').slice(0, 32);
+      }
+      const result = world.joinPlayer(joinName, joinToken, ws);
       if (result.error) {
         send(ws, { type: 'joinError', reason: result.error });
         return;
@@ -209,6 +274,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'gangState', ...world.buildGangState(result.player.id) });
       send(ws, { type: 'achievementsState', ...achievements.buildState(result.player, world) });
       broadcast({ type: 'playerJoined', player: serializePublic(result.player) }, ws);
+      if (olympTicket) olympBeitritt(result.player, olympTicket);
       console.log(
         `${result.reconnected ? 'Reconnect' : 'Join'}: ${result.player.name} (#${result.player.id}) - ${world.playerCount} online`
       );
